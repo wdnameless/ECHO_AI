@@ -260,7 +260,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       const defaultAi = {
         provider: "nullform-gateway",
         variables: {
-          API_KEY: "sk-32e95a0a5ef7449597acfb7cfaa624a7",
+          API_KEY: "",
           MODEL: "gemini-3.6-flash-low",
         },
       };

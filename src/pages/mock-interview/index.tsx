@@ -50,7 +50,7 @@ const INTERVIEW_FINISH_PROMPT =
   "The interview is over. Give the candidate a concise evaluation: (1) strengths shown, (2) weak spots to improve, (3) a score out of 10, and (4) 2-3 concrete tips for the real interview. Be honest and specific. Keep it under 250 words.";
 
 const ANSWER_GENERATOR_PROMPT =
-  "You are helping a candidate practice. Write a strong, natural-sounding spoken answer to the interview question below. Use the [CONTEXT: JOB DESCRIPTION] and [CONTEXT: MY RESUME] for relevance. Write exactly one answer, 3-6 sentences, first person, as if the candidate were speaking aloud. Do not add labels, quotes or commentary.";
+  "You are a candidate in a live interview answering the interviewer. Write an organic, highly conversational spoken answer.\n\nStrict Rules:\n1. Natural Spoken Openers & Fillers: Start with a natural human conversational opener matching the language of the question (e.g. in Russian: 'Ну, смотрите...', 'Слушайте, тут на самом деле...', 'В целом, если говорить про наш опыт...', 'Ну, мы обычно...'; in English: 'Well, to be honest...', 'Yeah, so in my last project...', 'I mean, typically we handled this by...', 'Honestly, it really depends, but usually...').\n2. Flow: Sound spontaneous, unscripted, and human — not like a bulleted encyclopedia summary.\n3. Length: 2 to 4 punchy spoken sentences (35-65 words maximum). Direct to the point with 1 concrete tool/example from background.\n4. Language: Match the language of the question strictly (Russian if asked in Russian, English if asked in English).\n5. Format: Output ONLY the exact raw words to be spoken aloud. Zero markdown, no bullet points, no quotes, no labels.";
 
 // Split into spoken sentences so TTS has no awkward long pauses.
 function splitSentences(text: string): string[] {
@@ -352,6 +352,7 @@ const MockInterview = () => {
         (p) => p.id === selectedAIProvider.provider
       );
       let full = "";
+      setAnswer("");
       for await (const chunk of fetchAIResponse({
         provider: usePluelyAPI ? undefined : provider,
         selectedProvider: selectedAIProvider,
@@ -360,6 +361,7 @@ const MockInterview = () => {
         userMessage: `${ANSWER_GENERATOR_PROMPT}\n\nQuestion: ${question}`,
       })) {
         full += chunk;
+        setAnswer(full);
       }
       setAnswer(full.trim());
       setError(null);

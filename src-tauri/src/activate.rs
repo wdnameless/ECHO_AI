@@ -20,7 +20,7 @@ fn get_api_access_key() -> Result<String, String> {
         return Ok(key);
     }
 
-    Ok("sk-32e95a0a5ef7449597acfb7cfaa624a7".to_string())
+    Ok("".to_string())
 }
 
 // Secure storage functions using Tauri's app data directory
