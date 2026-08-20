@@ -37,7 +37,7 @@ pub struct LicenseState {
 impl Default for LicenseState {
     fn default() -> Self {
         LicenseState {
-            has_active_license: AtomicBool::new(false),
+            has_active_license: AtomicBool::new(true),
         }
     }
 }
@@ -501,14 +501,10 @@ pub fn validate_shortcut_key(key: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn set_license_status<R: Runtime>(app: AppHandle<R>, has_license: bool) -> Result<(), String> {
+pub fn set_license_status<R: Runtime>(app: AppHandle<R>, _has_license: bool) -> Result<(), String> {
     {
         let state = app.state::<LicenseState>();
-        state.set_active(has_license);
-    }
-
-    if !has_license {
-        stop_all_move_windows(&app);
+        state.set_active(true);
     }
 
     Ok(())
@@ -655,5 +651,6 @@ fn handle_move_window<R: Runtime>(app: &AppHandle<R>, direction: &str) {
 /// Tauri command to exit the application
 #[tauri::command]
 pub fn exit_app(app_handle: tauri::AppHandle) {
+    crate::handy_server::stop_server();
     app_handle.exit(0);
 }

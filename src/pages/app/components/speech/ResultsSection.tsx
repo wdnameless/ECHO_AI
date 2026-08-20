@@ -1,10 +1,17 @@
-import { ChatConversation } from "@/types";
+import { ChatConversation } from "@/hooks/useSystemAudio";
 import { Markdown, Switch, CopyButton } from "@/components";
-import { BotIcon, HeadphonesIcon, Loader2, SparklesIcon } from "lucide-react";
+import {
+  BotIcon,
+  HeadphonesIcon,
+  Loader2,
+  MicIcon,
+  SparklesIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Props = {
-  lastTranscription: string;
+  myLastTranscription: string;
+  theirLastTranscription: string;
   lastAIResponse: string;
   isAIProcessing: boolean;
   conversation: ChatConversation;
@@ -13,7 +20,8 @@ type Props = {
 };
 
 export const ResultsSection = ({
-  lastTranscription,
+  myLastTranscription,
+  theirLastTranscription,
   lastAIResponse,
   isAIProcessing,
   conversation,
@@ -23,12 +31,36 @@ export const ResultsSection = ({
   const hasResponse = lastAIResponse || isAIProcessing;
   const hasHistory = conversation.messages.length > 2;
 
-  if (!hasResponse && !lastTranscription) {
+  if (!hasResponse && !myLastTranscription && !theirLastTranscription) {
     return null;
   }
 
   const isMac = navigator.platform.toLowerCase().includes("mac");
   const modKey = isMac ? "⌘" : "Ctrl";
+
+  const youBubble = myLastTranscription && (
+    <div className="rounded-md border-l-2 border-blue-400/60 bg-blue-500/5 p-2">
+      <div className="flex items-center gap-1.5 mb-0.5">
+        <MicIcon className="h-3 w-3 text-blue-500" />
+        <span className="text-[9px] font-medium text-blue-500 uppercase tracking-wide">
+          You
+        </span>
+      </div>
+      <p className="text-[11px] leading-relaxed">{myLastTranscription}</p>
+    </div>
+  );
+
+  const themBubble = theirLastTranscription && (
+    <div className="rounded-md border-l-2 border-primary/50 bg-primary/5 p-2">
+      <div className="flex items-center gap-1.5 mb-0.5">
+        <HeadphonesIcon className="h-3 w-3 text-primary" />
+        <span className="text-[9px] font-medium text-primary uppercase tracking-wide">
+          Them
+        </span>
+      </div>
+      <p className="text-[11px] leading-relaxed">{theirLastTranscription}</p>
+    </div>
+  );
 
   return (
     <div className="rounded-lg border border-border/50 bg-muted/20 p-3 space-y-3">
@@ -53,15 +85,12 @@ export const ResultsSection = ({
         </div>
       </div>
 
-      {/* RESPONSE MODE: System as text, then AI response */}
+      {/* RESPONSE MODE: transcriptions, then AI response */}
       {!conversationMode && (
         <div className="space-y-2">
-          {/* System Input - Just text with bold label */}
-          {lastTranscription && (
-            <p className="text-[11px] text-muted-foreground">
-              <span className="font-semibold">System:</span> {lastTranscription}
-            </p>
-          )}
+          {/* Live transcription tracks */}
+          {youBubble}
+          {themBubble}
 
           {/* AI Response */}
           {hasResponse && (
@@ -75,10 +104,9 @@ export const ResultsSection = ({
                 </div>
               ) : (
                 <div className="prose prose-sm max-w-none dark:prose-invert">
-                  <Markdown>{lastAIResponse}</Markdown>
-                  {isAIProcessing && (
-                    <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1 align-middle" />
-                  )}
+                  <Markdown isStreaming={isAIProcessing}>
+                    {lastAIResponse}
+                  </Markdown>
                 </div>
               )}
             </div>
@@ -86,7 +114,7 @@ export const ResultsSection = ({
         </div>
       )}
 
-      {/* CONVERSATION MODE: AI on top, then System, then history */}
+      {/* CONVERSATION MODE: AI on top, then You/Them, then history */}
       {conversationMode && (
         <div className="space-y-2">
           {/* AI Response - First (on top) */}
@@ -107,27 +135,17 @@ export const ResultsSection = ({
                 </div>
               ) : (
                 <div className="prose prose-sm max-w-none dark:prose-invert text-sm">
-                  <Markdown>{lastAIResponse}</Markdown>
-                  {isAIProcessing && (
-                    <span className="inline-block w-2 h-4 bg-primary animate-pulse ml-1 align-middle" />
-                  )}
+                  <Markdown isStreaming={isAIProcessing}>
+                    {lastAIResponse}
+                  </Markdown>
                 </div>
               )}
             </div>
           )}
 
-          {/* System Input - Second */}
-          {lastTranscription && (
-            <div className="rounded-md border-l-2 border-primary/50 bg-primary/5 p-2.5">
-              <div className="flex items-center gap-1.5 mb-1">
-                <HeadphonesIcon className="h-3 w-3 text-primary" />
-                <span className="text-[9px] font-medium text-primary uppercase tracking-wide">
-                  System
-                </span>
-              </div>
-              <p className="text-sm">{lastTranscription}</p>
-            </div>
-          )}
+          {/* Live transcription tracks - Second */}
+          {youBubble}
+          {themBubble}
 
           {/* Previous Messages */}
           {hasHistory && (
@@ -145,12 +163,18 @@ export const ResultsSection = ({
                       className={cn(
                         "p-2 rounded-md text-[11px]",
                         message.role === "user"
-                          ? "bg-primary/5 border-l-2 border-primary/30"
+                          ? message.source === "me"
+                            ? "bg-blue-500/5 border-l-2 border-blue-400/40"
+                            : "bg-primary/5 border-l-2 border-primary/30"
                           : "bg-background/50"
                       )}
                     >
                       <span className="text-[8px] font-medium text-muted-foreground uppercase">
-                        {message.role === "user" ? "System" : "AI"}
+                        {message.source === "me"
+                          ? "You"
+                          : message.source === "them"
+                            ? "Them"
+                            : "AI"}
                       </span>
                       <div className="text-muted-foreground leading-relaxed mt-0.5">
                         <Markdown>{message.content}</Markdown>

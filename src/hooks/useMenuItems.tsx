@@ -13,6 +13,7 @@ import {
   GlobeIcon,
   BugIcon,
   MessageSquareTextIcon,
+  GraduationCap,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useApp } from "@/contexts";
@@ -31,6 +32,11 @@ export const useMenuItems = () => {
       icon: HomeIcon,
       label: "Dashboard",
       href: "/dashboard",
+    },
+    {
+      icon: GraduationCap,
+      label: "Mock Interview",
+      href: "/mock-interview",
     },
     {
       icon: MessagesSquare,

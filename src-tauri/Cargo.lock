@@ -4124,7 +4124,7 @@ dependencies = [
 
 [[package]]
 name = "pluely"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4159,6 +4159,7 @@ dependencies = [
  "tracing",
  "uuid",
  "wasapi",
+ "windows 0.61.3",
  "xcap",
 ]
 

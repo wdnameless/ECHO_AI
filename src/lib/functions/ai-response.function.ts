@@ -13,9 +13,20 @@ import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
 import { CHUNK_POLL_INTERVAL_MS } from "../chat-constants";
 import { getResponseSettings, RESPONSE_LENGTHS, LANGUAGES } from "@/lib";
-import { MARKDOWN_FORMATTING_INSTRUCTIONS } from "@/config/constants";
+import { MARKDOWN_FORMATTING_INSTRUCTIONS, STORAGE_KEYS } from "@/config/constants";
+import {
+  getHumanizerSettings,
+  HUMANIZER_INSTRUCTIONS,
+  INTERVIEW_MODE_INSTRUCTIONS,
+} from "@/config/humanizer.rules";
+import { getRagContext } from "@/lib/rag";
+import { safeLocalStorage } from "@/lib/storage/helper";
+import { detectLanguage } from "@/lib/language-detect";
 
-function buildEnhancedSystemPrompt(baseSystemPrompt?: string): string {
+async function buildEnhancedSystemPrompt(
+  baseSystemPrompt?: string,
+  userMessage?: string
+): Promise<string> {
   const responseSettings = getResponseSettings();
   const prompts: string[] = [];
 
@@ -30,8 +41,12 @@ function buildEnhancedSystemPrompt(baseSystemPrompt?: string): string {
     prompts.push(lengthOption.prompt);
   }
 
+  const detected = detectLanguage(userMessage || "");
+  const effectiveLanguage =
+    detected === "russian" ? "russian" : responseSettings.language;
+
   const languageOption = LANGUAGES.find(
-    (l) => l.id === responseSettings.language
+    (l) => l.id === effectiveLanguage
   );
   if (languageOption?.prompt?.trim()) {
     prompts.push(languageOption.prompt);
@@ -39,6 +54,42 @@ function buildEnhancedSystemPrompt(baseSystemPrompt?: string): string {
 
   // Add markdown formatting instructions
   prompts.push(MARKDOWN_FORMATTING_INSTRUCTIONS);
+
+  // RAG context: resume and job description
+  const resumeEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_RESUME_ENABLED) === "true";
+  const jobEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_JOB_ENABLED) === "true";
+
+  if (resumeEnabled) {
+    const resume = await getRagContext("resume");
+    if (resume?.content?.trim()) {
+      prompts.push(
+        `[CONTEXT: MY RESUME]\n${resume.content.trim()}\n[/CONTEXT]`
+      );
+    }
+  }
+
+  if (jobEnabled) {
+    const job = await getRagContext("job");
+    if (job?.content?.trim()) {
+      prompts.push(
+        `[CONTEXT: JOB DESCRIPTION]\n${job.content.trim()}\n[/CONTEXT]`
+      );
+    }
+  }
+
+  // Humanizer rules
+  const humanizer = getHumanizerSettings();
+  if (humanizer.enabled) {
+    prompts.push(HUMANIZER_INSTRUCTIONS);
+    if (humanizer.interviewMode) {
+      prompts.push(INTERVIEW_MODE_INSTRUCTIONS);
+    }
+    if (humanizer.customStyle?.trim()) {
+      prompts.push(
+        `Match this personal speaking style: ${humanizer.customStyle.trim()}`
+      );
+    }
+  }
 
   return prompts.join(" ");
 }
@@ -103,12 +154,17 @@ async function* fetchPluelyAIResponse(params: {
         return;
       }
 
-      // Start the streaming request using the new API response endpoint
-      await invoke("chat_stream_response", {
+      // Start the streaming request fire-and-forget so the polling loop below
+      // starts immediately and yields chunks as they arrive
+      let streamError: string | null = null;
+      invoke("chat_stream_response", {
         userMessage,
         systemPrompt,
         imageBase64,
         history: historyString,
+      }).catch((err) => {
+        streamError = String(err);
+        streamComplete = true;
       });
 
       // Yield chunks as they come in
@@ -151,6 +207,10 @@ async function* fetchPluelyAIResponse(params: {
       for (let i = lastIndex; i < streamChunks.length; i++) {
         yield streamChunks[i];
       }
+
+      if (streamError) {
+        yield `Pluely API Error: ${streamError}`;
+      }
     } finally {
       unlisten();
       unlistenComplete();
@@ -189,7 +249,10 @@ export async function* fetchAIResponse(params: {
       return;
     }
 
-    const enhancedSystemPrompt = buildEnhancedSystemPrompt(systemPrompt);
+    const enhancedSystemPrompt = await buildEnhancedSystemPrompt(
+      systemPrompt,
+      userMessage
+    );
 
     // Check if we should use Pluely API instead
     const usePluelyAPI = await shouldUsePluelyAPI();
@@ -225,11 +288,13 @@ export async function* fetchAIResponse(params: {
     const requiredVars = extractedVariables.filter(
       ({ key }) => key !== "SYSTEM_PROMPT" && key !== "TEXT" && key !== "IMAGE"
     );
+    const providerVariables = selectedProvider.variables ?? {};
     for (const { key } of requiredVars) {
-      if (
-        !selectedProvider.variables?.[key] ||
-        selectedProvider.variables[key].trim() === ""
-      ) {
+      const found = Object.entries(providerVariables).find(
+        ([k, v]) =>
+          k.toLowerCase() === key.toLowerCase() && v && v.trim() !== ""
+      );
+      if (!found) {
         throw new Error(
           `Missing required variable: ${key}. Please configure it in settings.`
         );
@@ -291,7 +356,7 @@ export async function* fetchAIResponse(params: {
       }
     }
 
-    const fetchFunction = url?.includes("http") ? fetch : tauriFetch;
+    const fetchFunction = url?.includes("http") ? tauriFetch : fetch;
 
     let response;
     try {

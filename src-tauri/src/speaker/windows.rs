@@ -9,6 +9,7 @@ use std::thread;
 use std::time::Duration;
 use tracing::error;
 use wasapi::{get_default_device, DeviceCollection, Direction, SampleType, StreamMode, WaveFormat};
+use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
 
 pub fn get_input_devices() -> Result<Vec<AudioDevice>> {
     let mut devices = Vec::new();
@@ -188,6 +189,11 @@ impl SpeakerStream {
         init_tx: mpsc::Sender<Result<u32>>,
         device_id: Option<String>,
     ) -> Result<()> {
+        // WASAPI requires COM to be initialized on the capturing thread.
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+
         let init_result = (|| -> Result<_> {
             let device = match device_id {
                 Some(ref id) => match find_device_by_id(&Direction::Render, id) {
@@ -212,9 +218,16 @@ impl SpeakerStream {
 
             let device_format = audio_client.get_mixformat()?;
             let actual_rate = device_format.get_samplespersec();
+            let actual_channels = device_format.get_nchannels() as usize;
 
-            let desired_format =
-                WaveFormat::new(32, 32, &SampleType::Float, actual_rate as usize, 1, None);
+            let desired_format = WaveFormat::new(
+                32,
+                32,
+                &SampleType::Float,
+                actual_rate as usize,
+                actual_channels,
+                None,
+            );
 
             let (_def_time, min_time) = audio_client.get_device_period()?;
 
@@ -230,12 +243,17 @@ impl SpeakerStream {
 
             audio_client.start_stream()?;
 
-            Ok((h_event, render_client, actual_rate))
+            Ok((h_event, render_client, actual_rate, actual_channels))
         })();
 
         match init_result {
-            Ok((h_event, render_client, sample_rate)) => {
+            Ok((h_event, render_client, sample_rate, channels)) => {
+                eprintln!("[capture] init ok: rate={} channels={}", sample_rate, channels);
                 let _ = init_tx.send(Ok(sample_rate));
+
+                let mut diag_ticks: u32 = 0;
+                let mut diag_bytes: usize = 0;
+                let mut diag_empty: u32 = 0;
 
                 loop {
                     {
@@ -253,23 +271,48 @@ impl SpeakerStream {
                     let mut temp_queue = VecDeque::new();
                     if let Err(e) = render_client.read_from_device_to_deque(&mut temp_queue) {
                         error!("Pluely Failed to read audio data: {}", e);
+                        diag_empty += 1;
                         continue;
                     }
 
                     if temp_queue.is_empty() {
+                        diag_empty += 1;
+                        diag_ticks += 1;
+                        if diag_ticks % 50 == 0 {
+                            eprintln!("[capture] tick={} empty_reads={} total_bytes={}", diag_ticks, diag_empty, diag_bytes);
+                        }
                         continue;
                     }
 
+                    diag_bytes += temp_queue.len();
+                    diag_ticks += 1;
+                    if diag_ticks % 50 == 0 {
+                        eprintln!("[capture] tick={} empty_reads={} total_bytes={}", diag_ticks, diag_empty, diag_bytes);
+                    }
+
                     let mut samples = Vec::new();
-                    while temp_queue.len() >= 4 {
-                        let bytes = [
-                            temp_queue.pop_front().unwrap(),
-                            temp_queue.pop_front().unwrap(),
-                            temp_queue.pop_front().unwrap(),
-                            temp_queue.pop_front().unwrap(),
-                        ];
-                        let sample = f32::from_le_bytes(bytes);
-                        samples.push(sample);
+                    let channels = channels.max(1);
+                    let frame_bytes = 4 * channels;
+                    while temp_queue.len() >= frame_bytes {
+                        let mut sum = 0.0f32;
+                        let mut valid = true;
+                        for _ in 0..channels {
+                            let bytes = [
+                                temp_queue.pop_front().unwrap(),
+                                temp_queue.pop_front().unwrap(),
+                                temp_queue.pop_front().unwrap(),
+                                temp_queue.pop_front().unwrap(),
+                            ];
+                            let s = f32::from_le_bytes(bytes);
+                            if !s.is_nan() {
+                                sum += s;
+                            } else {
+                                valid = false;
+                            }
+                        }
+                        if valid {
+                            samples.push(sum / channels as f32);
+                        }
                     }
 
                     if !samples.is_empty() {
@@ -312,8 +355,15 @@ impl SpeakerStream {
             }
             Err(e) => {
                 let _ = init_tx.send(Err(e));
+                unsafe {
+                    CoUninitialize();
+                }
                 return Ok(());
             }
+        }
+
+        unsafe {
+            CoUninitialize();
         }
 
         Ok(())

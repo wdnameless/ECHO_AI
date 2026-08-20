@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { TYPE_PROVIDER } from "@/types";
 import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
+import { getResponseSettings } from "@/lib";
 
 // Pluely STT function
 async function fetchPluelySTT(audio: File | Blob): Promise<string> {
@@ -85,7 +86,11 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     // }
 
     // Build variable map
-    const allVariables = {
+    const responseSettings = getResponseSettings();
+    const defaultLanguage =
+      responseSettings.language === "russian" ? "ru" : "en-US";
+    const allVariables: Record<string, string> = {
+      LANGUAGE: defaultLanguage,
       ...Object.fromEntries(
         Object.entries(selectedProvider.variables).map(([key, value]) => [
           key.toUpperCase(),
@@ -98,6 +103,30 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     let url = deepVariableReplacer(curlJson.url || "", allVariables);
     const headers = deepVariableReplacer(curlJson.header || {}, allVariables);
     const formData = deepVariableReplacer(curlJson.form || {}, allVariables);
+
+    // Whisper auto-detects language; only pass it when the user set it explicitly.
+    // curl2Json parses -F flags into an array of "key=value" strings, so we must
+    // remove the matching entry instead of deleting a property.
+    const isWhisperAuto =
+      provider.id === "groq" || provider.id === "openai-whisper";
+    if (isWhisperAuto && formData) {
+      const hasExplicitLanguage = Object.keys(selectedProvider.variables).some(
+        (k) => k.toUpperCase() === "LANGUAGE"
+      );
+      if (!hasExplicitLanguage) {
+        if (Array.isArray(formData)) {
+          const languageIndex = (formData as string[]).findIndex(
+            (entry) =>
+              String(entry).split("=")[0].trim().toLowerCase() === "language"
+          );
+          if (languageIndex >= 0) {
+            (formData as string[]).splice(languageIndex, 1);
+          }
+        } else {
+          delete (formData as Record<string, string>).language;
+        }
+      }
+    }
 
     // To Check if API accepts Binary Data
     const isBinaryUpload = provider.curl.includes("--data-binary");
@@ -185,7 +214,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
       body = JSON.stringify(deepVariableReplacer(dataObj, allVariables));
     }
 
-    const fetchFunction = url?.includes("http") ? fetch : tauriFetch;
+    const fetchFunction = url?.includes("http") ? tauriFetch : fetch;
 
     // Send request
     let response: Response;

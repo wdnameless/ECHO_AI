@@ -3,6 +3,7 @@ mod activate;
 mod api;
 mod capture;
 mod db;
+mod handy_server;
 mod shortcuts;
 mod window;
 use std::sync::{Arc, Mutex};
@@ -75,8 +76,12 @@ pub fn run() {
             get_app_version,
             window::set_window_height,
             window::open_dashboard,
+            window::open_dashboard_page,
             window::toggle_dashboard,
             window::move_window,
+            handy_server::handy_server_status,
+            handy_server::start_handy_server,
+            handy_server::speak_text,
             capture::capture_to_base64,
             capture::start_screen_capture,
             capture::capture_selected_area,
@@ -119,6 +124,8 @@ pub fn run() {
         .setup(|app| {
             // Setup main window positioning
             window::setup_main_window(app).expect("Failed to setup main window");
+            // Auto-start the local Handy STT server (whisper over HTTP on :8000)
+            handy_server::ensure_server_running();
             #[cfg(target_os = "macos")]
             init(app.app_handle());
             let app_handle = app.handle();

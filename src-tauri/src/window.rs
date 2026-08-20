@@ -1,6 +1,6 @@
 #[cfg(target_os = "macos")]
 use tauri::LogicalPosition;
-use tauri::{App, AppHandle, Manager, Runtime, WebviewWindow, WebviewWindowBuilder};
+use tauri::{App, AppHandle, Emitter, Manager, Runtime, WebviewWindow, WebviewWindowBuilder};
 
 // The offset from the top of the screen to the window
 const TOP_OFFSET: i32 = 54;
@@ -86,6 +86,46 @@ pub fn set_window_height(window: tauri::WebviewWindow, height: u32) -> Result<()
 #[tauri::command]
 pub fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
     show_dashboard_window(&app)
+}
+
+/// Shows the dashboard window and navigates it to the given route
+/// (e.g. "/settings" or "/mock-interview"). Route is validated to
+/// prevent navigation outside the app shell.
+#[tauri::command]
+pub fn open_dashboard_page(app: tauri::AppHandle, route: String) -> Result<(), String> {
+    const ALLOWED_ROUTES: &[&str] = &[
+        "/dashboard",
+        "/chats",
+        "/system-prompts",
+        "/shortcuts",
+        "/screenshot",
+        "/settings",
+        "/audio",
+        "/responses",
+        "/dev-space",
+        "/mock-interview",
+    ];
+
+    let normalized = if route.starts_with('/') {
+        route
+    } else {
+        format!("/{}", route)
+    };
+
+    if !ALLOWED_ROUTES.contains(&normalized.as_str()) {
+        return Err(format!("Route not allowed: {}", normalized));
+    }
+
+    show_dashboard_window(&app)?;
+
+    if let Some(dashboard_window) = app.get_webview_window("dashboard") {
+        let _ = dashboard_window.emit(
+            "navigate",
+            tauri::WebviewUrl::App(normalized.clone().into()),
+        );
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

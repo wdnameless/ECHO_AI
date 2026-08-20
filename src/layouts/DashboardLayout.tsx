@@ -1,9 +1,32 @@
 import { Sidebar } from "@/components";
-import { Outlet } from "react-router-dom";
+import { Outlet, useNavigate } from "react-router-dom";
+import { listen } from "@tauri-apps/api/event";
+import { useEffect } from "react";
 import { ErrorBoundary } from "react-error-boundary";
 import { ErrorLayout } from "./ErrorLayout";
 
 export const DashboardLayout = () => {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    (async () => {
+      const un = await listen<string>("navigate", (event) => {
+        const url = event.payload;
+        if (url && url.startsWith("/")) {
+          navigate(url);
+        }
+      });
+      if (cancelled) un();
+      else unlisten = un;
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [navigate]);
+
   return (
     <ErrorBoundary
       fallbackRender={() => {

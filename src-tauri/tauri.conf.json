@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Pluely",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "identifier": "com.srikanthnani.pluely",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -19,7 +19,7 @@
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": false,
-        "resizable": false,
+        "resizable": true,
         "visibleOnAllWorkspaces": true,
         "skipTaskbar": true,
         "visible": true,
@@ -43,7 +43,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["info.plist", "pluely.desktop"],
+    "resources": [
+      "info.plist",
+      "pluely.desktop",
+      "../scripts/handy_stt_server.py"
+    ],
     "macOS": { "minimumSystemVersion": "10.13" }
   },
   "plugins": {
@@ -51,8 +55,8 @@
       "preload": ["sqlite:pluely.db"]
     },
     "updater": {
-      "endpoints": ["https://pluely.com/api/update"],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY2RDJBNUFFM0ZCREEyQjEKUldTeG9yMC9ycVhTWmlBRkovV2N5L3RudDhTTHFzM3QxSkF0R0doRGtvSUJKWktpdGp4cWRhcmcK",
+      "endpoints": ["https://github.com/wdnameless/pluely/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcyQTFDNjNENDc4QjlDRTcKUldUbm5JdEhQY2FoY3FLd0hDczZ2aGttZVBvZThvVnJqeTM2ajVnMmVzTXg1dm55NUxsdU5acVEK",
       "windows": {
         "installMode": "passive"
       }

@@ -35,7 +35,7 @@ impl Default for VadConfig {
             hop_size: 1024,
             sensitivity_rms: 0.012, // Much less sensitive - only real speech
             peak_threshold: 0.035,  // Higher threshold - filters clicks/noise
-            silence_chunks: 45,     // ~1.0s of silence before stopping
+            silence_chunks: 22,     // ~0.5s of silence before stopping
             min_speech_chunks: 7,   // ~0.16s - captures short answers
             pre_speech_chunks: 12,  // ~0.27s - enough to catch word start
             noise_gate_threshold: 0.003, // Stronger noise filtering
@@ -185,7 +185,8 @@ async fn run_vad_capture(
                 // Safety cap: force emit if exceeds 30s
                 if speech_buffer.len() > max_samples {
                     let normalized_buffer = normalize_audio_level(&speech_buffer, 0.1);
-                    if let Ok(b64) = samples_to_wav_b64(sr, &normalized_buffer) {
+                    let resampled = resample_to_16k(&normalized_buffer, sr);
+                    if let Ok(b64) = samples_to_wav_b64(16000, &resampled) {
                         // let duration = speech_buffer.len() as f32 / sr as f32;
                         let _ = app.emit("speech-detected", b64);
                     }
@@ -217,7 +218,8 @@ async fn run_vad_capture(
 
                             // Emit complete speech segment
                             let normalized_buffer = normalize_audio_level(&speech_buffer, 0.1);
-                            if let Ok(b64) = samples_to_wav_b64(sr, &normalized_buffer) {
+                            let resampled = resample_to_16k(&normalized_buffer, sr);
+                            if let Ok(b64) = samples_to_wav_b64(16000, &resampled) {
                                 // let duration = speech_buffer.len() as f32 / sr as f32;
                                 let _ = app.emit("speech-detected", b64);
                             } else {
@@ -342,7 +344,8 @@ async fn run_continuous_capture(
         let cleaned_audio = apply_noise_gate(&audio_buffer, config.noise_gate_threshold);
         let cleaned_audio = normalize_audio_level(&cleaned_audio, 0.1);
 
-        match samples_to_wav_b64(sr, &cleaned_audio) {
+        let resampled = resample_to_16k(&cleaned_audio, sr);
+        match samples_to_wav_b64(16000, &resampled) {
             Ok(b64) => {
                 let _ = app.emit("speech-detected", b64);
             }
@@ -416,6 +419,34 @@ fn normalize_audio_level(samples: &[f32], target_rms: f32) -> Vec<f32> {
             }
         })
         .collect()
+}
+
+// Downsample to 16 kHz via linear interpolation (STT needs at most 16 kHz)
+fn resample_to_16k(samples: &[f32], from_rate: u32) -> Vec<f32> {
+    const TARGET_RATE: u32 = 16000;
+
+    if from_rate == TARGET_RATE || samples.is_empty() {
+        return samples.to_vec();
+    }
+
+    let ratio = from_rate as f64 / TARGET_RATE as f64;
+    let out_len = (samples.len() as f64 / ratio) as usize;
+    let mut out = Vec::with_capacity(out_len);
+
+    for i in 0..out_len {
+        let src_pos = i as f64 * ratio;
+        let idx = src_pos as usize;
+        let frac = (src_pos - idx as f64) as f32;
+        let s0 = samples[idx];
+        let s1 = if idx + 1 < samples.len() {
+            samples[idx + 1]
+        } else {
+            s0
+        };
+        out.push(s0 + (s1 - s0) * frac);
+    }
+
+    out
 }
 
 // Convert samples to WAV base64 (with proper error handling)

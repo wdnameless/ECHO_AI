@@ -11,6 +11,7 @@ import {
   Screenshot,
   Chats,
   Responses,
+  MockInterview,
 } from "@/pages";
 import { DashboardLayout } from "@/layouts";
 
@@ -30,6 +31,7 @@ export default function AppRoutes() {
           <Route path="/audio" element={<Audio />} />
           <Route path="/responses" element={<Responses />} />
           <Route path="/dev-space" element={<DevSpace />} />
+          <Route path="/mock-interview" element={<MockInterview />} />
         </Route>
       </Routes>
     </Router>

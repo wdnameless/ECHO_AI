@@ -130,4 +130,16 @@ export const AI_PROVIDERS = [
     responseContentPath: "choices[0].message.content",
     streaming: true,
   },
+  {
+    id: "nullform-gateway",
+    curl: `curl https://ai-gateway.nullform.cv/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer {{API_KEY}}" \\
+  -d '{
+    "model": "{{MODEL}}",
+    "messages": [{"role": "system", "content": "{{SYSTEM_PROMPT}}"}, {"role": "user", "content": [{"type": "text", "text": "{{TEXT}}"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,{{IMAGE}}"}}]}]
+  }'`,
+    responseContentPath: "choices[0].message.content",
+    streaming: true,
+  },
 ];

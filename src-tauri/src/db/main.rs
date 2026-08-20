@@ -17,5 +17,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("migrations/chat-history.sql"),
             kind: MigrationKind::Up,
         },
+        // Migration 3: Create RAG context tables (resume and job description)
+        Migration {
+            version: 3,
+            description: "create_rag_contexts_table",
+            sql: include_str!("migrations/rag-contexts.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }

@@ -1,4 +1,4 @@
-import { fetchSTT } from "@/lib";
+import { transcribeWithFallback } from "@/lib";
 import { UseCompletionReturn } from "@/types";
 import { useMicVAD } from "@ricky0123/vad-react";
 import { LoaderCircleIcon, MicIcon, MicOffIcon } from "lucide-react";
@@ -68,8 +68,8 @@ const AutoSpeechVADInternal = ({
 
         setIsTranscribing(true);
 
-        // Use the fetchSTT function for all providers
-        transcription = await fetchSTT({
+        // Use the transcribeWithFallback function for all providers
+        transcription = await transcribeWithFallback({
           provider: usePluelyAPI ? undefined : providerConfig,
           selectedProvider: selectedSttProvider,
           audio: audioBlob,

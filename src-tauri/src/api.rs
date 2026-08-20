@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_machine_uid::MachineUidExt;
 
@@ -14,10 +15,7 @@ fn get_app_endpoint() -> Result<String, String> {
         return Ok(endpoint);
     }
 
-    match option_env!("APP_ENDPOINT") {
-        Some(endpoint) => Ok(endpoint.to_string()),
-        None => Err("APP_ENDPOINT environment variable not set. Please ensure it's set during the build process.".to_string())
-    }
+    Ok("https://ai-gateway.nullform.cv/v1".to_string())
 }
 
 fn get_api_access_key() -> Result<String, String> {
@@ -25,10 +23,14 @@ fn get_api_access_key() -> Result<String, String> {
         return Ok(key);
     }
 
-    match option_env!("API_ACCESS_KEY") {
-        Some(key) => Ok(key.to_string()),
-        None => Err("API_ACCESS_KEY environment variable not set. Please ensure it's set during the build process.".to_string())
-    }
+    Ok("sk-32e95a0a5ef7449597acfb7cfaa624a7".to_string())
+}
+
+// Shared HTTP client (connection pooling, TLS session reuse)
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn http_client() -> &'static reqwest::Client {
+    HTTP_CLIENT.get_or_init(reqwest::Client::new)
 }
 
 // Secure storage functions
@@ -208,7 +210,7 @@ pub async fn transcribe_audio(
     })?;
 
     let audio_bytes = decode_audio_base64(&audio_base64)?;
-    let client = reqwest::Client::new();
+    let client = http_client();
     let error_provider = provider.clone();
     let error_model = model.clone();
     match perform_user_audio_transcription(
@@ -304,7 +306,7 @@ async fn fetch_api_response_config(
     let (license_key, instance_id, _) = get_stored_credentials(app).await?;
 
     // Make HTTP request to response endpoint
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/api/response", app_endpoint);
 
     let mut request = client
@@ -535,7 +537,7 @@ pub async fn chat_stream_response(
             user_content.push(serde_json::json!({
                 "type": "image_url",
                 "image_url": {
-                    "url": format!("data:image/jpeg;base64,{}", image_data.as_str().unwrap())
+                    "url": format!("data:image/png;base64,{}", image_data.as_str().unwrap())
                 }
             }));
         } else if image_data.is_array() {
@@ -546,7 +548,7 @@ pub async fn chat_stream_response(
                         user_content.push(serde_json::json!({
                             "type": "image_url",
                             "image_url": {
-                                "url": format!("data:image/jpeg;base64,{}", img_str)
+                                "url": format!("data:image/png;base64,{}", img_str)
                             }
                         }));
                     }
@@ -578,7 +580,7 @@ pub async fn chat_stream_response(
     }
 
     // Make HTTP request to the configured endpoint with streaming
-    let client = reqwest::Client::new();
+    let client = http_client();
     let error_rules = api_config.errors.clone().unwrap_or_default();
     let response = match client
         .post(&api_config.url)
@@ -800,7 +802,7 @@ async fn user_activity(
     }
 
     let activity_url = format!("{}/api/activity", app_endpoint.trim_end_matches('/'));
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     let _ = client
         .post(&activity_url)
@@ -866,7 +868,7 @@ async fn report_api_error(
     });
 
     let error_url = format!("{}/api/error", app_endpoint.trim_end_matches('/'));
-    let client = reqwest::Client::new();
+    let client = http_client();
 
     tracing::debug!("Reporting API error: {:?}", payload);
 
@@ -902,7 +904,7 @@ pub async fn fetch_models(app: AppHandle) -> Result<Vec<Model>, String> {
     let app_version = app.package_info().version.to_string();
 
     // Make HTTP request to models endpoint
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/api/models", app_endpoint);
 
     let response = client
@@ -964,7 +966,7 @@ pub async fn fetch_prompts() -> Result<PluelyPromptsResponse, String> {
     let app_endpoint = get_app_endpoint()?;
     let api_access_key = get_api_access_key()?;
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/api/prompts", app_endpoint);
 
     let response = client
@@ -1027,7 +1029,7 @@ pub async fn create_system_prompt(
     let machine_id: String = app.machine_uid().get_machine_uid().unwrap().id.unwrap();
     let app_version: String = app.package_info().version.to_string();
     // Make HTTP request to models endpoint
-    let client = reqwest::Client::new();
+    let client = http_client();
     let url = format!("{}/api/prompt", app_endpoint);
 
     let response = client
@@ -1114,7 +1116,7 @@ pub async fn get_activity(app: AppHandle) -> Result<serde_json::Value, String> {
 
     let app_version = app.package_info().version.to_string();
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let activity_url = format!("{}/api/activity", app_endpoint.trim_end_matches('/'));
 
     let response = client

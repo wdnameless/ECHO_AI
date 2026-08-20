@@ -32,7 +32,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
     capturing,
     isProcessing,
     isAIProcessing,
-    lastTranscription,
+    myLastTranscription,
+    theirLastTranscription,
     lastAIResponse,
     error,
     setupRequired,
@@ -63,6 +64,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
     startContinuousRecording,
     ignoreContinuousRecording,
     scrollAreaRef,
+    pendingScreenshot,
+    setPendingScreenshot,
   } = props;
 
   const { hasActiveLicense, supportsImages } = useApp();
@@ -93,12 +96,14 @@ export const SystemAudio = (props: useSystemAudioType) => {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isPopoverOpen]);
 
-  // Reset screenshot when processing starts (message is being sent)
+  // Clear the preview only AFTER the screenshot has been consumed into a
+  // request (the hook nulls pendingScreenshot once it attaches it), or when
+  // the user removes it manually.
   useEffect(() => {
-    if (isProcessing && screenshotImage) {
+    if (pendingScreenshot === null && screenshotImage) {
       setScreenshotImage(null);
     }
-  }, [isProcessing, screenshotImage]);
+  }, [pendingScreenshot, screenshotImage]);
 
   const handleToggleCapture = async () => {
     if (capturing) {
@@ -137,22 +142,22 @@ export const SystemAudio = (props: useSystemAudioType) => {
         }
       }
 
-      // Capture screenshot
-      const base64: string = await invoke("capture_screenshot", {
-        screenId: null, // Use default screen
-      });
+      // Capture screenshot (same command as useCompletion.captureScreenshot)
+      const base64 = await invoke<string>("capture_to_base64");
 
       setScreenshotImage(base64);
+      setPendingScreenshot(base64);
     } catch (err) {
       console.error("Failed to capture screenshot:", err);
     } finally {
       setIsCapturingScreenshot(false);
     }
-  }, [isCapturingScreenshot]);
+  }, [isCapturingScreenshot, setPendingScreenshot]);
 
   const handleRemoveScreenshot = useCallback(() => {
     setScreenshotImage(null);
-  }, []);
+    setPendingScreenshot(null);
+  }, [setPendingScreenshot]);
 
   const getButtonIcon = () => {
     if (setupRequired) return <AlertCircleIcon className="text-orange-500" />;
@@ -349,7 +354,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
 
                     {/* AI Response */}
                     <ResultsSection
-                      lastTranscription={lastTranscription}
+                      myLastTranscription={myLastTranscription}
+                      theirLastTranscription={theirLastTranscription}
                       lastAIResponse={lastAIResponse}
                       isAIProcessing={isAIProcessing}
                       conversation={conversation}

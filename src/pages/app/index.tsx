@@ -41,12 +41,16 @@ const App = () => {
           isHidden ? "hidden pointer-events-none" : ""
         }`}
       >
+        {systemAudio?.micBridge}
         <Card className="w-full flex flex-row items-center gap-2 p-2">
           <SystemAudio {...systemAudio} />
           {systemAudio?.capturing ? (
             <div className="flex flex-row items-center gap-2 justify-between w-full">
               <div className="flex flex-1 items-center gap-2">
-                <AudioVisualizer isRecording={systemAudio?.capturing} />
+                <AudioVisualizer
+                  isRecording={systemAudio?.capturing}
+                  stream={systemAudio?.micStream}
+                />
               </div>
               <div className="flex !w-fit items-center gap-2">
                 <StatusIndicator
@@ -55,6 +59,9 @@ const App = () => {
                   isProcessing={systemAudio.isProcessing}
                   isAIProcessing={systemAudio.isAIProcessing}
                   capturing={systemAudio.capturing}
+                  micActive={systemAudio.micListening}
+                  systemActive={systemAudio.capturing}
+                  micSpeaking={systemAudio.micSpeaking}
                 />
               </div>
             </div>

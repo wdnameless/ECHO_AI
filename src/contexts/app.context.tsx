@@ -241,7 +241,34 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       STORAGE_KEYS.SELECTED_AI_PROVIDER
     );
     if (savedSelectedAi) {
-      setSelectedAIProvider(JSON.parse(savedSelectedAi));
+      const parsedAi = JSON.parse(savedSelectedAi);
+      if (
+        parsedAi &&
+        typeof parsedAi === "object" &&
+        parsedAi.variables &&
+        parsedAi.variables.MODEL === "gemini 3.6 flash high"
+      ) {
+        parsedAi.variables.MODEL = "gemini-3.6-flash-low";
+        safeLocalStorage.setItem(
+          STORAGE_KEYS.SELECTED_AI_PROVIDER,
+          JSON.stringify(parsedAi)
+        );
+      }
+      setSelectedAIProvider(parsedAi);
+    } else {
+      // Default to Nullform AI Gateway with gemini-3.6-flash-low
+      const defaultAi = {
+        provider: "nullform-gateway",
+        variables: {
+          API_KEY: "sk-32e95a0a5ef7449597acfb7cfaa624a7",
+          MODEL: "gemini-3.6-flash-low",
+        },
+      };
+      setSelectedAIProvider(defaultAi);
+      safeLocalStorage.setItem(
+        STORAGE_KEYS.SELECTED_AI_PROVIDER,
+        JSON.stringify(defaultAi)
+      );
     }
 
     // Load selected STT provider
@@ -250,6 +277,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     );
     if (savedSelectedStt) {
       setSelectedSttProvider(JSON.parse(savedSelectedStt));
+    } else {
+      // Default to the local Handy STT server (whisper over HTTP on :8000)
+      const defaultStt = {
+        provider: "handy-local-whisper",
+        variables: {},
+      };
+      setSelectedSttProvider(defaultStt);
+      safeLocalStorage.setItem(
+        STORAGE_KEYS.SELECTED_STT_PROVIDER,
+        JSON.stringify(defaultStt)
+      );
     }
 
     // Load customizable state

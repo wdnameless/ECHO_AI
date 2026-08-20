@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components";
 import { AudioVisualizer } from "@/pages/app/components/speech/audio-visualizer";
-import { shouldUsePluelyAPI, fetchSTT } from "@/lib";
+import { shouldUsePluelyAPI, transcribeWithFallback } from "@/lib";
 import { useApp } from "@/contexts";
 import { StopCircle, Send } from "lucide-react";
 
@@ -154,7 +154,7 @@ export const AudioRecorder = ({
         (p) => p.id === selectedSttProvider.provider
       );
 
-      const text = await fetchSTT({
+      const text = await transcribeWithFallback({
         provider: usePluelyAPI ? undefined : provider,
         selectedProvider: selectedSttProvider,
         audio: audioBlob,
