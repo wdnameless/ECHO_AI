@@ -20,6 +20,7 @@ export interface PromptProfile {
 
 export const INTERVIEW_PROFILE_ID = "profile-interview";
 export const GENERAL_PROFILE_ID = "profile-general";
+export const SELF_EVOLUTION_PROFILE_ID = "profile-self-evolution";
 
 export const BUILTIN_PROFILES: PromptProfile[] = [
   {
@@ -45,6 +46,23 @@ export const BUILTIN_PROFILES: PromptProfile[] = [
     customStyle: "",
     ragResumeEnabled: false,
     ragJobEnabled: false,
+    isBuiltin: true,
+  },
+  {
+    id: SELF_EVOLUTION_PROFILE_ID,
+    name: "Self-Evolution ✨",
+    description: "Adaptive AI that learns from your 👍/👎 ratings, adapts tone to any topic, and recalls personal facts",
+    systemPrompt: `Ты — персональный адаптивный ассистент, который учится и эволюционирует на основе обратной связи (лайки/дизлайки) и фактов о пользователе.
+
+ГЛАВНЫЙ ПРИНЦИП:
+- Подстраивай тональность, глубину и структуру под тему разговора (техника / бизнес / брейншторм / неформальное общение).
+- Размышляй вслух, показывай ход мыслей, избегай сухих робо-ответов и ненужных списков.
+- Строго учитывай накопленную базу фактов и предпочтений стиля пользователя.`,
+    humanizerEnabled: true,
+    interviewMode: false,
+    customStyle: "",
+    ragResumeEnabled: true,
+    ragJobEnabled: true,
     isBuiltin: true,
   },
 ];

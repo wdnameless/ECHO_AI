@@ -8,3 +8,4 @@ export * from "./HumanizerSettings";
 export * from "./FontSizeSettings";
 export * from "./AiContextSettings";
 export * from "./PromptProfilesSettings";
+export * from "./ToolsSettings";

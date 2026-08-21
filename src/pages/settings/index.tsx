@@ -5,6 +5,7 @@ import {
   AutostartToggle,
   FontSizeSettings,
   PromptProfilesSettings,
+  ToolsSettings,
   AiContextSettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
@@ -12,8 +13,11 @@ import { PageLayout } from "@/layouts";
 const Settings = () => {
   return (
     <PageLayout title="Settings" description="Manage your settings">
-      {/* Prompt Profiles: Interview / General / custom */}
+      {/* Prompt Profiles: Interview / General / Self-Evolution / custom */}
       <PromptProfilesSettings />
+
+      {/* Web Search & Skills (Live Research) */}
+      <ToolsSettings />
 
       {/* Theme */}
       <Theme />

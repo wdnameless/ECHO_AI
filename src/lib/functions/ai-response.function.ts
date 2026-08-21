@@ -19,6 +19,9 @@ import {
   HUMANIZER_INSTRUCTIONS,
   INTERVIEW_MODE_INSTRUCTIONS,
 } from "@/config/humanizer.rules";
+import { getActiveProfileId, SELF_EVOLUTION_PROFILE_ID } from "../storage/prompt-profiles";
+import { buildSelfEvolutionPromptBlock } from "../storage/user-facts";
+import { getWebSearchSettings, performWebSearch } from "../web-search";
 import { getRagContext } from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { detectLanguage } from "@/lib/language-detect";
@@ -88,6 +91,41 @@ async function buildEnhancedSystemPrompt(
       prompts.push(
         `Match this personal speaking style: ${humanizer.customStyle.trim()}`
       );
+    }
+  }
+
+  // Self-Evolution Memory & Personal Facts injection
+  const activeProfile = getActiveProfileId();
+  if (activeProfile === SELF_EVOLUTION_PROFILE_ID) {
+    const evolutionBlock = buildSelfEvolutionPromptBlock();
+    if (evolutionBlock) {
+      prompts.push(evolutionBlock);
+    }
+  }
+
+  // Live Web Search & Research Injection (if enabled)
+  const searchSettings = getWebSearchSettings();
+  if (searchSettings.enabled && userMessage && userMessage.trim().length > 5) {
+    // Only search if message looks like a question or explicit research request
+    const needsSearch =
+      userMessage.includes("?") ||
+      /кто|что|где|когда|почему|как|сколько|курс|новост|документаци|search|what|how|why|latest|current|docs/i.test(
+        userMessage
+      );
+    if (needsSearch) {
+      try {
+        const searchResults = await performWebSearch(userMessage);
+        if (searchResults.length > 0) {
+          const searchBlock = searchResults
+            .map((r, i) => `[${i + 1}] ${r.title} (${r.url}):\n${r.snippet}`)
+            .join("\n\n");
+          prompts.push(
+            `[LIVE WEB SEARCH RESULTS - РЕЗУЛЬТАТЫ ПОИСКА В ИНТЕРНЕТЕ]\n${searchBlock}\nИспользуй эти актуальные данные для точного ответа.\n[/LIVE WEB SEARCH RESULTS]`
+          );
+        }
+      } catch (err) {
+        console.warn("[AI Response] Live web search failed:", err);
+      }
     }
   }
 

@@ -21,10 +21,14 @@ import {
   ZapIcon,
   RotateCcwIcon,
   RadioIcon,
+  ThumbsUpIcon,
+  ThumbsDownIcon,
+  CheckCircle2Icon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/contexts";
 import { fastTranslate } from "@/lib/fast-translator";
+import { recordFeedback } from "@/lib/storage/user-facts";
 
 type Props = {
   myLastTranscription: string;
@@ -76,6 +80,10 @@ export const ResultsSection = ({
   const [selectedTranslation, setSelectedTranslation] = useState("");
   const [isTranslatingSelected, setIsTranslatingSelected] = useState(false);
 
+  // Feedback state
+  const [feedbackGiven, setFeedbackGiven] = useState<"like" | "dislike" | null>(null);
+  const [showDislikeMenu, setShowDislikeMenu] = useState(false);
+
   const prevTheirRef = useRef("");
   const prevAIRef = useRef("");
   const isMac =
@@ -85,6 +93,17 @@ export const ResultsSection = ({
 
   const activeProfile =
     promptProfiles.find((p) => p.id === activeProfileId) || promptProfiles[0];
+
+  const handleGiveFeedback = useCallback(
+    (rating: "like" | "dislike", reason?: string) => {
+      const ans = displayedAnswer || lastAIResponse;
+      if (!ans) return;
+      recordFeedback(theirLastTranscription || "General conversation", ans, rating, reason);
+      setFeedbackGiven(rating);
+      setShowDislikeMenu(false);
+    },
+    [displayedAnswer, lastAIResponse, theirLastTranscription]
+  );
 
   // Logic to prevent active answer from vanishing while candidate is speaking:
   // 1. If displayedAnswer is empty, immediately show incoming stream.
@@ -430,18 +449,73 @@ export const ResultsSection = ({
                   <SparklesIcon className="w-3 h-3" />
                   Your Active Answer
                 </span>
-                {previousAnswer && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={handleRevertToPreviousAnswer}
-                    className="h-5 text-[0.9em] gap-1 px-1.5 text-muted-foreground hover:text-foreground"
-                    title="Switch back to previous answer"
-                  >
-                    <RotateCcwIcon className="w-2.5 h-2.5" />
-                    Предыдущий ответ
-                  </Button>
-                )}
+                <div className="flex items-center gap-1">
+                  {/* Feedback 👍 / 👎 for Self-Evolution learning */}
+                  {feedbackGiven ? (
+                    <span className="flex items-center gap-1 text-[0.9em] text-emerald-600 dark:text-emerald-400 font-medium px-1">
+                      <CheckCircle2Icon className="w-3 h-3" />
+                      {feedbackGiven === "like" ? "Паттерн усвоен 👍" : "Учтено 👎"}
+                    </span>
+                  ) : (
+                    <div className="flex items-center gap-0.5 relative">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-5 w-5 text-muted-foreground hover:text-emerald-500 hover:bg-emerald-500/10"
+                        title="Лайк: сохранить стиль и закрепить паттерн"
+                        onClick={() => handleGiveFeedback("like")}
+                      >
+                        <ThumbsUpIcon className="w-3 h-3" />
+                      </Button>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-5 w-5 text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+                        title="Дизлайк: указать замечание к стилю"
+                        onClick={() => setShowDislikeMenu((prev) => !prev)}
+                      >
+                        <ThumbsDownIcon className="w-3 h-3" />
+                      </Button>
+
+                      {/* Dislike reasons popover menu */}
+                      {showDislikeMenu && (
+                        <div className="absolute right-0 top-6 z-50 w-48 rounded-lg border border-border/80 bg-background/95 p-1 shadow-lg text-[10px] space-y-0.5 animate-in fade-in duration-100">
+                          <div className="px-2 py-1 font-semibold text-muted-foreground border-b border-border/40 uppercase tracking-wider text-[8px]">
+                            Что улучшить?
+                          </div>
+                          {[
+                            "Слишком длинно / много воды",
+                            "Слишком сухо / роботизировано",
+                            "Слишком сложно / академично",
+                            "Не попал в тему вопроса",
+                            "Лишние вводные слова",
+                          ].map((reason) => (
+                            <button
+                              key={reason}
+                              onClick={() => handleGiveFeedback("dislike", reason)}
+                              className="w-full text-left px-2 py-1 rounded hover:bg-muted text-foreground/90 transition-colors"
+                            >
+                              {reason}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {previousAnswer && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleRevertToPreviousAnswer}
+                      className="h-5 text-[0.9em] gap-1 px-1.5 text-muted-foreground hover:text-foreground"
+                      title="Switch back to previous answer"
+                    >
+                      <RotateCcwIcon className="w-2.5 h-2.5" />
+                      Назад
+                    </Button>
+                  )}
+                </div>
               </div>
               {/* Guaranteed unbroken text wrapping */}
               <div
