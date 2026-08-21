@@ -218,18 +218,17 @@ export const ResultsSection = ({
     }
   }, [pendingNewAnswer, displayedAnswer]);
 
-  // Dismiss the buffered answer (keep current one - useful when the
-  // interviewer just asked a clarifying question that doesn't need a change)
-  const handleDismissPendingAnswer = useCallback(() => {
-    setPendingNewAnswer("");
+  // "Оставить текущий" = FULL FREEZE: current answer stays forever,
+  // timer stops completely; only "Next answer" button can switch it.
+  const handleFreezeCurrentAnswer = useCallback(() => {
+    setIsHeld(true);
     setCountdown(null);
-    setIsHeld(false);
   }, []);
 
-  // Hold button: reset countdown to +10s so the current answer stays
-  const handleToggleHold = useCallback(() => {
-    setCountdown(10);
+  // "+10с" = extend the auto-switch countdown by 10 more seconds
+  const handleExtendCountdown = useCallback(() => {
     setIsHeld(false);
+    setCountdown((prev) => (prev ?? 0) + 10);
   }, []);
 
   const handleRevertToPreviousAnswer = useCallback(() => {
@@ -504,7 +503,10 @@ export const ResultsSection = ({
               key={seg.id}
               className={cn(
                 "flex items-start gap-1 w-full min-w-0 break-words py-0.5 px-1 rounded transition-all",
-                seg.source === "me" ? "bg-blue-500/10 text-blue-800 dark:text-blue-300" : "bg-primary/5 text-foreground"
+                seg.source === "me"
+                  ? "bg-blue-500/10 text-blue-800 dark:text-blue-300"
+                  : "bg-primary/5 text-foreground",
+                seg.partial && "animate-pulse"
               )}
             >
               <span className="font-semibold text-[0.85em] uppercase shrink-0 mt-0.5">
@@ -512,6 +514,9 @@ export const ResultsSection = ({
               </span>
               <span className="flex-1 min-w-0 break-words select-text">
                 {seg.text}
+                {seg.partial && (
+                  <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-primary/70 align-middle animate-pulse" />
+                )}
               </span>
             </div>
           ))}
@@ -580,24 +585,24 @@ export const ResultsSection = ({
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0 flex-wrap">
-            {/* Keep current answer (dismiss new) - e.g. clarifying question, old answer is fine */}
+            {/* Freeze current answer - "Оставить текущий" = полная заморозка */}
             <Button
               size="sm"
               variant="outline"
-              onClick={handleDismissPendingAnswer}
+              onClick={handleFreezeCurrentAnswer}
               className="h-6 px-2 text-[0.68em] border-amber-500/40 text-amber-900 dark:text-amber-300 hover:bg-amber-500/20 gap-1"
-              title="Оставить текущий ответ (уточняющий вопрос не требует нового ответа)"
+              title="Полностью заморозить текущий ответ (таймер остановлен, пока не нажмёте «Следующий ответ»)"
             >
               <XIcon className="w-2.5 h-2.5" />
               <span>Оставить текущий</span>
             </Button>
-            {/* Hold Button (+10s timer) */}
+            {/* Extend countdown by +10s */}
             <Button
               size="sm"
               variant="outline"
-              onClick={handleToggleHold}
-              className="h-6 px-2 text-[0.68em] border-amber-500/40 text-amber-900 dark:text-amber-300 hover:bg-amber-500/20 gap-1"
-              title="Продлить удержание текущего ответа ещё на 10 секунд"
+              onClick={handleExtendCountdown}
+              className="h-7 px-2 text-[0.68em] border-amber-500/40 text-amber-900 dark:text-amber-300 hover:bg-amber-500/20 gap-1"
+              title="Продлить таймер ещё на 10 секунд"
             >
               <PauseIcon className="w-2.5 h-2.5" />
               <span>+10с</span>
@@ -606,7 +611,7 @@ export const ResultsSection = ({
             <Button
               size="sm"
               onClick={handleApplyPendingAnswer}
-              className="h-6 px-2.5 text-[0.7em] font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow gap-1"
+              className="h-7 px-2.5 text-[0.7em] font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow gap-1"
               title="Показать следующий ответ на переформулированный вопрос"
             >
               <ZapIcon className="w-3 h-3" />

@@ -55,6 +55,7 @@ export interface LiveSegment {
   source: "me" | "them";
   text: string;
   timestamp: number;
+  partial?: boolean;
 }
 
 const MAX_LIVE_SEGMENTS = 100;
@@ -148,6 +149,7 @@ export function useSystemAudio() {
   // not trigger another AI call (prevents "false reacting" loops).
   const lastAIResponseAtRef = useRef<number>(0);
   const AI_RESPONSE_COOLDOWN_MS = 4000;
+  const lastThemSegmentAtRef = useRef<number>(0);
   const respondToMicRef = useRef<boolean>(respondToMic);
 
   useEffect(() => {
@@ -393,17 +395,42 @@ export function useSystemAudio() {
           : msg.content,
     }));
 
-  const appendLiveSegment = (source: "me" | "them", text: string) => {
+  const appendLiveSegment = (
+    source: "me" | "them",
+    text: string,
+    partial = false
+  ) => {
     const timestamp = Date.now();
-    setLiveSegments((prev) => [
-      ...prev.slice(-(MAX_LIVE_SEGMENTS - 1)),
-      {
-        id: `seg_${timestamp}_${source}_${Math.random().toString(36).slice(2)}`,
-        source,
-        text,
-        timestamp,
-      },
-    ]);
+    setLiveSegments((prev) => {
+      // For partial streaming (live speech), replace the LAST segment of the
+      // same source so words grow on ONE line instead of stacking duplicate
+      // partial transcriptions.
+      if (partial) {
+        const lastIdx = [...prev].reverse().findIndex((s) => s.source === source);
+        if (lastIdx !== -1) {
+          const idx = prev.length - 1 - lastIdx;
+          const updated = [...prev];
+          updated[idx] = {
+            ...updated[idx],
+            text,
+            timestamp,
+            partial: true,
+          };
+          return updated;
+        }
+      }
+      // Final segments are always appended as new lines.
+      return [
+        ...prev.slice(-(MAX_LIVE_SEGMENTS - 1)),
+        {
+          id: `seg_${timestamp}_${source}_${Math.random().toString(36).slice(2)}`,
+          source,
+          text,
+          timestamp,
+          partial,
+        },
+      ];
+    });
   };
 
   // Shared STT pipeline for both sources (mic = "me", system audio = "them").
@@ -492,6 +519,21 @@ export function useSystemAudio() {
           return;
         }
 
+        // VAD segmentation debounce: while the interviewer keeps talking /
+        // clarifying (rapid successive segments), do NOT trigger AI for each
+        // fragment. Only a final, complete question should trigger.
+        const now = Date.now();
+        if (source === "them") {
+          const lastThemSeg = lastThemSegmentAtRef.current;
+          if (lastThemSeg && now - lastThemSeg < 2500) {
+            console.log(
+              `[Pluely] Skipping AI trigger: interviewer continues speaking (debounce ${now - lastThemSeg}ms)`
+            );
+            return;
+          }
+          lastThemSegmentAtRef.current = now;
+        }
+
         const effectiveSystemPrompt = useSystemPrompt
           ? systemPrompt || DEFAULT_SYSTEM_PROMPT
           : contextContent || DEFAULT_SYSTEM_PROMPT;
@@ -566,36 +608,43 @@ export function useSystemAudio() {
     // as they arrive and show them in the live ticker immediately, WITHOUT
     // triggering a full AI turn (only the final speech-detected does).
     let partialUnlisten: (() => void) | undefined;
+    let partialInFlight = false;
+    let partialQueue: string[] = [];
     listen("speech-partial", (event) => {
       const b64 = event.payload as string;
       if (!b64 || !capturingRef.current) return;
+      partialQueue.push(b64);
+      if (partialInFlight) return;
+      partialInFlight = true;
 
-      const binaryString = atob(b64);
-      const bytes = new Uint8Array(binaryString.length);
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
-      }
-      const blob = new Blob([bytes], { type: "audio/wav" });
-
-      // Lightweight transcription, appended to live segments instantly
       void (async () => {
-        try {
-          const usePluelyAPI = await shouldUsePluelyAPI();
-          const text = await transcribeWithFallback({
-            provider: usePluelyAPI
-              ? undefined
-              : allSttProviders.find(
-                  (p) => p.id === selectedSttProvider.provider
-                ),
-            selectedProvider: selectedSttProvider,
-            audio: blob,
-          });
-          if (text && !text.toLowerCase().startsWith("pluely stt error")) {
-            appendLiveSegment("them", text.trim());
+        while (partialQueue.length > 0) {
+          const payload = partialQueue.shift()!;
+          const binaryString = atob(payload);
+          const bytes = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
           }
-        } catch {
-          // ignore partial transcription errors
+          const blob = new Blob([bytes], { type: "audio/wav" });
+          try {
+            const usePluelyAPI = await shouldUsePluelyAPI();
+            const text = await transcribeWithFallback({
+              provider: usePluelyAPI
+                ? undefined
+                : allSttProviders.find(
+                    (p) => p.id === selectedSttProvider.provider
+                  ),
+              selectedProvider: selectedSttProvider,
+              audio: blob,
+            });
+            if (text && !text.toLowerCase().startsWith("pluely stt error")) {
+              appendLiveSegment("them", text.trim(), true);
+            }
+          } catch {
+            // ignore partial transcription errors
+          }
         }
+        partialInFlight = false;
       })();
     })
       .then((unlisten) => {
