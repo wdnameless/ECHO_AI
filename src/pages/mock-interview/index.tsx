@@ -16,6 +16,11 @@ import { fetchAIResponse, shouldUsePluelyAPI, transcribeWithFallback } from "@/l
 import { useMicCapture } from "@/hooks/useMicCapture";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  getHumanizerSettings,
+  HUMANIZER_INSTRUCTIONS,
+  INTERVIEW_MODE_INSTRUCTIONS,
+} from "@/config/humanizer.rules";
+import {
   Loader2,
   Play,
   ArrowRight,
@@ -31,6 +36,7 @@ import {
   Wand2,
   Server,
   ServerOff,
+  Languages,
 } from "lucide-react";
 
 interface InterviewMessage {
@@ -52,7 +58,25 @@ const INTERVIEW_FINISH_PROMPT =
 const ANSWER_GENERATOR_PROMPT =
   "You are a candidate in a live interview answering the interviewer. Write an organic, highly conversational spoken answer.\n\nStrict Rules:\n1. Natural Spoken Openers & Fillers: Start with a natural human conversational opener matching the language of the question (e.g. in Russian: 'Ну, смотрите...', 'Слушайте, тут на самом деле...', 'В целом, если говорить про наш опыт...', 'Ну, мы обычно...'; in English: 'Well, to be honest...', 'Yeah, so in my last project...', 'I mean, typically we handled this by...', 'Honestly, it really depends, but usually...').\n2. Flow: Sound spontaneous, unscripted, and human — not like a bulleted encyclopedia summary.\n3. Length: 2 to 4 punchy spoken sentences (35-65 words maximum). Direct to the point with 1 concrete tool/example from background.\n4. Language: Match the language of the question strictly (Russian if asked in Russian, English if asked in English).\n5. Format: Output ONLY the exact raw words to be spoken aloud. Zero markdown, no bullet points, no quotes, no labels.";
 
-// Split into spoken sentences so TTS has no awkward long pauses.
+const RU_ANCHORS = [
+  "Ну, смотрите, на самом деле мы обычно ",
+  "Слушайте, тут всё зависит от задачи, но на практике я ",
+  "В целом, если говорить про наш опыт, то мы ",
+  "Ну, если в двух словах, в прошлом проекте мы ",
+  "По сути, в таких кейсах чаще всего ",
+];
+
+const EN_ANCHORS = [
+  "Well, to be honest, in our case we typically ",
+  "Yeah, so in my previous project we actually handled this by ",
+  "Honestly, it really depends on the scale, but generally I ",
+  "I mean, typically what we found works best is ",
+  "So, basically in our architecture we ",
+];
+
+function isCyrillic(text: string): boolean {
+  return /[а-яё]/i.test(text);
+}
 function splitSentences(text: string): string[] {
   return text
     .replace(/\s+/g, " ")
@@ -114,6 +138,9 @@ const MockInterview = () => {
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isGeneratingAnswer, setIsGeneratingAnswer] = useState(false);
   const [serverStatus, setServerStatus] = useState<boolean | null>(null);
+  const [dualPane, setDualPane] = useState(false);
+  const [translatedMessages, setTranslatedMessages] = useState<string[]>([]);
+  const [isTranslating, setIsTranslating] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -337,7 +364,7 @@ const MockInterview = () => {
     questionRef.current = "";
   }, [cancelRequest, stopListening]);
 
-  // Ask the AI to generate a model answer for the current question.
+  // Ask the AI to generate a model answer for the current question with Instant Anchors.
   const generateAnswer = useCallback(async () => {
     const question = questionRef.current;
     if (!question) {
@@ -346,19 +373,41 @@ const MockInterview = () => {
     }
     setIsGeneratingAnswer(true);
     setError(null);
+
+    // 0ms Instant Conversational Anchor
+    const isRu = isCyrillic(question);
+    const anchors = isRu ? RU_ANCHORS : EN_ANCHORS;
+    const initialAnchor = anchors[Math.floor(Math.random() * anchors.length)];
+    setAnswer(initialAnchor);
+
     try {
       const usePluelyAPI = await shouldUsePluelyAPI();
       const provider = allAiProviders.find(
         (p) => p.id === selectedAIProvider.provider
       );
-      let full = "";
-      setAnswer("");
+
+      // Always apply Humanizer rules for interview answers, regardless of
+      // the global toggle, so answers sound human and match the user's style.
+      const humanizer = getHumanizerSettings();
+      const humanizerPrompt = [
+        HUMANIZER_INSTRUCTIONS,
+        INTERVIEW_MODE_INSTRUCTIONS,
+        humanizer.customStyle?.trim()
+          ? `Match this personal speaking style: ${humanizer.customStyle.trim()}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      let full = initialAnchor;
       for await (const chunk of fetchAIResponse({
         provider: usePluelyAPI ? undefined : provider,
         selectedProvider: selectedAIProvider,
-        systemPrompt: systemPrompt || undefined,
+        systemPrompt: systemPrompt
+          ? `${systemPrompt} ${humanizerPrompt}`
+          : humanizerPrompt,
         history: [],
-        userMessage: `${ANSWER_GENERATOR_PROMPT}\n\nQuestion: ${question}`,
+        userMessage: `${ANSWER_GENERATOR_PROMPT}\n\nInterviewer Question: ${question}\n\nStart your answer by naturally continuing this opening thought: "${initialAnchor}"`,
       })) {
         full += chunk;
         setAnswer(full);
@@ -376,20 +425,82 @@ const MockInterview = () => {
   const canSpeak =
     typeof window !== "undefined" && "speechSynthesis" in window;
 
+  // Translate messages into counterpart language when dualPane is active
+  const translateMessages = useCallback(async () => {
+    if (!messages.length) return;
+    setIsTranslating(true);
+    try {
+      const usePluelyAPI = await shouldUsePluelyAPI();
+      const provider = allAiProviders.find(
+        (p) => p.id === selectedAIProvider.provider
+      );
+      const textToTranslate = messages
+        .map((m, i) => `[${i + 1}] ${m.role === "assistant" ? "Interviewer" : "Candidate"}: ${m.content}`)
+        .join("\n\n");
+
+      // Explicit direction based on the source language of the interview.
+      const sourceIsRussian = messages.some((m) => /[а-яё]/i.test(m.content));
+      const direction = sourceIsRussian
+        ? "Translate the following interview log from Russian into English."
+        : "Translate the following interview log from English into Russian.";
+
+      let full = "";
+      for await (const chunk of fetchAIResponse({
+        provider: usePluelyAPI ? undefined : provider,
+        selectedProvider: selectedAIProvider,
+        systemPrompt:
+          "You are a professional translator. " +
+          direction +
+          " Keep the exact format [N] Interviewer/Candidate: <text> without commentary, no quotes, no labels.",
+        history: [],
+        userMessage: textToTranslate,
+      })) {
+        full += chunk;
+      }
+      const parsed = full
+        .split(/\[\d+\]\s*(?:Interviewer|Candidate):\s*/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      setTranslatedMessages(parsed);
+    } catch {
+      // ignore translation error
+    } finally {
+      setIsTranslating(false);
+    }
+  }, [messages, allAiProviders, selectedAIProvider]);
+
+  useEffect(() => {
+    if (dualPane && messages.length) {
+      translateMessages();
+    }
+  }, [dualPane, messages.length, translateMessages]);
+
   return (
     <PageLayout
       title="Mock Interview"
       description="Practice answering real interview questions based on the loaded job description and your resume."
       rightSlot={
-        phase !== "idle" && !isBusy ? (
-          <Button variant="outline" size="sm" onClick={resetInterview}>
-            <RotateCcw className="mr-2 h-4 w-4" />
-            Reset
+        <div className="flex items-center gap-2">
+          <Button
+            variant={dualPane ? "default" : "outline"}
+            size="sm"
+            onClick={() => setDualPane((d) => !d)}
+            title="Toggle side-by-side bilingual translation (RU ⟷ EN)"
+          >
+            <Languages className="mr-1.5 h-4 w-4" />
+            {dualPane ? "Dual Pane (Active)" : "Dual Pane (RU ⟷ EN)"}
           </Button>
-        ) : null
+          {phase !== "idle" && !isBusy ? (
+            <Button variant="outline" size="sm" onClick={resetInterview}>
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Reset
+            </Button>
+          ) : null}
+        </div>
       }
     >
-      <div className="flex flex-col gap-4">
+      <div className={`grid gap-4 ${dualPane ? "grid-cols-1 lg:grid-cols-2" : "grid-cols-1"}`}>
+        <div className="flex flex-col gap-4">
         {jobContextReady === false && (
           <Card className="border-amber-500/40 bg-amber-500/5">
             <CardContent className="flex items-center gap-3 py-4">
@@ -641,6 +752,52 @@ const MockInterview = () => {
             )}
           </CardFooter>
         </Card>
+        </div>
+
+        {/* Dual-Pane Side-by-Side Live Mirror Translation (RU ⟷ EN) */}
+        {dualPane && (
+          <Card className="border-primary/20 bg-muted/10">
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between text-base">
+                <span className="flex items-center gap-2">
+                  <Languages className="h-5 w-5 text-primary" />
+                  Live Mirror Translation (RU ⟷ EN)
+                </span>
+                {isTranslating && (
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Translating...
+                  </span>
+                )}
+              </CardTitle>
+              <CardDescription>
+                Synchronous counterpart translation for real-time bilingual interview practice.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <div className="flex max-h-[55vh] flex-col gap-3 overflow-y-auto pr-2">
+                {!translatedMessages.length && !isTranslating && (
+                  <div className="flex flex-col items-center justify-center py-12 text-center text-xs text-muted-foreground">
+                    <Languages className="mb-2 h-8 w-8 text-muted-foreground/40" />
+                    Start talking or asking questions — translations will appear here synchronously.
+                  </div>
+                )}
+                {translatedMessages.map((msg, i) => (
+                  <div
+                    key={i}
+                    className="rounded-xl border border-border/40 bg-background/80 p-3 text-xs leading-relaxed"
+                  >
+                    <div className="mb-1 font-semibold text-primary">
+                      {i % 2 === 0 ? "Interviewer (Translated)" : "Candidate (Translated)"}
+                    </div>
+                    <p className="whitespace-pre-wrap text-foreground/90">{msg}</p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {mic.bridge}
       </div>
     </PageLayout>

@@ -21,6 +21,13 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
+# Windows console uses cp1252/cp866 by default which crashes on Russian text.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 HOST = "127.0.0.1"
 PORT = 8000
 
@@ -99,7 +106,8 @@ def transcribe_wav(wav_path: str, model_id: str) -> str:
     cmd = [handy, "--transcribe-file", wav_path]
     if model_id:
         cmd += ["--model", model_id]
-    cmd += ["--json"]
+    # Prefer the Vulkan GPU device (index 0) for ~40x real-time transcription.
+    cmd += ["--device-index", "0", "--json"]
     log("Running: " + " ".join(cmd))
     proc = subprocess.run(
         cmd,

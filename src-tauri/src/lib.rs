@@ -5,6 +5,7 @@ mod capture;
 mod db;
 mod handy_server;
 mod shortcuts;
+mod tray;
 mod window;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, WebviewWindow};
@@ -126,6 +127,10 @@ pub fn run() {
             window::setup_main_window(app).expect("Failed to setup main window");
             // Auto-start the local Handy STT server (whisper over HTTP on :8000)
             handy_server::ensure_server_running();
+            // Setup System Tray icon & menu
+            if let Err(e) = tray::setup_tray(app.handle()) {
+                eprintln!("Failed to setup system tray: {}", e);
+            }
             #[cfg(target_os = "macos")]
             init(app.app_handle());
             let app_handle = app.handle();

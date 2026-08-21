@@ -74,8 +74,49 @@ pub fn center_window_completely(window: &WebviewWindow) -> Result<(), Box<dyn st
 pub fn set_window_height(window: tauri::WebviewWindow, height: u32) -> Result<(), String> {
     use tauri::{LogicalSize, Size};
 
-    // Simply set the window size with fixed width and new height
-    let new_size = LogicalSize::new(600.0, height as f64);
+    // If the window is maximized or in fullscreen mode, do not force-resize.
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return Ok(());
+    }
+
+    // Preserve the user's custom stretched width instead of resetting to a hardcoded 600px
+    let current_width = if let Ok(size) = window.outer_size() {
+        if let Ok(scale_factor) = window.scale_factor() {
+            (size.width as f64) / scale_factor
+        } else {
+            size.width as f64
+        }
+    } else {
+        600.0
+    };
+
+    let target_width = if current_width < 400.0 { 600.0 } else { current_width };
+
+    // Smart height: only expand from a collapsed state. If the user has
+    // manually resized the window taller, never override their size.
+    let current_height = if let Ok(size) = window.outer_size() {
+        if let Ok(scale_factor) = window.scale_factor() {
+            (size.height as f64) / scale_factor
+        } else {
+            size.height as f64
+        }
+    } else {
+        54.0
+    };
+
+    let target_height = if height > 100 {
+        // Expanding: keep the user's custom height if they already stretched it
+        if current_height > 120.0 {
+            current_height
+        } else {
+            height as f64
+        }
+    } else {
+        // Collapsing to the compact bar
+        height as f64
+    };
+
+    let new_size = LogicalSize::new(target_width, target_height);
     window
         .set_size(Size::Logical(new_size))
         .map_err(|e| format!("Failed to resize window: {}", e))?;

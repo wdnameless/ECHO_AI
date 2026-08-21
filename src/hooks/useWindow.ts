@@ -33,6 +33,7 @@ export const useWindowResize = () => {
   // Setup drag handling and popover monitoring
   useEffect(() => {
     let isDragging = false;
+    let popoverWasOpen = false;
 
     const handleMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -56,9 +57,13 @@ export const useWindowResize = () => {
     };
 
     const observer = new MutationObserver(() => {
-      if (!isAnyPopoverOpen()) {
+      const popoverOpen = isAnyPopoverOpen();
+      // Only collapse the window when a popover transitions from open to
+      // closed. New messages / streaming text must NOT trigger a resize.
+      if (popoverWasOpen && !popoverOpen) {
         resizeWindow(false);
       }
+      popoverWasOpen = popoverOpen;
     });
 
     // Observe the body for changes to detect popover open/close

@@ -91,6 +91,11 @@ async function buildEnhancedSystemPrompt(
     }
   }
 
+  // Anti-filler & question intent instruction
+  prompts.push(
+    "CONVERSATIONAL FILTER RULE: If the user input is merely a conversational acknowledgment, reaction, or filler sound (e.g. 'угу', 'мгм', 'ага', 'да', 'ну', 'хм', 'ок', 'yeah', 'uh-huh', 'mhm', 'got it') without a substantive question or topic, DO NOT replicate the filler or generate a lengthy answer. Only answer when an actual question, technical query, or request is made."
+  );
+
   return prompts.join(" ");
 }
 

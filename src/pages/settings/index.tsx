@@ -3,6 +3,7 @@ import {
   AlwaysOnTopToggle,
   AppIconToggle,
   AutostartToggle,
+  FontSizeSettings,
   ResumeContext,
   JobContext,
   HumanizerSettings,
@@ -14,6 +15,9 @@ const Settings = () => {
     <PageLayout title="Settings" description="Manage your settings">
       {/* Theme */}
       <Theme />
+
+      {/* Font Size */}
+      <FontSizeSettings />
 
       {/* Autostart Toggle */}
       <AutostartToggle />

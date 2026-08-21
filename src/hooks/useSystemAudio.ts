@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/contexts";
 import { fetchAIResponse, transcribeWithFallback } from "@/lib/functions";
+import { shouldTriggerAIResponse } from "@/lib/speech-filter";
 import {
   DEFAULT_QUICK_ACTIONS,
   DEFAULT_SYSTEM_PROMPT,
@@ -437,6 +438,14 @@ export function useSystemAudio() {
         }
         appendLiveSegment(source, transcription);
         setError("");
+
+        // Check if the transcription is a meaningful query/question rather than a conversational filler/backchannel
+        if (!shouldTriggerAIResponse(transcription)) {
+          console.log(
+            `[Pluely] Skipping AI processing for conversational filler/backchannel: "${transcription}"`
+          );
+          return;
+        }
 
         const effectiveSystemPrompt = useSystemPrompt
           ? systemPrompt || DEFAULT_SYSTEM_PROMPT
