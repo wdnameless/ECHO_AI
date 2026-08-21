@@ -99,7 +99,6 @@ export const ResultsSection = ({
   const prevTheirRef = useRef("");
   const prevAIRef = useRef("");
   const tickerRef = useRef<HTMLDivElement>(null);
-  const lastUserSpeechAtRef = useRef<number>(0);
   const isMac =
     typeof navigator !== "undefined" &&
     navigator.platform.toUpperCase().indexOf("MAC") >= 0;
@@ -122,17 +121,21 @@ export const ResultsSection = ({
   // Track when the user is actively speaking so we know a new answer
   // arrived WHILE they were mid-answer (needs buffering), vs. them
   // listening quietly to a new question (show instantly).
+  const wasSpeakingRef = useRef(false);
+  const lastUserSpeechAtRef = useRef<number>(0);
   useEffect(() => {
-    if (micSpeaking) {
+    if (micSpeaking && !wasSpeakingRef.current) {
       lastUserSpeechAtRef.current = Date.now();
     }
+    wasSpeakingRef.current = micSpeaking;
   }, [micSpeaking]);
 
   // Answer buffer logic:
   // - New stream is a continuation of the current answer -> update in place.
-  // - User spoke within the last 12s -> a NEW question/answer arrived while
-  //   they were talking -> BUFFER it, show "Next answer" button + countdown.
-  // - User is quiet (just listening) -> show new answer INSTANTLY (0ms).
+  // - A NEW response began while the user was speaking (or just stopped
+  //   within the last 4 seconds) -> the interviewer interrupted them:
+  //   BUFFER the new answer, show "Next answer" button + countdown.
+  // - User is quiet / listening -> show new answer INSTANTLY (0ms).
   useEffect(() => {
     if (!lastAIResponse) return;
 
@@ -147,7 +150,7 @@ export const ResultsSection = ({
     }
 
     const userSpokeRecently =
-      Date.now() - lastUserSpeechAtRef.current < 12000;
+      Date.now() - lastUserSpeechAtRef.current < 4000;
 
     if (!displayedAnswer) {
       // Very first answer of the conversation: show directly.
@@ -324,7 +327,7 @@ export const ResultsSection = ({
 
   return (
     <div
-      className="space-y-2 pt-0.5 w-full min-w-0 max-w-full overflow-x-hidden"
+      className="space-y-2 pt-0.5 w-full min-w-0 max-w-full overflow-x-hidden relative"
       style={{ fontSize: "var(--app-font-size, 15px)" }}
     >
       {/* Sleek Minimal Top Control Bar */}
@@ -752,18 +755,18 @@ export const ResultsSection = ({
         )}
       </div>
 
-      {/* Collapsible Clean History Drawer */}
+      {/* Slide-out Overlay History Drawer (does not push content, floats above) */}
       {showHistory && conversation.messages.length > 0 && (
-        <div className="mt-2 pt-1.5 border-t border-border/40 space-y-1 animate-in fade-in duration-200 w-full min-w-0 max-w-full">
-          <div className="flex items-center justify-between px-1">
-            <span className="text-[0.68em] font-semibold text-muted-foreground uppercase tracking-wider">
+        <div className="absolute inset-0 z-30 rounded-xl border border-primary/20 bg-background/95 backdrop-blur-sm shadow-2xl p-2.5 overflow-y-auto animate-in slide-in-from-right-1/4 duration-200 flex flex-col min-w-0">
+          <div className="flex items-center justify-between pb-2 border-b border-border/40 shrink-0">
+            <span className="text-[0.7em] font-semibold text-muted-foreground uppercase tracking-wider">
               Conversation History ({conversation.messages.length})
             </span>
-            <Button size="icon" variant="ghost" className="h-4 w-4" onClick={() => setShowHistory(false)}>
+            <Button size="icon" variant="ghost" className="h-5 w-5" onClick={() => setShowHistory(false)}>
               <XIcon className="w-3 h-3" />
             </Button>
           </div>
-          <div className="space-y-1 max-h-48 overflow-y-auto pr-1 w-full min-w-0">
+          <div className="space-y-1.5 pt-2 w-full min-w-0 flex-1 overflow-y-auto">
             {conversation.messages.slice(0, 15).reverse().map((msg, i) => (
               <div
                 key={i}
@@ -775,13 +778,13 @@ export const ResultsSection = ({
                   })
                 }
                 className={cn(
-                  "p-1.5 rounded-lg border text-[0.78em] cursor-pointer transition-colors hover:border-primary/40 w-full min-w-0 max-w-full break-words",
+                  "p-2 rounded-lg border text-[0.8em] cursor-pointer transition-colors hover:border-primary/40 w-full min-w-0 max-w-full break-words",
                   msg.role === "assistant"
                     ? "bg-primary/5 border-primary/20"
                     : "bg-muted/30 border-border/30"
                 )}
               >
-                <div className="flex items-center justify-between mb-0.5 text-[0.62em] text-muted-foreground">
+                <div className="flex items-center justify-between mb-0.5 text-[0.65em] text-muted-foreground">
                   <span className="font-semibold uppercase">
                     {msg.role === "assistant"
                       ? "AI Cue"

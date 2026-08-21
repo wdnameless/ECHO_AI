@@ -562,11 +562,57 @@ export function useSystemAudio() {
         setError("Failed to setup speech listener");
       });
 
+    // Live partial streaming of interviewer speech: transcribe ~1s chunks
+    // as they arrive and show them in the live ticker immediately, WITHOUT
+    // triggering a full AI turn (only the final speech-detected does).
+    let partialUnlisten: (() => void) | undefined;
+    listen("speech-partial", (event) => {
+      const b64 = event.payload as string;
+      if (!b64 || !capturingRef.current) return;
+
+      const binaryString = atob(b64);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: "audio/wav" });
+
+      // Lightweight transcription, appended to live segments instantly
+      void (async () => {
+        try {
+          const usePluelyAPI = await shouldUsePluelyAPI();
+          const text = await transcribeWithFallback({
+            provider: usePluelyAPI
+              ? undefined
+              : allSttProviders.find(
+                  (p) => p.id === selectedSttProvider.provider
+                ),
+            selectedProvider: selectedSttProvider,
+            audio: blob,
+          });
+          if (text && !text.toLowerCase().startsWith("pluely stt error")) {
+            appendLiveSegment("them", text.trim());
+          }
+        } catch {
+          // ignore partial transcription errors
+        }
+      })();
+    })
+      .then((unlisten) => {
+        if (cancelled) {
+          unlisten();
+        } else {
+          partialUnlisten = unlisten;
+        }
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
       if (speechUnlisten) speechUnlisten();
+      if (partialUnlisten) partialUnlisten();
     };
-  }, []);
+  }, [allSttProviders, selectedSttProvider]);
 
   // Context management functions
   const saveContextSettings = useCallback(

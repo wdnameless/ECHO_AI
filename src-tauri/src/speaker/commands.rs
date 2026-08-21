@@ -146,6 +146,7 @@ async fn run_vad_capture(
     let mut in_speech = false;
     let mut silence_chunks = 0;
     let mut speech_chunks = 0;
+    let mut last_partial_samples = 0;
     let max_samples = sr as usize * 30; // 30s safety cap per utterance
 
     while let Some(sample) = stream.next().await {
@@ -171,6 +172,7 @@ async fn run_vad_capture(
                     // Speech START detected
                     in_speech = true;
                     speech_chunks = 0;
+                    last_partial_samples = 0;
 
                     // Include pre-speech buffer for natural sound
                     speech_buffer.extend(pre_speech.drain(..));
@@ -181,6 +183,20 @@ async fn run_vad_capture(
                 speech_chunks += 1;
                 speech_buffer.extend_from_slice(&mono);
                 silence_chunks = 0; // Reset silence counter on any speech
+
+                // Live partial streaming: emit a chunk of accumulated audio
+                // roughly every second so the frontend can transcribe it in
+                // real time (word-by-word live captions).
+                if speech_buffer.len() - last_partial_samples >= sr as usize
+                    && speech_chunks >= config.min_speech_chunks
+                {
+                    last_partial_samples = speech_buffer.len();
+                    let normalized_buffer = normalize_audio_level(&speech_buffer, 0.1);
+                    let resampled = resample_to_16k(&normalized_buffer, sr);
+                    if let Ok(b64) = samples_to_wav_b64(16000, &resampled) {
+                        let _ = app.emit("speech-partial", b64);
+                    }
+                }
 
                 // Safety cap: force emit if exceeds 30s
                 if speech_buffer.len() > max_samples {
@@ -193,6 +209,7 @@ async fn run_vad_capture(
                     speech_buffer.clear();
                     in_speech = false;
                     speech_chunks = 0;
+                    last_partial_samples = 0;
                 }
             } else {
                 // Silence detected
@@ -238,6 +255,7 @@ async fn run_vad_capture(
                         in_speech = false;
                         silence_chunks = 0;
                         speech_chunks = 0;
+                        last_partial_samples = 0;
                     }
                 } else {
                     // Not in speech yet - maintain rolling pre-speech buffer
