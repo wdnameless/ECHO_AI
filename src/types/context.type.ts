@@ -1,6 +1,7 @@
 import { Dispatch, SetStateAction } from "react";
 import { ScreenshotConfig, TYPE_PROVIDER } from "@/types";
 import { CursorType, CustomizableState } from "@/lib/storage";
+import { PromptProfile } from "@/lib/storage/prompt-profiles";
 
 export type IContextType = {
   systemPrompt: string;
@@ -58,4 +59,10 @@ export type IContextType = {
   setCursorType: (type: CursorType) => void;
   supportsImages: boolean;
   setSupportsImages: (value: boolean) => void;
+  promptProfiles: PromptProfile[];
+  activeProfileId: string;
+  selectPromptProfile: (profileId: string) => void;
+  updatePromptProfile: (profileId: string, updates: Partial<PromptProfile>) => void;
+  createPromptProfile: (profile: Omit<PromptProfile, "id">) => PromptProfile;
+  deletePromptProfile: (profileId: string) => void;
 };

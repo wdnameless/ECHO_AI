@@ -18,6 +18,15 @@ import {
   updateCursorType,
 } from "@/lib/storage";
 import { IContextType, ScreenshotConfig, TYPE_PROVIDER } from "@/types";
+import {
+  applyProfileToStorage,
+  getActiveProfile,
+  getActiveProfileId,
+  getPromptProfiles,
+  PromptProfile,
+  savePromptProfiles,
+  setActiveProfileId,
+} from "@/lib/storage/prompt-profiles";
 import curl2Json from "@bany/curl-to-json";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -27,6 +36,7 @@ import {
   ReactNode,
   createContext,
   useContext,
+  useCallback,
   useEffect,
   useState,
 } from "react";
@@ -74,6 +84,79 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     safeLocalStorage.getItem(STORAGE_KEYS.SYSTEM_PROMPT) ||
       DEFAULT_SYSTEM_PROMPT
   );
+
+  // Prompt profiles (Interview / General / custom)
+  const [promptProfiles, setPromptProfiles] = useState<PromptProfile[]>(() =>
+    getPromptProfiles()
+  );
+  const [activeProfileId, setActiveProfileIdState] = useState<string>(() =>
+    getActiveProfileId()
+  );
+
+  const selectPromptProfile = useCallback(
+    (profileId: string) => {
+      const profiles = getPromptProfiles();
+      const profile = profiles.find((p) => p.id === profileId);
+      if (!profile) return;
+      setActiveProfileIdState(profileId);
+      setActiveProfileId(profileId);
+      applyProfileToStorage(profile);
+      setSystemPrompt(profile.systemPrompt);
+      // Refresh profile list (settings may have custom profiles)
+      setPromptProfiles(getPromptProfiles());
+    },
+    [setSystemPrompt]
+  );
+
+  const updatePromptProfile = useCallback(
+    (profileId: string, updates: Partial<PromptProfile>) => {
+      const profiles = getPromptProfiles();
+      const idx = profiles.findIndex((p) => p.id === profileId);
+      if (idx === -1) return;
+      const updated = { ...profiles[idx], ...updates };
+      profiles[idx] = updated;
+      savePromptProfiles(profiles);
+      setPromptProfiles(profiles);
+      // If the active profile was edited, re-apply to storage so the
+      // floating window and prompts pick up changes immediately.
+      if (profileId === getActiveProfileId()) {
+        applyProfileToStorage(updated);
+        setSystemPrompt(updated.systemPrompt);
+      }
+    },
+    [setSystemPrompt]
+  );
+
+  const createPromptProfile = useCallback(
+    (profile: Omit<PromptProfile, "id">): PromptProfile => {
+      const newProfile: PromptProfile = {
+        ...profile,
+        id: `profile-${Date.now().toString(36)}`,
+      };
+      const profiles = [...getPromptProfiles(), newProfile];
+      savePromptProfiles(profiles);
+      setPromptProfiles(profiles);
+      return newProfile;
+    },
+    []
+  );
+
+  const deletePromptProfile = useCallback((profileId: string) => {
+    const profiles = getPromptProfiles().filter(
+      (p) => p.id !== profileId && !p.isBuiltin
+    );
+    savePromptProfiles(profiles);
+    setPromptProfiles(profiles);
+    // If active profile was deleted, fall back to Interview profile.
+    if (profileId === getActiveProfileId()) {
+      const fallback = profiles.find((p) => p.isBuiltin) || profiles[0];
+      if (fallback) {
+        setActiveProfileIdState(fallback.id);
+        setActiveProfileId(fallback.id);
+        applyProfileToStorage(fallback);
+      }
+    }
+  }, []);
 
   const [selectedAudioDevices, setSelectedAudioDevices] = useState<{
     input: { id: string; name: string };
@@ -488,6 +571,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return () => window.removeEventListener("storage", handleStorageChange);
   }, []);
 
+  // Apply the active prompt profile's settings on app start so the
+  // Interview / General / custom profile is active from the first moment.
+  useEffect(() => {
+    const profile = getActiveProfile();
+    applyProfileToStorage(profile);
+    setSystemPrompt(profile.systemPrompt);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Check if the current AI provider/model supports images
   useEffect(() => {
     const checkImageSupport = async () => {
@@ -719,6 +811,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setCursorType,
     supportsImages,
     setSupportsImages,
+    promptProfiles,
+    activeProfileId,
+    selectPromptProfile,
+    updatePromptProfile,
+    createPromptProfile,
+    deletePromptProfile,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

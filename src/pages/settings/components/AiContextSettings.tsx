@@ -19,7 +19,7 @@ import { HumanizerSettings } from "./HumanizerSettings";
  * legacy system_prompts database table.
  */
 export function AiContextSettings() {
-  const { systemPrompt, setSystemPrompt } = useApp();
+  const { systemPrompt, setSystemPrompt, activeProfileId, updatePromptProfile } = useApp();
   const [draft, setDraft] = useState(systemPrompt);
   const [saved, setSaved] = useState(false);
   const [dbPrompts, setDbPrompts] = useState<
@@ -55,20 +55,27 @@ export function AiContextSettings() {
     const value = draft.trim() || DEFAULT_SYSTEM_PROMPT;
     setSystemPrompt(value);
     safeLocalStorage.setItem(STORAGE_KEYS.SYSTEM_PROMPT, value);
+    // Keep the active profile in sync so switching profiles restores it.
+    if (activeProfileId) {
+      updatePromptProfile(activeProfileId, { systemPrompt: value });
+    }
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
-  }, [draft, setSystemPrompt]);
+  }, [draft, setSystemPrompt, activeProfileId, updatePromptProfile]);
 
   const handleImport = useCallback(
     (prompt: { id: number; prompt: string }) => {
       setDraft(prompt.prompt);
       setSystemPrompt(prompt.prompt);
       safeLocalStorage.setItem(STORAGE_KEYS.SYSTEM_PROMPT, prompt.prompt);
+      if (activeProfileId) {
+        updatePromptProfile(activeProfileId, { systemPrompt: prompt.prompt });
+      }
       setImportedId(prompt.id);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     },
-    [setSystemPrompt]
+    [setSystemPrompt, activeProfileId, updatePromptProfile]
   );
 
   return (
