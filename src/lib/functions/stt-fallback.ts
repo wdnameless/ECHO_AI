@@ -25,6 +25,11 @@ export interface TranscribeWithFallbackParams {
  *
  * `allowCloudFallback: false` (used for live partial streaming) never
  * touches the cloud - partial chunks only go through the local model.
+ *
+ * HARD LOCAL-FIRST MODE: if the provider is `handy-local-whisper` AND the
+ * local server is reachable, we NEVER fall back to Groq even on transient
+ * errors (busy queue etc.) - this eliminates 429 storms. Cloud fallback is
+ * only used when the local server is physically offline.
  */
 export async function transcribeWithFallback({
   audio,
@@ -43,22 +48,42 @@ export async function transcribeWithFallback({
     return fetchSTT({ provider, selectedProvider, audio });
   }
 
+  // If the provider is missing/unknown, do NOT silently fall back to the
+  // cloud - this is exactly the path that burned Groq quota before.
+  if (!provider) {
+    throw new Error(
+      "Speech provider config not found. Please configure a provider in Settings."
+    );
+  }
+
   // Local Handy path: try it, then fall through to cloud on failure.
   if (provider?.id === "handy-local-whisper") {
+    // Check if the local server is actually up before doing anything.
+    const handyOnline = await isHandyServerOnline();
+
     try {
-      const result = await fetchSTT({ provider, selectedProvider, audio });
-      // fetchSTT returns an error/warning string instead of throwing for
-      // HTTP errors, so detect that and fall through to Groq.
-      if (
-        result &&
-        !result.startsWith("Pluely STT Error") &&
-        !/HTTP \d+/.test(result) &&
-        !result.startsWith("Network error")
-      ) {
+      if (handyOnline) {
+        const result = await fetchSTT({ provider, selectedProvider, audio });
+        // fetchSTT returns an error/warning string instead of throwing for
+        // HTTP errors, so detect that.
+        if (
+          result &&
+          !result.startsWith("Pluely STT Error") &&
+          !/HTTP \d+/.test(result) &&
+          !result.startsWith("Network error")
+        ) {
+          return result;
+        }
+        // Local server returned an error but IS online: do NOT hit Groq.
+        // A busy/failed local model is better than a 429 storm.
         return result;
       }
     } catch {
-      // fall through to cloud fallback
+      // transient error - if server is online, never fall back to cloud.
+      if (handyOnline && !allowCloudFallback) {
+        return "Pluely STT Error: local model unavailable";
+      }
+      // fall through to cloud fallback only if the server is offline
     }
   }
 
@@ -67,7 +92,7 @@ export async function transcribeWithFallback({
     return "Pluely STT Error: local model unavailable";
   }
 
-  // Cloud fallback: Groq Whisper.
+  // Cloud fallback: Groq Whisper (only when local server is offline).
   const key = safeLocalStorage.getItem(GROQ_FALLBACK_STORAGE_KEY) || "";
   if (!key) {
     throw new Error(
@@ -97,6 +122,19 @@ export async function transcribeWithFallback({
     },
     audio,
   });
+}
+
+/** Quick TCP health probe of the local Handy STT server (127.0.0.1:8000). */
+async function isHandyServerOnline(): Promise<boolean> {
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const res = (await invoke("handy_server_status_detailed")) as {
+      online: boolean;
+    };
+    return !!res?.online;
+  } catch {
+    return false;
+  }
 }
 
 export function getGroqFallbackKey(): string {
