@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/contexts";
 import { fetchAIResponse, transcribeWithFallback } from "@/lib/functions";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
+import { GENERAL_PROFILE_ID, getActiveProfileId } from "@/lib/storage/prompt-profiles";
 import {
   DEFAULT_QUICK_ACTIONS,
   DEFAULT_SYSTEM_PROMPT,
@@ -454,13 +455,17 @@ export function useSystemAudio() {
         appendLiveSegment(source, transcription);
         setError("");
 
-        // If the segment came from the user's own microphone and
-        // "respond to my mic" is disabled, only show the transcription -
-        // never trigger the AI (prevents the AI reacting to the user
-        // reading an answer aloud).
-        if (source === "me" && !respondToMicRef.current) {
+        // If the segment came from the user's own microphone:
+        // In General Chat profile or when respondToMic is on, mic triggers AI responses!
+        // In Interview mode (solo meeting listening), it only triggers if respondToMic is on.
+        const activeProfile = getActiveProfileId();
+        const isGeneralOrRespondToMic =
+          activeProfile === GENERAL_PROFILE_ID ||
+          respondToMicRef.current;
+
+        if (source === "me" && !isGeneralOrRespondToMic) {
           console.log(
-            `[Pluely] Mic segment recorded (AI response disabled for mic): "${transcription}"`
+            `[Pluely] Mic segment recorded (AI response disabled for solo interview mic): "${transcription}"`
           );
           return;
         }

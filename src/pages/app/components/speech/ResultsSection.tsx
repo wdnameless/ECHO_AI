@@ -118,20 +118,23 @@ export const ResultsSection = ({
     [displayedAnswer, lastAIResponse, theirLastTranscription]
   );
 
-  // Answer buffer logic
+  // Answer buffer logic:
+  // - If user is NOT speaking (quiet / listening): show new response INSTANTLY with 0ms delay!
+  // - If user IS speaking (micSpeaking === true): buffer response and start countdown so speech is not interrupted!
   useEffect(() => {
     if (!lastAIResponse) return;
 
-    if (!displayedAnswer) {
-      // First answer -> show directly
+    if (!displayedAnswer || !micSpeaking) {
+      // User is not speaking -> instant display with 0ms lag!
       setDisplayedAnswer(lastAIResponse);
+      setPendingNewAnswer("");
       setCountdown(null);
       setIsHeld(false);
     } else if (displayedAnswer && !pendingNewAnswer && lastAIResponse !== displayedAnswer) {
       if (lastAIResponse.startsWith(displayedAnswer.slice(0, 15))) {
         setDisplayedAnswer(lastAIResponse);
       } else {
-        // New question / turn arrives! Buffer and start 5-second countdown timer
+        // User IS actively speaking and a new turn arrives -> buffer with countdown
         setPendingNewAnswer(lastAIResponse);
         setCountdown(5);
         setIsHeld(false);
@@ -139,7 +142,7 @@ export const ResultsSection = ({
     } else if (pendingNewAnswer) {
       setPendingNewAnswer(lastAIResponse);
     }
-  }, [lastAIResponse, displayedAnswer, pendingNewAnswer]);
+  }, [lastAIResponse, displayedAnswer, pendingNewAnswer, micSpeaking]);
 
   // Countdown timer effect
   useEffect(() => {

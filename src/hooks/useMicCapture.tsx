@@ -8,6 +8,7 @@ export interface UseMicCaptureOptions {
   microphoneDeviceName?: string;
   onMicSegment: (audio: Blob) => void;
   onMicSpeechStart?: () => void;
+  onInterimTranscript?: (text: string) => void;
 }
 
 interface MicVADBridgeProps {
@@ -21,6 +22,7 @@ interface MicVADBridgeProps {
   onApiReady: (api: { start: () => void; stop: () => void }) => void;
   onMicSegment: (audio: Blob) => void;
   onMicSpeechStart?: () => void;
+  onInterimTranscript?: (text: string) => void;
 }
 
 // Bridge component that owns the VAD instance. It is mounted only once the
@@ -33,18 +35,21 @@ function MicVADBridge({
   onApiReady,
   onMicSegment,
   onMicSpeechStart,
+  onInterimTranscript,
 }: MicVADBridgeProps) {
   const onMicSegmentRef = useRef(onMicSegment);
   const onMicSpeechStartRef = useRef(onMicSpeechStart);
   const onStateChangeRef = useRef(onStateChange);
   const onApiReadyRef = useRef(onApiReady);
+  const onInterimTranscriptRef = useRef(onInterimTranscript);
 
   useEffect(() => {
     onMicSegmentRef.current = onMicSegment;
     onMicSpeechStartRef.current = onMicSpeechStart;
     onStateChangeRef.current = onStateChange;
     onApiReadyRef.current = onApiReady;
-  }, [onMicSegment, onMicSpeechStart, onStateChange, onApiReady]);
+    onInterimTranscriptRef.current = onInterimTranscript;
+  }, [onMicSegment, onMicSpeechStart, onStateChange, onApiReady, onInterimTranscript]);
 
   const vadRef = useRef<MicVAD | null>(null);
   const listeningRef = useRef(false);
@@ -52,6 +57,32 @@ function MicVADBridge({
   useEffect(() => {
     let cancelled = false;
     let vad: MicVAD | null = null;
+    let recognition: any = null;
+
+    // Web Speech API for real-time live word-by-word streaming
+    const SpeechRecognition =
+      (window as any).SpeechRecognition ||
+      (window as any).webkitSpeechRecognition;
+
+    if (SpeechRecognition) {
+      try {
+        recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = navigator.language?.startsWith("ru") ? "ru-RU" : "en-US";
+        recognition.onresult = (event: any) => {
+          let interim = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            interim += transcript;
+          }
+          if (interim.trim()) {
+            onInterimTranscriptRef.current?.(interim.trim());
+          }
+        };
+        recognition.onerror = () => {};
+      } catch {}
+    }
 
     onStateChangeRef.current({
       listening: false,
@@ -88,10 +119,16 @@ function MicVADBridge({
       },
       onSpeechStart: () => {
         onMicSpeechStartRef.current?.();
+        try {
+          recognition?.start();
+        } catch {}
       },
       onSpeechEnd: (audio: Float32Array) => {
         const audioBlob = floatArrayToWav(audio, 16000, "wav");
         onMicSegmentRef.current(audioBlob);
+        try {
+          recognition?.stop();
+        } catch {}
       },
     })
       .then((v) => {
@@ -156,6 +193,7 @@ export function useMicCapture({
   microphoneDeviceName,
   onMicSegment,
   onMicSpeechStart,
+  onInterimTranscript,
 }: UseMicCaptureOptions) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [streamKey, setStreamKey] = useState(0);
@@ -282,6 +320,7 @@ export function useMicCapture({
       onApiReady={handleApiReady}
       onMicSegment={onMicSegment}
       onMicSpeechStart={onMicSpeechStart}
+      onInterimTranscript={onInterimTranscript}
     />
   ) : null;
 
