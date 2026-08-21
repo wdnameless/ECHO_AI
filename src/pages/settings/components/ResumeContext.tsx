@@ -79,7 +79,6 @@ export function ResumeContext() {
       <Header
         title="My Resume"
         description="Upload your resume so answers are grounded in your real experience"
-        isMainTitle
         rightSlot={
           <div className="flex items-center gap-2">
             <Switch

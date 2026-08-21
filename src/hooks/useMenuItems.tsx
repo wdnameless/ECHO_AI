@@ -2,37 +2,22 @@ import {
   Settings,
   Code,
   MessagesSquare,
-  WandSparkles,
   AudioLinesIcon,
   SquareSlashIcon,
-  MonitorIcon,
-  HomeIcon,
   PowerIcon,
-  MailIcon,
-  CoffeeIcon,
-  GlobeIcon,
   BugIcon,
-  MessageSquareTextIcon,
   GraduationCap,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { useApp } from "@/contexts";
-import { XIcon, GithubIcon } from "@/components";
+import { GithubIcon } from "@/components";
 
 export const useMenuItems = () => {
-  const { hasActiveLicense } = useApp();
-
   const menu: {
     icon: React.ElementType;
     label: string;
     href: string;
     count?: number;
   }[] = [
-    {
-      icon: HomeIcon,
-      label: "Dashboard",
-      href: "/dashboard",
-    },
     {
       icon: GraduationCap,
       label: "Mock Interview",
@@ -44,24 +29,9 @@ export const useMenuItems = () => {
       href: "/chats",
     },
     {
-      icon: WandSparkles,
-      label: "System prompts",
-      href: "/system-prompts",
-    },
-    {
       icon: Settings,
-      label: "App Settings",
+      label: "Settings",
       href: "/settings",
-    },
-    {
-      icon: MessageSquareTextIcon,
-      label: "Responses",
-      href: "/responses",
-    },
-    {
-      icon: MonitorIcon,
-      label: "Screenshot",
-      href: "/screenshot",
     },
     {
       icon: AudioLinesIcon,
@@ -70,31 +40,21 @@ export const useMenuItems = () => {
     },
     {
       icon: SquareSlashIcon,
-      label: "Cursor & Shortcuts",
+      label: "Shortcuts",
       href: "/shortcuts",
     },
-
     {
       icon: Code,
-      label: "Dev space",
+      label: "AI & STT Providers",
       href: "/dev-space",
     },
   ];
 
   const footerItems = [
-    ...(hasActiveLicense
-      ? [
-          {
-            icon: MailIcon,
-            label: "Contact Support",
-            href: "mailto:support@pluely.com",
-          },
-        ]
-      : []),
     {
       icon: BugIcon,
       label: "Report a bug",
-      href: "https://github.com/iamsrikanthnani/pluely/issues/new?template=bug-report.yml",
+      href: "https://github.com/wdnameless/pluely/issues/new",
     },
     {
       icon: PowerIcon,
@@ -111,24 +71,9 @@ export const useMenuItems = () => {
     link: string;
   }[] = [
     {
-      title: "Website",
-      icon: GlobeIcon,
-      link: "https://pluely.com",
-    },
-    {
       title: "Github",
       icon: GithubIcon,
-      link: "https://github.com/iamsrikanthnani/pluely",
-    },
-    {
-      title: "Buy Me a Coffee",
-      icon: CoffeeIcon,
-      link: "https://buymeacoffee.com/srikanthnani",
-    },
-    {
-      title: "Follow on X",
-      icon: XIcon,
-      link: "https://x.com/srikanthnani",
+      link: "https://github.com/wdnameless/pluely",
     },
   ];
 

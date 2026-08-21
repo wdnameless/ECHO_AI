@@ -4,9 +4,7 @@ import {
   AppIconToggle,
   AutostartToggle,
   FontSizeSettings,
-  ResumeContext,
-  JobContext,
-  HumanizerSettings,
+  AiContextSettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
 
@@ -28,14 +26,8 @@ const Settings = () => {
       {/* Always On Top Toggle */}
       <AlwaysOnTopToggle />
 
-      {/* My Resume (RAG) */}
-      <ResumeContext />
-
-      {/* Job Description (RAG) */}
-      <JobContext />
-
-      {/* Humanizer */}
-      <HumanizerSettings />
+      {/* Unified AI Context: system prompt + resume + job + humanizer */}
+      <AiContextSettings />
     </PageLayout>
   );
 };

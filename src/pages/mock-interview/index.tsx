@@ -179,7 +179,7 @@ const MockInterview = () => {
         behavior: "smooth",
       });
     }
-  }, [streamingText, messages.length, phase]);
+  }, [messages.length, phase]);
 
   // Voice pipeline: mic segment -> STT -> fill the answer textarea.
   const handleMicSegment = useCallback(
@@ -205,6 +205,11 @@ const MockInterview = () => {
           audio,
         });
         if (text && !text.toLowerCase().startsWith("pluely stt error")) {
+          // Ignore pure fillers/backchannels so "угу"/"мгм" don't pollute the answer.
+          const { isFillerOrBackchannel } = await import("@/lib/speech-filter");
+          if (isFillerOrBackchannel(text)) {
+            return;
+          }
           setAnswer((prev) => (prev ? prev + " " + text : text));
         } else {
           setError(text || "Empty transcription");

@@ -361,6 +361,9 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       conversation={conversation}
                       conversationMode={conversationMode}
                       setConversationMode={setConversationMode}
+                      liveSegments={props.liveSegments}
+                      micSpeaking={props.micSpeaking}
+                      micListening={props.micListening}
                     />
 
                     {/* Settings Panel */}
@@ -371,6 +374,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       setUseSystemPrompt={setUseSystemPrompt}
                       contextContent={contextContent}
                       setContextContent={setContextContent}
+                      respondToMic={props.respondToMic}
+                      setRespondToMic={props.setRespondToMic}
                     />
 
                     {/* Help/Keyboard Shortcuts */}

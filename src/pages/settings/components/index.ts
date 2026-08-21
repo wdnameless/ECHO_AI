@@ -6,3 +6,4 @@ export * from "./ResumeContext";
 export * from "./JobContext";
 export * from "./HumanizerSettings";
 export * from "./FontSizeSettings";
+export * from "./AiContextSettings";

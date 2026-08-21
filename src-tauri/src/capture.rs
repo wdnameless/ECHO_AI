@@ -135,6 +135,7 @@ pub async fn start_screen_capture(app: tauri::AppHandle) -> Result<(), String> {
                 .visible(false)
                 .focused(true)
                 .accept_first_mouse(true)
+                .content_protected(true)
                 .build()
                 .map_err(|e| {
                     state.overlay_active.store(false, Ordering::SeqCst);

@@ -12,11 +12,30 @@ import { invoke } from "@tauri-apps/api/core";
 import { ErrorBoundary } from "react-error-boundary";
 import { ErrorLayout } from "@/layouts";
 import { getPlatform } from "@/lib";
+import { useEffect } from "react";
+import {
+  applyFontSize,
+  FONT_SIZE_STORAGE_KEY,
+} from "@/pages/settings/components/FontSizeSettings";
+import { safeLocalStorage } from "@/lib/storage/helper";
 
 const App = () => {
   const { isHidden, systemAudio } = useApp();
   const { customizable } = useAppContext();
   const platform = getPlatform();
+
+  // Apply the user's font size setting to the floating window too.
+  useEffect(() => {
+    const apply = () => {
+      const size = safeLocalStorage.getItem(FONT_SIZE_STORAGE_KEY);
+      if (size) {
+        applyFontSize(size as "sm" | "base" | "lg" | "xl");
+      }
+    };
+    apply();
+    window.addEventListener("storage", apply);
+    return () => window.removeEventListener("storage", apply);
+  }, []);
 
   const openDashboard = async () => {
     try {

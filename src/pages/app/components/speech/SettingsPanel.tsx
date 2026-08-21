@@ -63,6 +63,9 @@ interface SettingsPanelProps {
   setUseSystemPrompt: (value: boolean) => void;
   contextContent: string;
   setContextContent: (content: string) => void;
+  // Mic response toggle
+  respondToMic: boolean;
+  setRespondToMic: (value: boolean) => void;
 }
 
 export const SettingsPanel = ({
@@ -72,6 +75,8 @@ export const SettingsPanel = ({
   setUseSystemPrompt,
   contextContent,
   setContextContent,
+  respondToMic,
+  setRespondToMic,
 }: SettingsPanelProps) => {
   const [isOpen, setIsOpen] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -228,6 +233,23 @@ export const SettingsPanel = ({
             <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
               AI Context
             </h4>
+
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex-1">
+                <Label className="text-xs font-medium">
+                  Respond to my microphone
+                </Label>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {respondToMic
+                    ? "AI reacts to your voice too"
+                    : "AI only reacts to the other side (recommended)"}
+                </p>
+              </div>
+              <Switch
+                checked={respondToMic}
+                onCheckedChange={setRespondToMic}
+              />
+            </div>
 
             <div className="flex items-center justify-between gap-4">
               <div className="flex-1">

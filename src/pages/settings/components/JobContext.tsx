@@ -79,7 +79,6 @@ export function JobContext() {
       <Header
         title="Job Description"
         description="Upload the vacancy so answers target exactly what the role needs"
-        isMainTitle
         rightSlot={
           <div className="flex items-center gap-2">
             <Switch

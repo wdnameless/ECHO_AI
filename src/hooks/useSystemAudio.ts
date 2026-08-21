@@ -124,6 +124,11 @@ export function useSystemAudio() {
   // Context management states
   const [useSystemPrompt, setUseSystemPrompt] = useState<boolean>(true);
   const [contextContent, setContextContent] = useState<string>("");
+  // Whether the AI should auto-respond to the user's own microphone.
+  // Default OFF: reading an answer aloud must not trigger the AI.
+  const [respondToMic, setRespondToMic] = useState<boolean>(() => {
+    return safeLocalStorage.getItem("respond_to_mic") === "true";
+  });
 
   const {
     selectedSttProvider,
@@ -138,6 +143,15 @@ export function useSystemAudio() {
   const isSavingRef = useRef<boolean>(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const capturingRef = useRef<boolean>(capturing);
+  // Cooldown after an AI response: short sounds right after an answer must
+  // not trigger another AI call (prevents "false reacting" loops).
+  const lastAIResponseAtRef = useRef<number>(0);
+  const AI_RESPONSE_COOLDOWN_MS = 4000;
+  const respondToMicRef = useRef<boolean>(respondToMic);
+
+  useEffect(() => {
+    respondToMicRef.current = respondToMic;
+  }, [respondToMic]);
 
   useEffect(() => {
     capturingRef.current = capturing;
@@ -334,6 +348,7 @@ export function useSystemAudio() {
         }
 
         if (fullResponse) {
+          lastAIResponseAtRef.current = Date.now();
           const timestamp = Date.now();
           setConversation((prev) => ({
             ...prev,
@@ -439,10 +454,35 @@ export function useSystemAudio() {
         appendLiveSegment(source, transcription);
         setError("");
 
+        // If the segment came from the user's own microphone and
+        // "respond to my mic" is disabled, only show the transcription -
+        // never trigger the AI (prevents the AI reacting to the user
+        // reading an answer aloud).
+        if (source === "me" && !respondToMicRef.current) {
+          console.log(
+            `[Pluely] Mic segment recorded (AI response disabled for mic): "${transcription}"`
+          );
+          return;
+        }
+
         // Check if the transcription is a meaningful query/question rather than a conversational filler/backchannel
         if (!shouldTriggerAIResponse(transcription)) {
           console.log(
             `[Pluely] Skipping AI processing for conversational filler/backchannel: "${transcription}"`
+          );
+          return;
+        }
+
+        // Cooldown guard: right after an AI answer, short utterances are
+        // usually reactions to the answer, not new questions.
+        const sinceLastResponse = Date.now() - lastAIResponseAtRef.current;
+        if (
+          lastAIResponseAtRef.current > 0 &&
+          sinceLastResponse < AI_RESPONSE_COOLDOWN_MS &&
+          transcription.trim().length < 60
+        ) {
+          console.log(
+            `[Pluely] Skipping AI processing during post-answer cooldown (${sinceLastResponse}ms): "${transcription}"`
           );
           return;
         }
@@ -557,6 +597,11 @@ export function useSystemAudio() {
     },
     [useSystemPrompt, saveContextSettings]
   );
+
+  const updateRespondToMic = useCallback((value: boolean) => {
+    setRespondToMic(value);
+    safeLocalStorage.setItem("respond_to_mic", String(value));
+  }, []);
 
   // Quick actions management
   const saveQuickActions = useCallback((actions: string[]) => {
@@ -1092,6 +1137,8 @@ export function useSystemAudio() {
     setUseSystemPrompt: updateUseSystemPrompt,
     contextContent,
     setContextContent: updateContextContent,
+    respondToMic,
+    setRespondToMic: updateRespondToMic,
     startNewConversation,
     // Window resize
     resizeWindow,

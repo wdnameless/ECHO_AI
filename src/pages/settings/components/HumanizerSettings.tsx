@@ -35,7 +35,6 @@ export function HumanizerSettings() {
       <Header
         title="Humanizer"
         description="Make answers sound like a real person - no AI traces"
-        isMainTitle
         rightSlot={
           <div className="flex items-center gap-2">
             <Switch
