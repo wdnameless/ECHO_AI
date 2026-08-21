@@ -31,6 +31,11 @@ for _stream in (sys.stdout, sys.stderr):
 HOST = "127.0.0.1"
 PORT = 8000
 
+# Global serialization: handy.exe spawns a fresh process per request and
+# each one loads the model into VRAM. Concurrent requests -> GPU OOM /
+# crashes / errors. All transcription must be strictly serialized.
+TRANSCRIBE_LOCK = threading.Lock()
+
 APPDATA = os.environ.get("APPDATA", "")
 HANDY_SETTINGS = os.path.join(APPDATA, "com.pais.handy", "settings_store.json")
 
@@ -102,34 +107,36 @@ def resolve_gguf(model_id: str) -> str:
 
 
 def transcribe_wav(wav_path: str, model_id: str) -> str:
-    handy = find_handy_exe()
-    cmd = [handy, "--transcribe-file", wav_path]
-    if model_id:
-        cmd += ["--model", model_id]
-    # Prefer the Vulkan GPU device (index 0) for ~40x real-time transcription.
-    cmd += ["--device-index", "0", "--json"]
-    log("Running: " + " ".join(cmd))
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=180,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    out = (proc.stdout or "") + (proc.stderr or "")
-    m = re.search(r"\{.*\}", out, re.DOTALL)
-    if m:
-        try:
-            parsed = json.loads(m.group(0))
-            text = (parsed.get("text") or "").strip()
-            if text:
-                return text
-        except Exception:
-            pass
-    log("No JSON transcript found, output tail: " + out[-300:])
-    return ""
+    # Strictly serialize: only ONE handy.exe on the GPU at a time.
+    with TRANSCRIBE_LOCK:
+        handy = find_handy_exe()
+        cmd = [handy, "--transcribe-file", wav_path]
+        if model_id:
+            cmd += ["--model", model_id]
+        # Prefer the Vulkan GPU device (index 0) for ~40x real-time transcription.
+        cmd += ["--device-index", "0", "--json"]
+        log("Running: " + " ".join(cmd))
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=180,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        out = (proc.stdout or "") + (proc.stderr or "")
+        m = re.search(r"\{.*\}", out, re.DOTALL)
+        if m:
+            try:
+                parsed = json.loads(m.group(0))
+                text = (parsed.get("text") or "").strip()
+                if text:
+                    return text
+            except Exception:
+                pass
+        log("No JSON transcript found, output tail: " + out[-300:])
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +289,33 @@ def extract_multipart(body: bytes, content_type: str):
     return file_field
 
 
+def _warmup_gpu():
+    """Load the Handy model into VRAM once at startup so the first real
+    request does not pay the model-load latency (~700ms). Also verifies the
+    GPU pipeline works before serving."""
+    try:
+        model_id = read_selected_model()
+        if not model_id:
+            return
+        handy = find_handy_exe()
+        cmd = [handy, "--transcribe-file", "--device-index", "0"]
+        if model_id:
+            cmd += ["--model", model_id]
+        log("Warmup: loading GPU model...")
+        subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=120,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        log("Warmup complete (model cached in VRAM)")
+    except Exception as e:
+        log("Warmup skipped: " + str(e))
+
+
 def main():
     if "--check" in sys.argv:
         try:
@@ -290,6 +324,9 @@ def main():
         except Exception as e:
             print(f"ERROR {e}")
         return
+
+    # Warm the GPU model in the background so the first utterance is fast.
+    threading.Thread(target=_warmup_gpu, daemon=True).start()
 
     server = ThreadingHTTPServer((HOST, PORT), STTHandler)
     log(f"Listening on http://{HOST}:{PORT}")
