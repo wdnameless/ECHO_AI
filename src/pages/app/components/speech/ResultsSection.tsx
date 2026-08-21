@@ -25,7 +25,6 @@ import {
   ThumbsDownIcon,
   CheckCircle2Icon,
   PauseIcon,
-  PlayIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/contexts";
@@ -59,7 +58,12 @@ export const ResultsSection = ({
   micListening: _micListening,
   scrollAreaRef,
 }: Props) => {
-  const { promptProfiles, activeProfileId, selectPromptProfile } = useApp();
+  const {
+    promptProfiles,
+    activeProfileId,
+    selectPromptProfile,
+    selectedAIProvider,
+  } = useApp();
 
   const [dualTranslate, setDualTranslate] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -170,9 +174,10 @@ export const ResultsSection = ({
     }
   }, [pendingNewAnswer, displayedAnswer]);
 
-  // Toggle Hold / Pause timer
+  // Toggle Hold / Pause timer or reset to +10s
   const handleToggleHold = useCallback(() => {
-    setIsHeld((prev) => !prev);
+    setCountdown(10);
+    setIsHeld(false);
   }, []);
 
   const handleRevertToPreviousAnswer = useCallback(() => {
@@ -356,6 +361,14 @@ export const ResultsSection = ({
 
         {/* Right: Actions */}
         <div className="flex items-center gap-1 shrink-0">
+          {/* Active Model Indicator Pill */}
+          <span
+            className="text-[0.65em] font-mono font-medium text-muted-foreground/80 bg-muted/30 border border-border/40 px-1.5 py-0.5 rounded truncate max-w-[100px]"
+            title={`Active LLM: ${selectedAIProvider?.provider || "AI"} | STT: GPU Local`}
+          >
+            ⚡ {selectedAIProvider?.provider || "AI"}
+          </span>
+
           {/* Dual Translation Toggle */}
           <Button
             size="sm"
@@ -396,18 +409,18 @@ export const ResultsSection = ({
         </div>
       </div>
 
-      {/* CONTINUOUS LIVE TRANSCRIPT STREAM TICKER (AUTO-SCROLL, ZERO-SCROLLBAR) */}
-      <div className="rounded-lg border border-border/40 bg-muted/20 p-1.5 space-y-1 w-full min-w-0 max-w-full overflow-hidden select-none">
+      {/* CONTINUOUS LIVE TRANSCRIPT STREAM TICKER (RESIZABLE & AUTO-SCROLL) */}
+      <div className="rounded-lg border border-border/40 bg-muted/20 p-1.5 space-y-1 w-full min-w-0 max-w-full select-none resize-y overflow-auto min-h-[44px] max-h-[220px]">
         <div className="flex items-center justify-between text-[0.65em] font-semibold text-muted-foreground uppercase tracking-wider px-0.5">
           <span className="flex items-center gap-1">
             <RadioIcon className="w-2.5 h-2.5 text-primary animate-pulse" />
             Live Speech Stream
           </span>
-          <span className="text-[0.85em] font-mono lowercase opacity-70">auto-scroll</span>
+          <span className="text-[0.85em] font-mono lowercase opacity-70">resizable ↕</span>
         </div>
         <div
           ref={tickerRef}
-          className="space-y-0.5 max-h-16 overflow-y-auto pr-0.5 font-sans text-[0.78em] leading-tight w-full min-w-0 break-words no-scrollbar"
+          className="space-y-0.5 max-h-32 overflow-y-auto pr-0.5 font-sans text-[0.78em] leading-tight w-full min-w-0 break-words no-scrollbar"
         >
           {liveSegments.slice(-4).map((seg) => (
             <div
@@ -433,13 +446,13 @@ export const ResultsSection = ({
         </div>
       </div>
 
-      {/* Live System Audio / Interviewer Question & Instant Subtitle Bar */}
+      {/* Live System Audio / Interviewer Question & Instant Subtitle Bar (RESIZABLE) */}
       {theirLastTranscription && (
-        <div className="p-2 rounded-xl border border-primary/20 bg-primary/5 space-y-0.5 w-full min-w-0 max-w-full overflow-hidden animate-in fade-in duration-150">
+        <div className="p-2 rounded-xl border border-primary/20 bg-primary/5 space-y-0.5 w-full min-w-0 max-w-full resize-y overflow-auto min-h-[44px] max-h-[220px] animate-in fade-in duration-150">
           <div className="flex items-center justify-between text-[0.68em]">
             <span className="font-semibold text-primary flex items-center gap-1 uppercase tracking-wider">
               <HeadphonesIcon className="w-3 h-3" />
-              Interviewer Question
+              Interviewer Question (↕)
             </span>
             {isTranslatingInterviewer && (
               <span className="text-muted-foreground flex items-center gap-1 text-[0.6em]">
@@ -478,14 +491,9 @@ export const ResultsSection = ({
                 <span className="text-[0.75em] font-semibold text-amber-900 dark:text-amber-300">
                   ⚡ Новый ответ
                 </span>
-                {!isHeld && countdown !== null && (
-                  <span className="text-[0.7em] font-mono font-bold text-amber-600 dark:text-amber-400 bg-amber-500/20 px-1 rounded">
-                    автопоказ через {countdown}с
-                  </span>
-                )}
-                {isHeld && (
-                  <span className="text-[0.7em] font-medium text-amber-700 dark:text-amber-400 bg-amber-500/20 px-1 rounded">
-                    ⏸ Удержано (ручной показ)
+                {countdown !== null && (
+                  <span className="text-[0.7em] font-mono font-bold text-amber-600 dark:text-amber-400 bg-amber-500/20 px-1.5 py-0.5 rounded-full">
+                    автопоказ: {countdown}с
                   </span>
                 )}
               </div>
@@ -495,16 +503,16 @@ export const ResultsSection = ({
             </div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            {/* Hold / Unhold Button */}
+            {/* Hold Button (+10s timer) */}
             <Button
               size="sm"
               variant="outline"
               onClick={handleToggleHold}
               className="h-6 px-2 text-[0.68em] border-amber-500/40 text-amber-900 dark:text-amber-300 hover:bg-amber-500/20 gap-1"
-              title={isHeld ? "Возобновить автопоказ" : "Задержать текущий ответ и отключить таймер"}
+              title="Добавить +10 секунд к таймеру удержания ответа"
             >
-              {isHeld ? <PlayIcon className="w-2.5 h-2.5" /> : <PauseIcon className="w-2.5 h-2.5" />}
-              <span>{isHeld ? "Авто" : "Задержать"}</span>
+              <PauseIcon className="w-2.5 h-2.5" />
+              <span>+10с Задержать</span>
             </Button>
             {/* Show Now Button */}
             <Button
@@ -519,7 +527,7 @@ export const ResultsSection = ({
         </div>
       )}
 
-      {/* Main Focus Area: Generated AI Answer (Rock-solid text wrapping) */}
+      {/* Main Focus Area: Generated AI Answer (RESIZABLE & Rock-solid text wrapping) */}
       <div
         className={cn(
           "gap-2 w-full min-w-0 max-w-full overflow-hidden",
@@ -534,11 +542,11 @@ export const ResultsSection = ({
               <span className="text-[0.85em] font-medium">Thinking aloud...</span>
             </div>
           ) : displayedAnswer || lastAIResponse ? (
-            <div className="p-3 rounded-xl border border-border/60 bg-background shadow-sm space-y-1 w-full min-w-0 max-w-full overflow-hidden">
+            <div className="p-3 rounded-xl border border-border/60 bg-background shadow-sm space-y-1 w-full min-w-0 max-w-full resize-y overflow-auto min-h-[80px] max-h-[450px]">
               <div className="flex items-center justify-between text-[0.65em] text-muted-foreground select-none">
                 <span className="font-semibold text-primary uppercase tracking-wider flex items-center gap-1">
                   <SparklesIcon className="w-3 h-3" />
-                  Your Active Answer
+                  Your Active Answer (↕)
                 </span>
                 <div className="flex items-center gap-1">
                   {/* Feedback 👍 / 👎 for Self-Evolution learning */}
@@ -633,7 +641,7 @@ export const ResultsSection = ({
 
         {/* Right: Instant Google Translation Panel (When RU ↔ EN Toggle is ON) */}
         {dualTranslate && hasResponse && (
-          <div className="p-2.5 rounded-xl border border-border/50 bg-muted/10 space-y-1.5 w-full min-w-0 max-w-full overflow-hidden">
+          <div className="p-2.5 rounded-xl border border-border/50 bg-muted/10 space-y-1.5 w-full min-w-0 max-w-full resize-y overflow-auto min-h-[70px] max-h-[380px]">
             <div className="flex items-center justify-between border-b border-border/30 pb-1">
               <span className="text-[0.72em] font-semibold text-primary flex items-center gap-1">
                 <Languages className="w-3 h-3" />
