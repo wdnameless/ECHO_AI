@@ -132,6 +132,45 @@ def transcribe_wav(wav_path: str, model_id: str) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# LOCAL OFFLINE FALLBACK - openai-whisper (CPU, base.pt already cached).
+# Used when the Handy GPU model fails or is not selected - NO CLOUD,
+# NO API KEYS, NO 429 rate limits.
+# ---------------------------------------------------------------------------
+_whisper_model = None
+_whisper_lock = threading.Lock()
+WHISPER_MODEL_NAME = os.environ.get("PLUELY_WHISPER_MODEL", "base")
+
+
+def transcribe_local_whisper(wav_path: str) -> str:
+    """Transcribe using locally installed openai-whisper (CPU)."""
+    global _whisper_model
+    with _whisper_lock:
+        if _whisper_model is None:
+            log(f"Loading local whisper model '{WHISPER_MODEL_NAME}' (CPU)...")
+            try:
+                import whisper
+            except ImportError as e:
+                log(f"openai-whisper not installed: {e}")
+                return ""
+            _whisper_model = whisper.load_model(WHISPER_MODEL_NAME)
+            log("Local whisper model loaded")
+        try:
+            result = _whisper_model.transcribe(
+                wav_path,
+                language=None,
+                fp16=False,
+                no_speech_threshold=0.6,
+                condition_on_previous_text=False,
+            )
+            text = (result.get("text") or "").strip()
+            log("Local whisper OK: " + text[:80])
+            return text
+        except Exception as e:
+            log("Local whisper failed: " + str(e))
+            return ""
+
+
 class STTHandler(BaseHTTPRequestHandler):
     server_version = "HandySTT/1.0"
 
@@ -202,6 +241,12 @@ class STTHandler(BaseHTTPRequestHandler):
                     f.write(wav)
                 log(f"Transcribing {len(wav)} bytes with model {model_id}")
                 text = transcribe_wav(tmp, model_id)
+
+                # If Handy (GPU) failed - fall back to LOCAL offline whisper (CPU).
+                # No cloud, no API keys, no 429 rate limits.
+                if not text:
+                    log("Handy GPU returned empty - trying local offline whisper...")
+                    text = transcribe_local_whisper(tmp)
             finally:
                 try:
                     os.remove(tmp)

@@ -1,18 +1,12 @@
-import { useState } from "react";
-import { Header, Button, Label, Input } from "@/components";
-import { KeyIcon, TrashIcon, CpuIcon, MicIcon } from "lucide-react";
+import { Header, Label } from "@/components";
+import { CpuIcon, MicIcon, HardDriveIcon } from "lucide-react";
 import { UseSettingsReturn } from "@/types";
 import { Providers } from "./Providers";
 import { CustomProviders } from "./CustomProvider";
-import {
-  getGroqFallbackKey,
-  setGroqFallbackKey,
-} from "@/lib/functions/stt-fallback";
 import { useHandyStatus } from "@/hooks/useHandyStatus";
 import { cn } from "@/lib/utils";
 
 export const STTProviders = (settings: UseSettingsReturn) => {
-  const [groqKey, setGroqKey] = useState<string>(getGroqFallbackKey());
   const handy = useHandyStatus(5000);
 
   const handyModelShort = handy.model
@@ -65,7 +59,7 @@ export const STTProviders = (settings: UseSettingsReturn) => {
         <p className="text-xs text-muted-foreground">
           {handy.online
             ? "Local Nemotron 3.5 ASR Streaming на Vulkan GPU (RTX 3060). Распознавание ~40x real-time, живые субтитры."
-            : "Сервер не запущен — используется облачный фоллбек Groq Whisper. Нажмите «Запустить» или перезапустите Pluely."}
+            : "Сервер не запущен — распознавание недоступно. Перезапустите Pluely, сервер стартует автоматически."}
         </p>
         {handy.online && handyModelShort && (
           <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-2 py-1 font-mono">
@@ -75,47 +69,29 @@ export const STTProviders = (settings: UseSettingsReturn) => {
         )}
       </div>
 
-      {/* Cloud fallback key (used when the local Handy server is offline) */}
-      <div id="stt-fallback" className="space-y-2 rounded-lg border border-border/50 bg-muted/20 p-3">
+      {/* Local fallback chain - no cloud, no 429 */}
+      <div
+        className={cn(
+          "space-y-2 rounded-lg border p-3",
+          handy.online
+            ? "border-border/50 bg-muted/10"
+            : "border-amber-500/40 bg-amber-500/5"
+        )}
+      >
         <div className="flex items-center gap-2">
-          <KeyIcon className="h-4 w-4 text-muted-foreground" />
-          <Label className="text-sm font-medium">Cloud fallback key (Groq)</Label>
+          <HardDriveIcon className="h-4 w-4 text-muted-foreground" />
+          <Label className="text-sm font-medium">
+            Local Offline Fallback (CPU Whisper)
+          </Label>
         </div>
         <p className="text-xs text-muted-foreground">
-          Used automatically when the local Handy STT server is not running, so
-          voice input keeps working. Get a free key at groq.com.
+          Если GPU-модель Handy не отвечает, сервер автоматически
+          распознаёт аудио через локальную модель{" "}
+          <code className="font-mono text-[10px] bg-muted/40 px-1 rounded">
+            openai-whisper (base)
+          </code>{" "}
+          на CPU. Без облака, без API-ключей и без лимитов (429).
         </p>
-        <div className="flex items-center gap-2">
-          <Input
-            type="password"
-            value={groqKey}
-            onChange={(e) => setGroqKey(e.target.value)}
-            placeholder="gsk_..."
-            className="flex-1"
-          />
-          <Button
-            size="sm"
-            onClick={() => {
-              setGroqFallbackKey(groqKey);
-              alert("Groq fallback key saved.");
-            }}
-            disabled={!groqKey.trim()}
-          >
-            Save
-          </Button>
-          <Button
-            size="icon"
-            variant="destructive"
-            onClick={() => {
-              setGroqKey("");
-              setGroqFallbackKey("");
-            }}
-            disabled={!groqKey.trim()}
-            title="Remove fallback key"
-          >
-            <TrashIcon className="h-4 w-4" />
-          </Button>
-        </div>
       </div>
 
       {/* Custom Provider */}
