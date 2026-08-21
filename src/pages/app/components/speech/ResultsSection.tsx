@@ -512,6 +512,14 @@ export const ResultsSection = ({
               <span className="font-semibold text-[0.85em] uppercase shrink-0 mt-0.5">
                 {seg.source === "me" ? "🎤 You:" : "🎧 Them:"}
               </span>
+              {seg.source === "them" && handy.online && (
+                <span
+                  className="shrink-0 mt-0.5 text-[0.6em] font-mono font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1 py-px rounded-full"
+                  title={`Распознано локальной моделью: ${handy.model || "Nemotron 3.5 ASR (GPU)"}`}
+                >
+                  Nemotron GPU
+                </span>
+              )}
               <span className="flex-1 min-w-0 break-words select-text">
                 {seg.text}
                 {seg.partial && (
@@ -536,6 +544,14 @@ export const ResultsSection = ({
               <HeadphonesIcon className="w-3 h-3" />
               Interviewer Question (↕)
             </span>
+            {handy.online && (
+              <span
+                className="text-[0.6em] font-mono font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-1.5 py-px rounded-full"
+                title={`Распознано локальной моделью: ${handy.model || "Nemotron 3.5 ASR (GPU)"}`}
+              >
+                🎧 Nemotron GPU
+              </span>
+            )}
             {isTranslatingInterviewer && (
               <span className="text-muted-foreground flex items-center gap-1 text-[0.6em]">
                 <Loader2 className="w-2 h-2 animate-spin" />
