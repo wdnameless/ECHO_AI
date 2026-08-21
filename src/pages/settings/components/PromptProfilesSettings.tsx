@@ -19,6 +19,8 @@ import {
   ThumbsUpIcon,
   ThumbsDownIcon,
   RotateCcwIcon,
+  FileCodeIcon,
+  SaveIcon,
 } from "lucide-react";
 import { useApp } from "@/contexts";
 import { cn } from "@/lib/utils";
@@ -30,6 +32,9 @@ import {
   addUserFact,
   removeUserFact,
   UserFact,
+  getUserMarkdownProfile,
+  saveUserMarkdownProfile,
+  resetUserMarkdownProfile,
 } from "@/lib/storage/user-facts";
 
 export const PromptProfilesSettings = () => {
@@ -52,6 +57,11 @@ export const PromptProfilesSettings = () => {
   const [newFactText, setNewFactText] = useState("");
   const [stylePrefs, setStylePrefs] = useState(() => getUserStylePreferences());
   const [feedbackLogs, setFeedbackLogs] = useState(() => getFeedbackLog());
+
+  // USER.md raw editor mode
+  const [showMarkdownEditor, setShowMarkdownEditor] = useState(false);
+  const [markdownText, setMarkdownText] = useState<string>(() => getUserMarkdownProfile());
+  const [markdownSaved, setMarkdownSaved] = useState(false);
 
   const activeProfile =
     promptProfiles.find((p) => p.id === activeProfileId) || promptProfiles[0];
@@ -101,21 +111,36 @@ export const PromptProfilesSettings = () => {
     if (!newFactText.trim()) return;
     addUserFact(newFactText.trim());
     setFacts(getUserFacts());
+    setMarkdownText(getUserMarkdownProfile());
     setNewFactText("");
   }, [newFactText]);
 
   const handleRemoveFact = useCallback((id: string) => {
     removeUserFact(id);
     setFacts(getUserFacts());
+    setMarkdownText(getUserMarkdownProfile());
   }, []);
 
   const handleResetLearning = useCallback(() => {
     localStorage.removeItem("user_feedback_log");
     localStorage.removeItem("user_memory_style");
     localStorage.removeItem("user_memory_facts");
+    resetUserMarkdownProfile();
     setFacts(getUserFacts());
     setStylePrefs(getUserStylePreferences());
     setFeedbackLogs([]);
+    setMarkdownText(getUserMarkdownProfile());
+  }, []);
+
+  const handleSaveMarkdown = useCallback(() => {
+    saveUserMarkdownProfile(markdownText);
+    setMarkdownSaved(true);
+    setTimeout(() => setMarkdownSaved(false), 2000);
+  }, [markdownText]);
+
+  const handleResetMarkdown = useCallback(() => {
+    resetUserMarkdownProfile();
+    setMarkdownText(getUserMarkdownProfile());
   }, []);
 
   const likesCount = feedbackLogs.filter((l) => l.rating === "like").length;
@@ -215,7 +240,7 @@ export const PromptProfilesSettings = () => {
             <div className="flex items-center gap-2">
               <SparklesIcon className="size-4 text-primary" />
               <div>
-                <span className="text-sm font-semibold">Self-Evolution Knowledge Base & Memory</span>
+                <span className="text-sm font-semibold">Self-Evolution Knowledge Base & USER.md</span>
                 <p className="text-xs text-muted-foreground">
                   AI automatically extracts your facts, stack, tone, and evolves rules from your 👍 / 👎 ratings
                 </p>
@@ -230,91 +255,139 @@ export const PromptProfilesSettings = () => {
               </span>
               <Button
                 size="sm"
+                variant="outline"
+                className="h-7 text-xs gap-1.5"
+                onClick={() => {
+                  setMarkdownText(getUserMarkdownProfile());
+                  setShowMarkdownEditor((prev) => !prev);
+                }}
+              >
+                <FileCodeIcon className="size-3.5 text-primary" />
+                {showMarkdownEditor ? "Visual Mode" : "USER.md Editor"}
+              </Button>
+              <Button
+                size="sm"
                 variant="ghost"
                 className="h-7 text-xs text-muted-foreground hover:text-destructive gap-1"
                 onClick={handleResetLearning}
                 title="Reset all learned memory and feedback"
               >
                 <RotateCcwIcon className="size-3" />
-                Reset Memory
+                Reset
               </Button>
             </div>
           </div>
 
-          {/* User Known Facts List */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Known Personal Facts & Experience ({facts.length})
-              </Label>
+          {/* RAW USER.MD MARKDOWN EDITOR VIEW */}
+          {showMarkdownEditor ? (
+            <div className="space-y-2 bg-background/80 p-3 rounded-lg border border-primary/30">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold uppercase tracking-wider text-primary flex items-center gap-1.5">
+                  <FileCodeIcon className="size-3.5" /> USER.md Context Profile
+                </Label>
+                <div className="flex items-center gap-1.5">
+                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={handleResetMarkdown}>
+                    Restore Auto-Template
+                  </Button>
+                  <Button size="sm" className="h-7 text-xs gap-1" onClick={handleSaveMarkdown}>
+                    <SaveIcon className="size-3" />
+                    Save USER.md
+                  </Button>
+                  {markdownSaved && (
+                    <span className="flex items-center gap-1 text-xs text-emerald-500 font-medium">
+                      <CheckCircle2Icon className="size-3" /> Saved
+                    </span>
+                  )}
+                </div>
+              </div>
+              <Textarea
+                value={markdownText}
+                onChange={(e) => setMarkdownText(e.target.value)}
+                placeholder="# USER.md..."
+                className="min-h-[220px] font-mono text-xs leading-relaxed"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                You can edit this raw markdown memory directly. The Self-Evolution profile will use this exact profile context for all answers.
+              </p>
             </div>
-            <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
-              {facts.map((f) => (
-                <div
-                  key={f.id}
-                  className="flex items-center justify-between gap-2 p-2 rounded-lg bg-background/80 border border-border/40 text-xs"
-                >
-                  <span className="flex-1 truncate">{f.fact}</span>
-                  <span className="text-[10px] text-muted-foreground uppercase px-1 rounded bg-muted">
-                    {f.category}
-                  </span>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-5 w-5 text-muted-foreground hover:text-destructive"
-                    onClick={() => handleRemoveFact(f.id)}
-                  >
-                    <Trash2Icon className="size-3" />
+          ) : (
+            <>
+              {/* User Known Facts List */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Known Personal Facts & Experience ({facts.length})
+                  </Label>
+                </div>
+                <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
+                  {facts.map((f) => (
+                    <div
+                      key={f.id}
+                      className="flex items-center justify-between gap-2 p-2 rounded-lg bg-background/80 border border-border/40 text-xs"
+                    >
+                      <span className="flex-1 truncate">{f.fact}</span>
+                      <span className="text-[10px] text-muted-foreground uppercase px-1 rounded bg-muted">
+                        {f.category}
+                      </span>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-5 w-5 text-muted-foreground hover:text-destructive"
+                        onClick={() => handleRemoveFact(f.id)}
+                      >
+                        <Trash2Icon className="size-3" />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Add Fact Manually */}
+                <div className="flex items-center gap-2 pt-1">
+                  <Input
+                    value={newFactText}
+                    onChange={(e) => setNewFactText(e.target.value)}
+                    placeholder="Add custom fact (e.g. 8 years Go/Rust backend experience, specializes in high-load)..."
+                    className="h-8 text-xs"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleAddFact();
+                    }}
+                  />
+                  <Button size="sm" className="h-8 px-3 text-xs" onClick={handleAddFact} disabled={!newFactText.trim()}>
+                    Add
                   </Button>
                 </div>
-              ))}
-            </div>
-
-            {/* Add Fact Manually */}
-            <div className="flex items-center gap-2 pt-1">
-              <Input
-                value={newFactText}
-                onChange={(e) => setNewFactText(e.target.value)}
-                placeholder="Add custom fact (e.g. 8 years Go/Rust backend experience, specializes in high-load)..."
-                className="h-8 text-xs"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAddFact();
-                }}
-              />
-              <Button size="sm" className="h-8 px-3 text-xs" onClick={handleAddFact} disabled={!newFactText.trim()}>
-                Add
-              </Button>
-            </div>
-          </div>
-
-          {/* Evolved Style Patterns */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-primary/20">
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-                ⭐ Favorite Patterns (Reinforced by 👍)
-              </Label>
-              <div className="space-y-1">
-                {stylePrefs.favoritePatterns.map((p, i) => (
-                  <div key={i} className="text-xs p-1.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-foreground/90">
-                    {p}
-                  </div>
-                ))}
               </div>
-            </div>
 
-            <div className="space-y-1">
-              <Label className="text-xs font-semibold text-red-700 dark:text-red-400">
-                🚫 Avoid Constraints (Learned from 👎)
-              </Label>
-              <div className="space-y-1">
-                {stylePrefs.avoidPatterns.map((p, i) => (
-                  <div key={i} className="text-xs p-1.5 rounded bg-red-500/10 border border-red-500/20 text-foreground/90">
-                    {p}
+              {/* Evolved Style Patterns */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-primary/20">
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
+                    ⭐ Favorite Patterns (Reinforced by 👍)
+                  </Label>
+                  <div className="space-y-1">
+                    {stylePrefs.favoritePatterns.map((p, i) => (
+                      <div key={i} className="text-xs p-1.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-foreground/90">
+                        {p}
+                      </div>
+                    ))}
                   </div>
-                ))}
+                </div>
+
+                <div className="space-y-1">
+                  <Label className="text-xs font-semibold text-red-700 dark:text-red-400">
+                    🚫 Avoid Constraints (Learned from 👎)
+                  </Label>
+                  <div className="space-y-1">
+                    {stylePrefs.avoidPatterns.map((p, i) => (
+                      <div key={i} className="text-xs p-1.5 rounded bg-red-500/10 border border-red-500/20 text-foreground/90">
+                        {p}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
+            </>
+          )}
         </div>
       )}
 

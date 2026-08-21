@@ -1,109 +1,92 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useRef } from "react";
 import {
-  Button,
   Popover,
-  PopoverTrigger,
   PopoverContent,
+  PopoverTrigger,
+  Button,
   ScrollArea,
 } from "@/components";
+import { PermissionFlow } from "./PermissionFlow";
 import {
-  HeadphonesIcon,
   AlertCircleIcon,
-  LoaderIcon,
-  AudioLinesIcon,
+  MicIcon,
+  MicOffIcon,
   CameraIcon,
-  PlusIcon,
   XIcon,
+  PlusIcon,
+  LoaderIcon,
+  Settings2Icon,
+  ZapIcon,
 } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
 import { ModeSwitcher } from "./ModeSwitcher";
-import { RecordingPanel } from "./RecordingPanel";
+import { QuickActions } from "./QuickActions";
 import { ResultsSection } from "./ResultsSection";
 import { SettingsPanel } from "./SettingsPanel";
-import { PermissionFlow } from "./PermissionFlow";
-import { QuickActions } from "./QuickActions";
-import { Warning } from "./Warning";
-import { useSystemAudioType } from "@/hooks";
-import { useApp } from "@/contexts";
+import { RecordingPanel } from "./RecordingPanel";
+import { useSystemAudio } from "@/hooks";
 import { cn } from "@/lib/utils";
+import { invoke } from "@tauri-apps/api/core";
+import { useApp } from "@/contexts";
 
-export const SystemAudio = (props: useSystemAudioType) => {
+export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const {
     capturing,
+    error,
     isProcessing,
     isAIProcessing,
     myLastTranscription,
     theirLastTranscription,
     lastAIResponse,
-    error,
+    conversation,
+    recordingProgress,
+    vadConfig,
+    useSystemPrompt,
+    contextContent,
+    isPopoverOpen,
+    isContinuousMode,
+    isRecordingInContinuousMode,
     setupRequired,
+    quickActions,
+    isManagingQuickActions,
+    showQuickActions,
+    setIsPopoverOpen,
+    setUseSystemPrompt,
+    setContextContent,
+    updateVadConfiguration,
     startCapture,
     stopCapture,
-    isPopoverOpen,
-    setIsPopoverOpen,
-    useSystemPrompt,
-    setUseSystemPrompt,
-    contextContent,
-    setContextContent,
-    startNewConversation,
-    conversation,
-    resizeWindow,
-    quickActions,
+    startContinuousRecording,
+    handleQuickActionClick,
     addQuickAction,
     removeQuickAction,
-    isManagingQuickActions,
     setIsManagingQuickActions,
-    showQuickActions,
     setShowQuickActions,
-    handleQuickActionClick,
-    vadConfig,
-    updateVadConfiguration,
-    isRecordingInContinuousMode,
-    recordingProgress,
-    manualStopAndSend,
-    startContinuousRecording,
-    ignoreContinuousRecording,
-    scrollAreaRef,
-    pendingScreenshot,
+    startNewConversation,
     setPendingScreenshot,
+    resizeWindow,
   } = props;
 
+  const isVadMode = !isContinuousMode;
+  const handleModeChange = (vad: boolean) => {
+    if (vad) {
+      if (isContinuousMode) {
+        props.ignoreContinuousRecording();
+      }
+    } else {
+      if (!isContinuousMode) {
+        startContinuousRecording();
+      }
+    }
+  };
+
+  const [conversationMode, setConversationMode] = useState(false);
   const { hasActiveLicense, supportsImages } = useApp();
 
-  // View mode toggle
-  const [conversationMode, setConversationMode] = useState(false);
-
-  // Screenshot state
   const [screenshotImage, setScreenshotImage] = useState<string | null>(null);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
-
-  const isVadMode = vadConfig.enabled;
-  const hasResponse = lastAIResponse || isAIProcessing;
-
-  // Keyboard shortcut for Cmd+K to toggle view mode
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!isPopoverOpen) return;
-
-      // Cmd+K or Ctrl+K to toggle view mode
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        setConversationMode((prev) => !prev);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isPopoverOpen]);
-
-  // Clear the preview only AFTER the screenshot has been consumed into a
-  // request (the hook nulls pendingScreenshot once it attaches it), or when
-  // the user removes it manually.
-  useEffect(() => {
-    if (pendingScreenshot === null && screenshotImage) {
-      setScreenshotImage(null);
-    }
-  }, [pendingScreenshot, screenshotImage]);
+  const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
+  const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   const handleToggleCapture = async () => {
     if (capturing) {
@@ -113,20 +96,15 @@ export const SystemAudio = (props: useSystemAudioType) => {
     }
   };
 
-  const handleModeChange = (vadEnabled: boolean) => {
-    updateVadConfiguration({
-      ...vadConfig,
-      enabled: vadEnabled,
-    });
+  const handleRemoveScreenshot = () => {
+    setScreenshotImage(null);
+    setPendingScreenshot(null);
   };
 
-  // Capture screenshot functionality
-  const handleCaptureScreenshot = useCallback(async () => {
-    if (isCapturingScreenshot) return;
-
-    setIsCapturingScreenshot(true);
+  const handleCaptureScreenshot = async () => {
     try {
-      // Check screen recording permission on macOS
+      setIsCapturingScreenshot(true);
+
       const platform = navigator.platform.toLowerCase();
       if (platform.includes("mac")) {
         const {
@@ -142,9 +120,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
         }
       }
 
-      // Capture screenshot (same command as useCompletion.captureScreenshot)
+      // Capture screenshot
       const base64 = await invoke<string>("capture_to_base64");
-
       setScreenshotImage(base64);
       setPendingScreenshot(base64);
     } catch (err) {
@@ -152,30 +129,28 @@ export const SystemAudio = (props: useSystemAudioType) => {
     } finally {
       setIsCapturingScreenshot(false);
     }
-  }, [isCapturingScreenshot, setPendingScreenshot]);
-
-  const handleRemoveScreenshot = useCallback(() => {
-    setScreenshotImage(null);
-    setPendingScreenshot(null);
-  }, [setPendingScreenshot]);
+  };
 
   const getButtonIcon = () => {
-    if (setupRequired) return <AlertCircleIcon className="text-orange-500" />;
     if (error && !setupRequired)
-      return <AlertCircleIcon className="text-red-500" />;
-    if (isProcessing) return <LoaderIcon className="animate-spin" />;
+      return <AlertCircleIcon className="w-3.5 h-3.5 text-red-500" />;
     if (capturing)
-      return <AudioLinesIcon className="text-green-500 animate-pulse" />;
-    return <HeadphonesIcon />;
+      return <MicIcon className="w-3.5 h-3.5 text-green-500 animate-pulse" />;
+    return <MicOffIcon className="w-3.5 h-3.5 text-muted-foreground" />;
   };
 
   const getButtonTitle = () => {
-    if (setupRequired) return "Setup required - Click for instructions";
+    if (setupRequired) return "Setup Required";
     if (error && !setupRequired) return `Error: ${error}`;
-    if (isProcessing) return "Transcribing audio...";
-    if (capturing) return "Stop system audio capture";
-    return "Start system audio capture";
+    if (capturing) return "Stop live copilot";
+    return "Start live copilot";
   };
+
+  const hasResponse =
+    !!lastAIResponse ||
+    isAIProcessing ||
+    !!myLastTranscription ||
+    !!theirLastTranscription;
 
   return (
     <Popover
@@ -193,7 +168,7 @@ export const SystemAudio = (props: useSystemAudioType) => {
           title={getButtonTitle()}
           onClick={handleToggleCapture}
           className={cn(
-            capturing && "bg-green-50 hover:bg-green-100",
+            capturing && "bg-green-50 hover:bg-green-100 dark:bg-green-950/40",
             error && "bg-red-100 hover:bg-red-200"
           )}
         >
@@ -208,25 +183,41 @@ export const SystemAudio = (props: useSystemAudioType) => {
           className="select-none w-screen max-w-full min-w-0 p-0 border shadow-lg overflow-hidden border-input/50"
           sideOffset={8}
         >
-          <div className="flex flex-col h-[calc(100vh-4rem)] max-w-full min-w-0 overflow-hidden">
-            {/* Header - Mode Switcher + Actions */}
-            <div className="flex-shrink-0 p-3 border-b border-border/50">
-              <div className="flex items-center justify-between gap-2">
-                {/* Mode Switcher */}
-                {!setupRequired && (
-                  <ModeSwitcher
-                    isVadMode={isVadMode}
-                    onModeChange={handleModeChange}
-                    disabled={
-                      isRecordingInContinuousMode ||
-                      isProcessing ||
-                      isAIProcessing
-                    }
-                  />
-                )}
+          <div className="flex flex-col h-[calc(100vh-3.2rem)] max-w-full min-w-0 overflow-hidden">
+            {/* Header - Top Control Toolbar (All actions consolidated at top!) */}
+            <div className="flex-shrink-0 p-2.5 border-b border-border/50 bg-muted/10">
+              <div className="flex items-center justify-between gap-1.5 min-w-0 w-full">
+                {/* Left: Mode Switcher & VAD */}
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {!setupRequired && (
+                    <ModeSwitcher
+                      isVadMode={isVadMode}
+                      onModeChange={handleModeChange}
+                      disabled={
+                        isRecordingInContinuousMode ||
+                        isProcessing ||
+                        isAIProcessing
+                      }
+                    />
+                  )}
+                </div>
 
-                {/* Right side actions */}
-                <div className="flex items-center gap-1">
+                {/* Right: Quick Actions, Screenshot, Settings & New */}
+                <div className="flex items-center gap-1 shrink-0">
+                  {/* Quick Actions Button (Top Bar Dropdown/Drawer) */}
+                  {!setupRequired && hasResponse && (
+                    <Button
+                      size="sm"
+                      variant={showQuickActionsDropdown ? "secondary" : "ghost"}
+                      onClick={() => setShowQuickActionsDropdown((prev) => !prev)}
+                      className="h-6 px-2 text-[10px] gap-1 font-medium"
+                      title="Quick prompt actions"
+                    >
+                      <ZapIcon className="w-3 h-3 text-amber-500" />
+                      <span>Prompts</span>
+                    </Button>
+                  )}
+
                   {/* Screenshot Button */}
                   {hasActiveLicense &&
                     supportsImages &&
@@ -234,25 +225,35 @@ export const SystemAudio = (props: useSystemAudioType) => {
                     !setupRequired && (
                       <Button
                         size="sm"
-                        variant={screenshotImage ? "default" : "outline"}
+                        variant={screenshotImage ? "default" : "ghost"}
                         onClick={handleCaptureScreenshot}
                         disabled={isCapturingScreenshot || isAIProcessing}
                         className={cn(
                           "h-6 text-[10px] gap-1 px-2",
                           screenshotImage && "bg-primary text-primary-foreground"
                         )}
-                        title="Capture screenshot to include with transcription"
+                        title="Capture screenshot"
                       >
                         {isCapturingScreenshot ? (
                           <LoaderIcon className="w-3 h-3 animate-spin" />
                         ) : (
                           <CameraIcon className="w-3 h-3" />
                         )}
-                        Screenshot
                       </Button>
                     )}
 
-                  {/* New Conversation Button */}
+                  {/* Settings Drawer Toggle */}
+                  <Button
+                    size="icon"
+                    variant={showSettingsDrawer ? "secondary" : "ghost"}
+                    onClick={() => setShowSettingsDrawer((prev) => !prev)}
+                    className="h-6 w-6"
+                    title="Audio & AI Context Settings"
+                  >
+                    <Settings2Icon className="w-3.5 h-3.5" />
+                  </Button>
+
+                  {/* Start New Conversation Button */}
                   {!setupRequired && (
                     <Button
                       size="sm"
@@ -283,8 +284,28 @@ export const SystemAudio = (props: useSystemAudioType) => {
                   )}
                 </div>
               </div>
+
+              {/* Quick Actions Drawer (When Prompts button is clicked) */}
+              {showQuickActionsDropdown && !setupRequired && hasResponse && (
+                <div className="pt-2 mt-1.5 border-t border-border/40 animate-in fade-in duration-150">
+                  <QuickActions
+                    actions={quickActions}
+                    onActionClick={(action) => {
+                      handleQuickActionClick(action);
+                      setShowQuickActionsDropdown(false);
+                    }}
+                    onAddAction={addQuickAction}
+                    onRemoveAction={removeQuickAction}
+                    isManaging={isManagingQuickActions}
+                    setIsManaging={setIsManagingQuickActions}
+                    show={showQuickActions}
+                    setShow={setShowQuickActions}
+                  />
+                </div>
+              )}
             </div>
 
+            {/* Main Full-Height ScrollArea for Answers & Text */}
             <ScrollArea className="flex-1 min-h-0 w-full min-w-0 max-w-full overflow-x-hidden" ref={scrollAreaRef}>
               <div className="p-2 space-y-2 w-full min-w-0 max-w-full overflow-x-hidden">
                 {/* Screenshot Preview */}
@@ -339,7 +360,7 @@ export const SystemAudio = (props: useSystemAudioType) => {
                   />
                 ) : (
                   <>
-                    {/* Recording Panel */}
+                    {/* Recording Panel (Continuous Mode) */}
                     <RecordingPanel
                       isVadMode={isVadMode}
                       isRecording={isRecordingInContinuousMode}
@@ -348,11 +369,40 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       recordingProgress={recordingProgress}
                       maxDuration={vadConfig.max_recording_duration_secs}
                       onStartRecording={startContinuousRecording}
-                      onStopAndSend={manualStopAndSend}
-                      onIgnore={ignoreContinuousRecording}
+                      onStopAndSend={props.manualStopAndSend}
+                      onIgnore={props.ignoreContinuousRecording}
                     />
 
-                    {/* AI Response */}
+                    {/* Settings Panel (Collapsible Drawer from Top Bar) */}
+                    {showSettingsDrawer && (
+                      <div className="p-3 rounded-xl border border-primary/30 bg-muted/20 animate-in fade-in duration-150 mb-2">
+                        <div className="flex items-center justify-between mb-2 pb-1 border-b border-border/40">
+                          <span className="text-xs font-semibold text-primary flex items-center gap-1.5">
+                            <Settings2Icon className="w-3.5 h-3.5" /> Audio & VAD Settings
+                          </span>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-5 w-5"
+                            onClick={() => setShowSettingsDrawer(false)}
+                          >
+                            <XIcon className="w-3 h-3" />
+                          </Button>
+                        </div>
+                        <SettingsPanel
+                          vadConfig={vadConfig}
+                          onUpdateVadConfig={updateVadConfiguration}
+                          useSystemPrompt={useSystemPrompt}
+                          setUseSystemPrompt={setUseSystemPrompt}
+                          contextContent={contextContent}
+                          setContextContent={setContextContent}
+                          respondToMic={props.respondToMic}
+                          setRespondToMic={props.setRespondToMic}
+                        />
+                      </div>
+                    )}
+
+                    {/* AI Response & Main Text Display */}
                     <ResultsSection
                       myLastTranscription={myLastTranscription}
                       theirLastTranscription={theirLastTranscription}
@@ -364,42 +414,12 @@ export const SystemAudio = (props: useSystemAudioType) => {
                       liveSegments={props.liveSegments}
                       micSpeaking={props.micSpeaking}
                       micListening={props.micListening}
+                      scrollAreaRef={scrollAreaRef}
                     />
-
-                    {/* Settings Panel */}
-                    <SettingsPanel
-                      vadConfig={vadConfig}
-                      onUpdateVadConfig={updateVadConfiguration}
-                      useSystemPrompt={useSystemPrompt}
-                      setUseSystemPrompt={setUseSystemPrompt}
-                      contextContent={contextContent}
-                      setContextContent={setContextContent}
-                      respondToMic={props.respondToMic}
-                      setRespondToMic={props.setRespondToMic}
-                    />
-
-                    {/* Help/Keyboard Shortcuts */}
-                    <Warning isVadMode={isVadMode} />
                   </>
                 )}
               </div>
             </ScrollArea>
-
-            {/* Quick Actions */}
-            {!setupRequired && hasResponse && (
-              <div className="flex-shrink-0 border-t border-border/50 p-2">
-                <QuickActions
-                  actions={quickActions}
-                  onActionClick={handleQuickActionClick}
-                  onAddAction={addQuickAction}
-                  onRemoveAction={removeQuickAction}
-                  isManaging={isManagingQuickActions}
-                  setIsManaging={setIsManagingQuickActions}
-                  show={showQuickActions}
-                  setShow={setShowQuickActions}
-                />
-              </div>
-            )}
           </div>
         </PopoverContent>
       )}

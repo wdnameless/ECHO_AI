@@ -3,6 +3,7 @@ import { safeLocalStorage } from "./helper";
 export const USER_FACTS_STORAGE_KEY = "user_memory_facts";
 export const USER_STYLE_STORAGE_KEY = "user_memory_style";
 export const FEEDBACK_LOG_STORAGE_KEY = "user_feedback_log";
+export const USER_MARKDOWN_STORAGE_KEY = "user_markdown_profile";
 
 export interface UserFact {
   id: string;
@@ -16,8 +17,8 @@ export interface UserFact {
 export interface UserStylePreference {
   tone: string; // e.g. "живой, лаконичный, без занудства"
   preferredLength: "concise" | "balanced" | "detailed";
-  favoritePatterns: string[]; // ["объяснять шаги", "начинать сразу с сути", "приводить реальные цифры"]
-  avoidPatterns: string[]; // ["нумерованные списки", "робо-клише", "повторяющееся 'Ну смотри'"]
+  favoritePatterns: string[];
+  avoidPatterns: string[];
   customRules: string[];
 }
 
@@ -34,7 +35,7 @@ export interface FeedbackEntry {
 
 export const DEFAULT_STYLE_PREFERENCES: UserStylePreference = {
   tone: "живой, естественный, как разговор двух опытных инженеров",
-  preferredLength: "balanced",
+  preferredLength: "concise",
   favoritePatterns: [
     "Объяснять ход мыслей (почему именно так)",
     "Приводить реальные примеры из продакшена",
@@ -44,6 +45,7 @@ export const DEFAULT_STYLE_PREFERENCES: UserStylePreference = {
     "Маркированные и нумерованные списки",
     "Робо-клише ('Стоит отметить', 'В заключение')",
     "Сухой книжный тон из учебников",
+    "Длинные абзацы текста",
   ],
   customRules: [],
 };
@@ -102,7 +104,7 @@ export function addUserFact(factText: string, category: UserFact["category"] = "
     timestamp: Date.now(),
   };
   facts.unshift(newFact);
-  saveUserFacts(facts.slice(0, 50)); // Cap to 50 active high-value facts
+  saveUserFacts(facts.slice(0, 50));
   return newFact;
 }
 
@@ -158,21 +160,17 @@ export function recordFeedback(
   logs.unshift(entry);
   safeLocalStorage.setItem(FEEDBACK_LOG_STORAGE_KEY, JSON.stringify(logs.slice(0, 100)));
 
-  // Automatic evolution: Update style preferences and learn facts on feedback!
   const style = getUserStylePreferences();
 
   if (rating === "like") {
-    // If user likes long answers with reasoning, reinforce thinking pattern
-    if (response.length > 200 && !style.favoritePatterns.includes("Развернутое объяснение с деталями")) {
-      style.favoritePatterns.push("Развернутое объяснение с деталями");
+    if (response.length < 150 && !style.favoritePatterns.includes("Краткие и ёмкие ответы (до 3 предложений)")) {
+      style.favoritePatterns.push("Краткие и ёмкие ответы (до 3 предложений)");
     }
   } else if (rating === "dislike" && reason) {
-    // Add negative constraint based on user reason
     const reasonText = reason.trim();
     if (!style.avoidPatterns.includes(reasonText)) {
       style.avoidPatterns.push(reasonText);
     }
-    // Handle specific reasons
     if (reasonText.toLowerCase().includes("длинн") || reasonText.toLowerCase().includes("воды")) {
       style.preferredLength = "concise";
     }
@@ -183,9 +181,63 @@ export function recordFeedback(
 }
 
 /**
- * Builds the rich compiled prompt injection for the Self-Evolution profile.
+ * Generates clean USER.md markdown representation for the profile.
+ */
+export function getUserMarkdownProfile(): string {
+  const customMd = safeLocalStorage.getItem(USER_MARKDOWN_STORAGE_KEY);
+  if (customMd && customMd.trim()) {
+    return customMd;
+  }
+
+  const facts = getUserFacts();
+  const style = getUserStylePreferences();
+  const logs = getFeedbackLog();
+  const likesCount = logs.filter((l) => l.rating === "like").length;
+  const dislikesCount = logs.filter((l) => l.rating === "dislike").length;
+
+  return `# USER.md - Personal Context & Self-Evolution Memory
+# Total Ratings: 👍 ${likesCount} | 👎 ${dislikesCount}
+
+## 👤 Personal Facts & Background
+${facts.map((f) => `- [${f.category}] ${f.fact}`).join("\n")}
+
+## 🎨 Preferred Style & Tone
+- **Tone**: ${style.tone}
+- **Length**: ${style.preferredLength === "concise" ? "Краткий и ёмкий (1-3 предложения, без лишней воды)" : "Сбалансированный"}
+- **Favorite Patterns**:
+${style.favoritePatterns.map((p) => `  - ${p}`).join("\n")}
+
+## 🚫 Avoid Constraints (Learned Rules)
+${style.avoidPatterns.map((p) => `- ${p}`).join("\n")}
+
+## 📝 Custom Rules
+${style.customRules.length > 0 ? style.customRules.map((r) => `- ${r}`).join("\n") : "- Отвечать кратко, живо, прямо к сути (35-50 слов max)."}
+`.trim();
+}
+
+/**
+ * Saves raw USER.md text edited by the user directly.
+ */
+export function saveUserMarkdownProfile(markdown: string): void {
+  safeLocalStorage.setItem(USER_MARKDOWN_STORAGE_KEY, markdown.trim());
+}
+
+/**
+ * Resets custom USER.md to auto-compiled template.
+ */
+export function resetUserMarkdownProfile(): void {
+  safeLocalStorage.removeItem(USER_MARKDOWN_STORAGE_KEY);
+}
+
+/**
+ * Builds the compiled prompt injection for the Self-Evolution profile.
  */
 export function buildSelfEvolutionPromptBlock(): string {
+  const customMd = safeLocalStorage.getItem(USER_MARKDOWN_STORAGE_KEY);
+  if (customMd && customMd.trim()) {
+    return `[SELF-EVOLUTION PROFILE (USER.md)]\n${customMd.trim()}\n[/SELF-EVOLUTION PROFILE]`;
+  }
+
   const facts = getUserFacts();
   const style = getUserStylePreferences();
   const logs = getFeedbackLog();
@@ -199,7 +251,7 @@ export function buildSelfEvolutionPromptBlock(): string {
   const customLines = style.customRules.map((r) => `- Личное правило: ${r}`).join("\n");
 
   return `
-[SELF-EVOLUTION ADAPTIVE PROFILE - ПЕРСОНАЛЬНЫЙ ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ]
+[SELF-EVOLUTION ADAPTIVE PROFILE - ПЕРСОНАЛЬНЫЙ ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ (USER.md)]
 Ты работаешь в режиме самообучения (Self-Evolution). Ты обязан максимально адаптироваться под личность, опыт и предпочтения этого конкретного пользователя (на основе ${likesCount} одобрений и ${dislikesCount} замечаний).
 
 1. БАЗА ЗНАНИЙ И ФАКТОВ О ПОЛЬЗОВАТЕЛЕ:
@@ -207,7 +259,7 @@ ${factsLines || "- Опытный специалист, ценит точнос�
 
 2. ВЫУЧЕННЫЙ СТИЛЬ И ПАТТЕРНЫ ОТВЕТОВ:
 - Тональность: ${style.tone}
-- Желаемый объем: ${style.preferredLength === "concise" ? "Краткий и ёмкий (без лишней воды)" : "Сбалансированный с понятными примерами"}
+- Желаемый объем: Краткий и ёмкий (1-3 коротких предложения, 35-50 слов max, БЕЗ ЛИШНЕЙ ВОДЫ)
 ${favoritesLines}
 ${avoidLines}
 ${customLines ? `\n3. КАСТОМНЫЕ ПРАВИЛА:\n${customLines}` : ""}

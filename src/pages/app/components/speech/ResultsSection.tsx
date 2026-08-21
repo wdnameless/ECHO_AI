@@ -41,6 +41,7 @@ type Props = {
   liveSegments: LiveSegment[];
   micSpeaking: boolean;
   micListening: boolean;
+  scrollAreaRef?: React.RefObject<HTMLDivElement | null>;
 };
 
 export const ResultsSection = ({
@@ -54,6 +55,7 @@ export const ResultsSection = ({
   liveSegments,
   micSpeaking,
   micListening: _micListening,
+  scrollAreaRef,
 }: Props) => {
   const { promptProfiles, activeProfileId, selectPromptProfile } = useApp();
 
@@ -146,7 +148,17 @@ export const ResultsSection = ({
     }
   }, [previousAnswer, displayedAnswer]);
 
-  // Clear states on new conversation
+  // Smooth auto-scroll to bottom during response streaming if user is near bottom
+  useEffect(() => {
+    if (!scrollAreaRef?.current || !lastAIResponse) return;
+    const viewport = scrollAreaRef.current.querySelector("[data-radix-scroll-area-viewport]") as HTMLElement | null;
+    if (viewport) {
+      const isNearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 120;
+      if (isNearBottom) {
+        viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
+      }
+    }
+  }, [lastAIResponse, displayedAnswer, scrollAreaRef]);
   useEffect(() => {
     if (conversation.messages.length === 0) {
       setDisplayedAnswer("");
