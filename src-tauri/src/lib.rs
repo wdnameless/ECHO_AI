@@ -81,6 +81,7 @@ pub fn run() {
             window::toggle_dashboard,
             window::move_window,
             handy_server::handy_server_status,
+            handy_server::handy_server_status_detailed,
             handy_server::start_handy_server,
             handy_server::speak_text,
             capture::capture_to_base64,

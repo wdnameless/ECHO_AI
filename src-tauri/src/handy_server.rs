@@ -1,3 +1,4 @@
+use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -108,6 +109,34 @@ pub fn stop_server() {
 #[tauri::command]
 pub fn handy_server_status() -> bool {
     is_running()
+}
+
+/// Detailed status for the frontend: whether the server is up plus the
+/// currently selected Handy model (read from the server /health endpoint).
+#[tauri::command]
+pub fn handy_server_status_detailed() -> serde_json::Value {
+    if !is_running() {
+        return serde_json::json!({ "online": false, "model": "" });
+    }
+    // Ask the python server for the selected model via /health.
+    let model = TcpStream::connect_timeout(&PORT.parse().unwrap(), Duration::from_millis(400))
+        .ok()
+        .and_then(|mut stream| {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(600)));
+            let _ = stream.write_all(
+                b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            );
+            let _ = stream.flush();
+            let mut buf = Vec::new();
+            let _ = stream.read_to_end(&mut buf);
+            let text = String::from_utf8_lossy(&buf);
+            // Extract the JSON body after the blank line
+            let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
+            let v: serde_json::Value = serde_json::from_str(body).ok()?;
+            v.get("model").and_then(|m| m.as_str()).map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+    serde_json::json!({ "online": true, "model": model })
 }
 
 /// Start the server on demand (frontend can call this too).

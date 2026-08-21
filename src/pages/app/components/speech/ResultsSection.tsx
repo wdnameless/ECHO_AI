@@ -30,6 +30,8 @@ import { cn } from "@/lib/utils";
 import { useApp } from "@/contexts";
 import { fastTranslate } from "@/lib/fast-translator";
 import { recordFeedback } from "@/lib/storage/user-facts";
+import { useHandyStatus } from "@/hooks/useHandyStatus";
+import { formatSpokenAnswer } from "@/lib/spoken-format";
 
 type Props = {
   myLastTranscription: string;
@@ -106,6 +108,12 @@ export const ResultsSection = ({
 
   const activeProfile =
     promptProfiles.find((p) => p.id === activeProfileId) || promptProfiles[0];
+
+  // Local Handy STT server health (green indicator + model name)
+  const handy = useHandyStatus(5000);
+  const handyModelShort = handy.model
+    ? handy.model.split("/").pop()?.replace(".gguf", "") || handy.model
+    : "";
 
   const handleGiveFeedback = useCallback(
     (rating: "like" | "dislike", reason?: string) => {
@@ -401,6 +409,31 @@ export const ResultsSection = ({
                 : "Live stream"}
             </span>
           </div>
+
+          {/* Handy Local STT availability indicator */}
+          <span
+            className={cn(
+              "flex items-center gap-1 text-[0.65em] font-medium px-1.5 py-0.5 rounded-full border shrink-0",
+              handy.online
+                ? "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border-emerald-500/30"
+                : "text-red-500 bg-red-500/10 border-red-500/30"
+            )}
+            title={
+              handy.online
+                ? `Handy local STT is ONLINE (${handy.model || "model"})`
+                : "Handy local STT is OFFLINE - using Groq cloud fallback"
+            }
+          >
+            <span
+              className={cn(
+                "w-1.5 h-1.5 rounded-full shrink-0",
+                handy.online ? "bg-emerald-500 animate-pulse" : "bg-red-500"
+              )}
+            />
+            {handy.online
+              ? handyModelShort || "Handy STT"
+              : "STT offline → Groq"}
+          </span>
         </div>
 
         {/* Right: Actions */}
@@ -672,18 +705,30 @@ export const ResultsSection = ({
                   )}
                 </div>
               </div>
-              {/* Guaranteed unbroken text wrapping */}
+              {/* Guaranteed unbroken text wrapping + smart spoken paragraphs */}
               <div
-                className="text-[0.92em] leading-relaxed text-foreground select-text w-full min-w-0 max-w-full break-words"
+                className="text-[0.92em] leading-relaxed text-foreground select-text w-full min-w-0 max-w-full break-words space-y-2"
                 style={{
-                  whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
                   overflowWrap: "anywhere",
                   hyphens: "auto",
                   maxWidth: "100%",
                 }}
               >
-                {displayedAnswer || lastAIResponse}
+                {formatSpokenAnswer(displayedAnswer || lastAIResponse).map(
+                  (paragraph, idx) => (
+                    <p
+                      key={idx}
+                      className={cn(
+                        "leading-relaxed",
+                        idx > 0 &&
+                          "mt-2 pt-2 border-t border-border/40 border-dashed"
+                      )}
+                    >
+                      {paragraph}
+                    </p>
+                  )
+                )}
               </div>
             </div>
           ) : (
