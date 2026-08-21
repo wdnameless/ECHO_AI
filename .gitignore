@@ -27,3 +27,6 @@ dist-ssr
 # Signing keys (never commit!)
 .tauri-signing-key.txt
 .tauri-signing-key.txt.pub
+
+__pycache__/
+*.pyc
