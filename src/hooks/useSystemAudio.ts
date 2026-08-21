@@ -636,6 +636,9 @@ export function useSystemAudio() {
                   ),
               selectedProvider: selectedSttProvider,
               audio: blob,
+              // Live partials must NEVER hit the cloud (Groq 429 protection):
+              // only the local Handy Nemotron model processes these chunks.
+              allowCloudFallback: false,
             });
             if (text && !text.toLowerCase().startsWith("pluely stt error")) {
               appendLiveSegment("them", text.trim(), true);

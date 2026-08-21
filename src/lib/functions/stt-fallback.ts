@@ -9,17 +9,28 @@ export interface TranscribeWithFallbackParams {
   provider?: TYPE_PROVIDER;
   selectedProvider: { provider: string; variables: Record<string, string> };
   audio: Blob | File;
+  /**
+   * When false (default), if the primary provider is the local Handy server
+   * and it fails, the request FAILS instead of falling back to Groq.
+   * Used for high-frequency live partial streaming: falling back to a
+   * cloud API on every ~1s chunk burns quota and hits 429 rate limits.
+   */
+  allowCloudFallback?: boolean;
 }
 
 /**
  * Tries the user-selected STT provider first. If it fails (e.g. the local
  * Handy server is not running), automatically falls back to Groq Whisper
  * (whisper-large-v3-turbo) so voice input keeps working.
+ *
+ * `allowCloudFallback: false` (used for live partial streaming) never
+ * touches the cloud - partial chunks only go through the local model.
  */
 export async function transcribeWithFallback({
   audio,
   provider,
   selectedProvider,
+  allowCloudFallback = true,
 }: TranscribeWithFallbackParams): Promise<string> {
   // If the cloud Pluely API is enabled, use it directly.
   const usePluelyAPI = await shouldUsePluelyAPI();
@@ -49,6 +60,11 @@ export async function transcribeWithFallback({
     } catch {
       // fall through to cloud fallback
     }
+  }
+
+  // Partial streaming (allowCloudFallback=false): never hit the cloud.
+  if (!allowCloudFallback) {
+    return "Pluely STT Error: local model unavailable";
   }
 
   // Cloud fallback: Groq Whisper.
