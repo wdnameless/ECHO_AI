@@ -59,19 +59,29 @@ const ANSWER_GENERATOR_PROMPT =
   "You are a candidate in a live interview answering the interviewer. Write an organic, highly conversational spoken answer.\n\nStrict Rules:\n1. Natural Spoken Openers & Fillers: Start with a natural human conversational opener matching the language of the question (e.g. in Russian: 'Ну, смотрите...', 'Слушайте, тут на самом деле...', 'В целом, если говорить про наш опыт...', 'Ну, мы обычно...'; in English: 'Well, to be honest...', 'Yeah, so in my last project...', 'I mean, typically we handled this by...', 'Honestly, it really depends, but usually...').\n2. Flow: Sound spontaneous, unscripted, and human — not like a bulleted encyclopedia summary.\n3. Length: 2 to 4 punchy spoken sentences (35-65 words maximum). Direct to the point with 1 concrete tool/example from background.\n4. Language: Match the language of the question strictly (Russian if asked in Russian, English if asked in English).\n5. Format: Output ONLY the exact raw words to be spoken aloud. Zero markdown, no bullet points, no quotes, no labels.";
 
 const RU_ANCHORS = [
-  "Ну, смотрите, на самом деле мы обычно ",
-  "Слушайте, тут всё зависит от задачи, но на практике я ",
-  "В целом, если говорить про наш опыт, то мы ",
-  "Ну, если в двух словах, в прошлом проекте мы ",
-  "По сути, в таких кейсах чаще всего ",
+  "Да, хороший вопрос. По моему опыту, ",
+  "Слушайте, на прошлом проекте мы как раз ",
+  "Вообще, тут всё сильно зависит от нагрузки, но чаще всего мы ",
+  "Если честно, мы сначала попробовали простое решение, а потом ",
+  "На практике мы обычно отталкивались от того, что ",
+  "В целом, если говорить про наш стек, то ",
+  "Обычно я в таких кейсах предпочитаю ",
+  "Давайте расскажу на реальном примере: у нас ",
+  "Тут есть важный нюанс. Обычно мы ",
+  "По сути, основная идея была в том, чтобы ",
+  "Мы с командой долго это обсуждали и в итоге решили, что ",
+  "Честно говоря, здесь главное не переусложнять: мы ",
 ];
 
 const EN_ANCHORS = [
-  "Well, to be honest, in our case we typically ",
-  "Yeah, so in my previous project we actually handled this by ",
-  "Honestly, it really depends on the scale, but generally I ",
-  "I mean, typically what we found works best is ",
-  "So, basically in our architecture we ",
+  "Yeah, good question. In my experience, ",
+  "Honestly, on our previous project we actually ",
+  "It really depends on the scale, but typically we ",
+  "To be fair, we started simple and then ",
+  "In practice, what worked best for us was ",
+  "Overall, in our architecture we usually ",
+  "I'd say the main trade-off here is, so we ",
+  "Let me give you a quick real example: we ",
 ];
 
 function isCyrillic(text: string): boolean {

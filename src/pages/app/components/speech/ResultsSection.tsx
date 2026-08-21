@@ -2,14 +2,11 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { ChatConversation, LiveSegment } from "@/hooks/useSystemAudio";
 import { Markdown, Switch, CopyButton, Button } from "@/components";
 import {
-  BotIcon,
   HeadphonesIcon,
   Loader2,
-  MicIcon,
-  SparklesIcon,
   Languages,
   XIcon,
-  RadioIcon,
+  HistoryIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/contexts";
@@ -30,7 +27,7 @@ type Props = {
 };
 
 export const ResultsSection = ({
-  myLastTranscription,
+  myLastTranscription: _myLastTranscription,
   theirLastTranscription,
   lastAIResponse,
   isAIProcessing,
@@ -39,13 +36,12 @@ export const ResultsSection = ({
   setConversationMode,
   liveSegments,
   micSpeaking,
-  micListening,
+  micListening: _micListening,
 }: Props) => {
   const { selectedAIProvider, allAiProviders } = useApp();
 
   const [dualTranslate, setDualTranslate] = useState(false);
-  const [translatedYou, setTranslatedYou] = useState("");
-  const [translatedThem, setTranslatedThem] = useState("");
+  const [showHistory, setShowHistory] = useState(false);
   const [translatedAI, setTranslatedAI] = useState("");
   const [isTranslating, setIsTranslating] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<{
@@ -55,16 +51,13 @@ export const ResultsSection = ({
   } | null>(null);
   const [selectedTranslation, setSelectedTranslation] = useState("");
 
-  const prevYouRef = useRef("");
-  const prevThemRef = useRef("");
   const prevAIRef = useRef("");
-
   const isMac =
     typeof navigator !== "undefined" &&
     navigator.platform.toUpperCase().indexOf("MAC") >= 0;
   const modKey = isMac ? "⌘" : "Ctrl";
 
-  // Explicit direction: Russian -> English, English -> Russian.
+  // Stream translation cleanly
   const translateStream = useCallback(
     async (text: string, setter: (val: string) => void) => {
       if (!text.trim()) {
@@ -80,17 +73,17 @@ export const ResultsSection = ({
         const detected = detectLanguage(text);
         const direction =
           detected === "russian"
-            ? "Translate the following text from Russian into English."
-            : "Translate the following text from English into Russian.";
+            ? "Translate from Russian into natural, conversational English."
+            : "Translate from English into natural, conversational Russian.";
         let full = "";
         setter("");
         for await (const chunk of fetchAIResponse({
           provider: usePluely ? undefined : provider,
           selectedProvider: selectedAIProvider,
           systemPrompt:
-            "You are a professional real-time translator. " +
+            "You are a real-time translator. " +
             direction +
-            " Output ONLY the raw translated text with zero commentary, no quotes, no labels.",
+            " Output ONLY raw translated text without commentary, quotes or prefixes.",
           history: [],
           userMessage: text,
         })) {
@@ -98,7 +91,7 @@ export const ResultsSection = ({
           setter(full);
         }
       } catch {
-        // ignore translation errors
+        // ignore
       } finally {
         setIsTranslating(false);
       }
@@ -106,33 +99,16 @@ export const ResultsSection = ({
     [allAiProviders, selectedAIProvider]
   );
 
+  // Auto-translate AI response when dual translation is active
   useEffect(() => {
     if (!dualTranslate) return;
-
-    if (myLastTranscription && myLastTranscription !== prevYouRef.current) {
-      prevYouRef.current = myLastTranscription;
-      translateStream(myLastTranscription, setTranslatedYou);
-    }
-    if (
-      theirLastTranscription &&
-      theirLastTranscription !== prevThemRef.current
-    ) {
-      prevThemRef.current = theirLastTranscription;
-      translateStream(theirLastTranscription, setTranslatedThem);
-    }
     if (lastAIResponse && lastAIResponse !== prevAIRef.current) {
       prevAIRef.current = lastAIResponse;
       translateStream(lastAIResponse, setTranslatedAI);
     }
-  }, [
-    dualTranslate,
-    myLastTranscription,
-    theirLastTranscription,
-    lastAIResponse,
-    translateStream,
-  ]);
+  }, [dualTranslate, lastAIResponse, translateStream]);
 
-  // Click on a history message -> translate exactly that message.
+  // Click on a message in history to translate
   const handleMessageClick = useCallback(
     (message: { id: string; content: string; source: string }) => {
       setSelectedMessage(message);
@@ -141,108 +117,64 @@ export const ResultsSection = ({
     [translateStream]
   );
 
-  // Unpin the selected translation.
-  const handleUnpinTranslation = useCallback(() => {
-    setSelectedMessage(null);
-    setSelectedTranslation("");
-  }, []);
-
-  const hasTranscriptions = myLastTranscription || theirLastTranscription;
-  const hasResponse = lastAIResponse || isAIProcessing;
-
-  // Live feed: last few recognized segments (streaming recognition).
-  const recentLiveSegments = liveSegments.slice(-4);
-
-  const renderBubble = (
-    text: string,
-    source: "me" | "them",
-    icon: typeof MicIcon,
-    label: string,
-    translatedText?: string
-  ) => {
-    if (!text) return null;
-    const Icon = icon;
-    return (
-      <div
-        className={cn(
-          "flex items-start gap-1.5 p-1.5 rounded-lg border text-[0.85em] leading-relaxed animate-in fade-in duration-150",
-          source === "me"
-            ? "bg-primary/5 border-primary/20"
-            : "bg-muted/40 border-border/40"
-        )}
-      >
-        <div
-          className={cn(
-            "p-1 rounded-md mt-0.5 shrink-0",
-            source === "me"
-              ? "bg-primary/10 text-primary"
-              : "bg-muted text-muted-foreground"
-          )}
-        >
-          <Icon className="w-3 h-3" />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center justify-between gap-1 mb-0.5">
-            <span className="text-[0.6em] font-semibold text-muted-foreground uppercase tracking-wider">
-              {label}
-            </span>
-          </div>
-          <p className="text-foreground/90 select-text break-words">{text}</p>
-          {dualTranslate && translatedText && (
-            <div className="mt-1.5 pt-1.5 border-t border-border/40 text-primary/90">
-              <span className="text-[0.55em] font-medium text-primary/60 uppercase tracking-wider block mb-0.5">
-                Translation (RU ↔ EN)
-              </span>
-              <p className="select-text break-words">{translatedText}</p>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  const youBubble = renderBubble(
-    myLastTranscription,
-    "me",
-    MicIcon,
-    "You",
-    translatedYou
-  );
-  const themBubble = renderBubble(
-    theirLastTranscription,
-    "them",
-    HeadphonesIcon,
-    "Them",
-    translatedThem
-  );
+  const lastLiveText = liveSegments.length > 0 ? liveSegments[liveSegments.length - 1] : null;
+  const hasResponse = !!lastAIResponse || isAIProcessing;
 
   return (
     <div
-      className="space-y-3 pt-2"
+      className="space-y-2.5 pt-1"
       style={{ fontSize: "var(--app-font-size, 15px)" }}
     >
-      {/* Header bar */}
-      <div className="flex items-center justify-between border-b border-border/50 pb-2">
-        <div className="flex items-center gap-1.5">
-          <SparklesIcon className="w-3.5 h-3.5 text-primary" />
-          <h4 className="text-[0.8em] font-medium">
-            {conversationMode ? "Conversation" : "AI Response"}
-          </h4>
+      {/* Sleek Minimal Header */}
+      <div className="flex items-center justify-between border-b border-border/40 pb-1.5 px-0.5 select-none">
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <span className={cn(
+              "w-2 h-2 rounded-full",
+              isAIProcessing ? "bg-amber-500 animate-ping" : micSpeaking ? "bg-blue-500 animate-pulse" : "bg-emerald-500"
+            )} />
+            <span className="text-[0.75em] font-medium text-muted-foreground">
+              {isAIProcessing ? "AI Thinking..." : micSpeaking ? "You're speaking..." : "Ready"}
+            </span>
+          </div>
+
+          {/* Active live speech hint */}
+          {lastLiveText && (
+            <span className="text-[0.7em] text-muted-foreground/70 truncate max-w-[220px]">
+              {lastLiveText.source === "me" ? "You: " : "Them: "}
+              {lastLiveText.text}
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-2 select-none">
-          {/* Dual live translation button */}
+
+        <div className="flex items-center gap-1.5">
+          {/* Dual Translation Toggle */}
           <Button
             size="sm"
             variant={dualTranslate ? "default" : "ghost"}
-            className="h-6 px-2 text-[0.65em] gap-1"
+            className="h-6 px-2 text-[0.7em] gap-1"
             onClick={() => setDualTranslate((prev) => !prev)}
-            title="Toggle live side-by-side translation (RU ↔ EN)"
+            title="Toggle side-by-side translation (RU ↔ EN)"
           >
             <Languages className="w-3 h-3" />
-            {dualTranslate ? "Dual RU ↔ EN" : "Translate"}
+            <span>{dualTranslate ? "RU ↔ EN" : "Translate"}</span>
           </Button>
 
-          <span className="text-[0.6em] text-muted-foreground/50 bg-muted/50 px-1 rounded">
+          {/* History Toggle */}
+          {conversation.messages.length > 0 && (
+            <Button
+              size="sm"
+              variant={showHistory ? "secondary" : "ghost"}
+              className="h-6 px-2 text-[0.7em] gap-1"
+              onClick={() => setShowHistory((h) => !h)}
+              title="Toggle chat history"
+            >
+              <HistoryIcon className="w-3 h-3" />
+              <span>{conversation.messages.length}</span>
+            </Button>
+          )}
+
+          <span className="text-[0.6em] text-muted-foreground/40 bg-muted/40 px-1 py-0.5 rounded font-mono">
             {modKey}+K
           </span>
           <Switch
@@ -254,263 +186,122 @@ export const ResultsSection = ({
         </div>
       </div>
 
-      {/* Live recognition feed (streaming) */}
-      {recentLiveSegments.length > 0 && (
-        <div className="rounded-lg border border-border/40 bg-muted/20 p-2 space-y-1">
-          <div className="flex items-center justify-between">
-            <span className="flex items-center gap-1.5 text-[0.6em] font-semibold text-muted-foreground uppercase tracking-wider">
-              <RadioIcon className="w-3 h-3 text-primary animate-pulse" />
-              Live recognition
-            </span>
-            {micSpeaking && (
-              <span className="flex items-center gap-1 text-[0.6em] text-blue-600">
-                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
-                You're speaking...
-              </span>
-            )}
-            {micListening && !micSpeaking && (
-              <span className="flex items-center gap-1 text-[0.6em] text-green-600">
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                Listening
-              </span>
-            )}
-          </div>
-          {recentLiveSegments.map((segment) => (
-            <div
-              key={segment.id}
-              className={cn(
-                "flex items-start gap-1.5 text-[0.8em] leading-relaxed",
-                segment.source === "me" ? "text-blue-700" : "text-foreground/80"
-              )}
-            >
-              <span className="text-[0.6em] font-semibold uppercase tracking-wider mt-0.5 shrink-0">
-                {segment.source === "me" ? "You:" : "Them:"}
-              </span>
-              <span className="select-text break-words">{segment.text}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Main Content Area */}
+      {/* Main Focus Area: Crisp, Distraction-Free AI Answer */}
       <div
         className={cn(
           "gap-3",
-          dualTranslate && hasResponse
-            ? "grid grid-cols-1 md:grid-cols-2"
-            : "block"
+          dualTranslate && hasResponse ? "grid grid-cols-1 md:grid-cols-2" : "block"
         )}
       >
-        {/* Left Column: Original Transcriptions & AI Response */}
+        {/* Left / Main: The Generated AI Answer */}
         <div className="space-y-2">
-          {!conversationMode && (
-            <div className="space-y-2">
-              {youBubble}
-              {themBubble}
-
-              {hasResponse && (
-                <div>
-                  {isAIProcessing && !lastAIResponse ? (
-                    <div className="flex items-center gap-2 py-2">
-                      <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                      <span className="text-[0.8em] text-muted-foreground">
-                        Generating response...
-                      </span>
-                    </div>
-                  ) : (
-                    <div className="prose prose-sm max-w-none dark:prose-invert">
-                      <Markdown isStreaming={isAIProcessing}>
-                        {lastAIResponse}
-                      </Markdown>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Previous AI responses stay visible so text never disappears */}
-              {conversation.messages.length > 0 && (
-                <div className="space-y-1.5 pt-2 border-t border-border/50">
-                  <span className="text-[0.6em] font-semibold text-muted-foreground uppercase tracking-wider px-1">
-                    Previous answers
-                  </span>
-                  <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                    {conversation.messages
-                      .filter((m) => m.role === "assistant")
-                      .slice(0, 4)
-                      .map((message, i) => (
-                        <div
-                          key={i}
-                          className="p-2 rounded-md border bg-background/50 text-[0.8em]"
-                        >
-                          <div className="flex items-center justify-between mb-0.5">
-                            <span className="text-[0.6em] font-medium text-muted-foreground uppercase">
-                              AI
-                            </span>
-                            <span className="text-[0.55em] text-muted-foreground/60">
-                              {new Date(message.timestamp).toLocaleTimeString(
-                                [],
-                                { hour: "2-digit", minute: "2-digit" }
-                              )}
-                            </span>
-                          </div>
-                          <div className="text-muted-foreground leading-relaxed">
-                            <Markdown>{message.content}</Markdown>
-                          </div>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              )}
+          {isAIProcessing && !lastAIResponse ? (
+            <div className="flex items-center gap-2 py-4 px-2 text-primary animate-pulse">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-[0.85em] font-medium">Formulating natural answer...</span>
+            </div>
+          ) : lastAIResponse ? (
+            <div className="p-3 rounded-xl border border-primary/20 bg-primary/5 shadow-sm">
+              <div className="prose prose-sm max-w-none dark:prose-invert text-[0.92em] leading-relaxed text-foreground select-text">
+                <Markdown isStreaming={isAIProcessing}>
+                  {lastAIResponse}
+                </Markdown>
+              </div>
+            </div>
+          ) : (
+            <div className="py-6 text-center text-muted-foreground/60 text-[0.8em]">
+              Waiting for question... Ask anything or let the interview start.
             </div>
           )}
 
-          {conversationMode && (
-            <div className="space-y-2">
-              {hasResponse && (
-                <div className="p-2 rounded-lg bg-primary/5 border border-primary/20">
-                  <div className="flex items-center gap-1.5 mb-1 text-primary">
-                    <BotIcon className="w-3 h-3" />
-                    <span className="text-[0.6em] font-semibold uppercase tracking-wider">
-                      AI
-                    </span>
-                  </div>
-                  <div className="prose prose-sm max-w-none dark:prose-invert">
-                    <Markdown isStreaming={isAIProcessing}>
-                      {lastAIResponse}
-                    </Markdown>
-                  </div>
-                </div>
-              )}
-
-              {hasTranscriptions && (
-                <div className="space-y-1.5 pt-1">
-                  <span className="text-[0.6em] font-semibold text-muted-foreground uppercase tracking-wider px-1">
-                    Latest Input
-                  </span>
-                  {youBubble}
-                  {themBubble}
-                </div>
-              )}
-
-              {conversation.messages.length > 0 && (
-                <div className="space-y-1 pt-2 border-t border-border/50">
-                  <span className="text-[0.6em] font-semibold text-muted-foreground uppercase tracking-wider px-1">
-                    History ({conversation.messages.length}) — click a message
-                    to translate it
-                  </span>
-                  <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-                    {conversation.messages
-                      .slice(0, 12)
-                      .reverse()
-                      .map((message, i) => (
-                        <div
-                          key={i}
-                          onClick={() =>
-                            handleMessageClick({
-                              id: message.id || String(i),
-                              content: message.content,
-                              source: message.source || "unknown",
-                            })
-                          }
-                          className={cn(
-                            "text-[0.8em] p-2 rounded-md border cursor-pointer transition-colors hover:border-primary/40",
-                            selectedMessage?.id === (message.id || String(i))
-                              ? "bg-primary/10 border-primary/40"
-                              : message.source === "me"
-                                ? "bg-primary/5 border-primary/10"
-                                : "bg-background/50"
-                          )}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-[0.6em] font-medium text-muted-foreground uppercase">
-                              {message.source === "me"
-                                ? "You"
-                                : message.source === "them"
-                                  ? "Them"
-                                  : "Message"}
-                            </span>
-                            <span className="text-[0.55em] text-muted-foreground/60">
-                              {new Date(message.timestamp).toLocaleTimeString(
-                                [],
-                                { hour: "2-digit", minute: "2-digit" }
-                              )}
-                            </span>
-                          </div>
-                          <div className="text-muted-foreground leading-relaxed mt-0.5">
-                            <Markdown>{message.content}</Markdown>
-                          </div>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-              )}
+          {/* Context Question (Compact) */}
+          {theirLastTranscription && (
+            <div className="flex items-start gap-1.5 px-2 py-1 text-[0.75em] text-muted-foreground/80 bg-muted/20 rounded-md">
+              <HeadphonesIcon className="w-3 h-3 mt-0.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">
+                <strong className="font-semibold text-muted-foreground">Q: </strong>
+                {theirLastTranscription}
+              </span>
             </div>
           )}
         </div>
 
-        {/* Right Column: Mirror Live Translation (when Dual Mode is ON) */}
-        {dualTranslate && (
-          <div className="space-y-2 rounded-lg border border-primary/20 bg-muted/10 p-2.5 animate-in fade-in duration-200">
-            <div className="flex items-center justify-between border-b border-border/40 pb-1.5">
-              <div className="flex items-center gap-1.5 text-primary text-[0.8em] font-medium">
-                <Languages className="w-3.5 h-3.5" />
-                <span>Live Translation (RU ↔ EN)</span>
-              </div>
+        {/* Right: Clean Translation Panel (Only when Translation is ON) */}
+        {dualTranslate && hasResponse && (
+          <div className="p-3 rounded-xl border border-border/50 bg-muted/10 space-y-2">
+            <div className="flex items-center justify-between border-b border-border/30 pb-1">
+              <span className="text-[0.75em] font-semibold text-primary flex items-center gap-1">
+                <Languages className="w-3 h-3" />
+                Live Translation (RU ↔ EN)
+              </span>
               {isTranslating && (
-                <span className="flex items-center gap-1 text-[0.65em] text-muted-foreground">
+                <span className="text-[0.65em] text-muted-foreground flex items-center gap-1">
                   <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                  Translating...
+                  translating...
                 </span>
               )}
             </div>
 
-            {/* Selected history message translation (unpinnable) */}
-            {selectedMessage && (
-              <div className="rounded-md border border-primary/20 bg-background/60 p-2">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[0.55em] font-medium text-primary/70 uppercase tracking-wider">
-                    Selected message
-                  </span>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-5 w-5"
-                    title="Unpin translation"
-                    onClick={handleUnpinTranslation}
-                  >
-                    <XIcon className="h-3 w-3" />
+            {selectedMessage ? (
+              <div className="space-y-1 bg-background/80 p-2 rounded-lg border border-primary/20">
+                <div className="flex items-center justify-between">
+                  <span className="text-[0.65em] font-medium text-primary">Selected turn</span>
+                  <Button size="icon" variant="ghost" className="h-4 w-4" onClick={() => setSelectedMessage(null)}>
+                    <XIcon className="w-3 h-3" />
                   </Button>
                 </div>
-                <p className="text-[0.7em] text-muted-foreground mb-1.5 line-clamp-2">
-                  {selectedMessage.content}
-                </p>
-                <div className="prose prose-sm max-w-none dark:prose-invert text-[0.8em] leading-relaxed">
-                  {selectedTranslation ? (
-                    <Markdown isStreaming={isTranslating}>
-                      {selectedTranslation}
-                    </Markdown>
-                  ) : (
-                    <span className="text-[0.8em] text-muted-foreground italic">
-                      Translating...
-                    </span>
-                  )}
+                <div className="text-[0.85em] leading-relaxed text-foreground select-text">
+                  <Markdown isStreaming={isTranslating}>{selectedTranslation}</Markdown>
                 </div>
               </div>
+            ) : (
+              <div className="text-[0.85em] leading-relaxed text-foreground/90 select-text">
+                {translatedAI ? (
+                  <Markdown isStreaming={isTranslating}>{translatedAI}</Markdown>
+                ) : (
+                  <span className="text-[0.75em] text-muted-foreground italic">
+                    Translation will stream here...
+                  </span>
+                )}
+              </div>
             )}
-
-            {/* Live AI response translation */}
-            <div className="prose prose-sm max-w-none dark:prose-invert text-[0.8em] leading-relaxed">
-              {translatedAI ? (
-                <Markdown isStreaming={isTranslating}>{translatedAI}</Markdown>
-              ) : (
-                <span className="text-[0.8em] text-muted-foreground italic">
-                  Live translation will stream here as the response generates...
-                </span>
-              )}
-            </div>
           </div>
         )}
       </div>
+
+      {/* Collapsible Clean History Drawer */}
+      {showHistory && conversation.messages.length > 0 && (
+        <div className="mt-3 pt-2 border-t border-border/40 space-y-1.5 animate-in fade-in duration-200">
+          <div className="flex items-center justify-between px-1">
+            <span className="text-[0.7em] font-semibold text-muted-foreground uppercase tracking-wider">
+              Conversation History ({conversation.messages.length})
+            </span>
+            <Button size="icon" variant="ghost" className="h-5 w-5" onClick={() => setShowHistory(false)}>
+              <XIcon className="w-3 h-3" />
+            </Button>
+          </div>
+          <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+            {conversation.messages.slice(0, 15).reverse().map((msg, i) => (
+              <div
+                key={i}
+                onClick={() => handleMessageClick({ id: msg.id || String(i), content: msg.content, source: msg.source || "unknown" })}
+                className={cn(
+                  "p-2 rounded-lg border text-[0.8em] cursor-pointer transition-colors hover:border-primary/40",
+                  msg.role === "assistant" ? "bg-primary/5 border-primary/20" : "bg-muted/30 border-border/30"
+                )}
+              >
+                <div className="flex items-center justify-between mb-0.5 text-[0.65em] text-muted-foreground">
+                  <span className="font-semibold uppercase">{msg.role === "assistant" ? "AI Cue" : msg.source === "me" ? "You" : "Interviewer"}</span>
+                  <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+                </div>
+                <div className="text-foreground/90 leading-relaxed select-text">
+                  <Markdown>{msg.content}</Markdown>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
