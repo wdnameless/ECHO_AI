@@ -99,6 +99,7 @@ export const ResultsSection = ({
   const prevTheirRef = useRef("");
   const prevAIRef = useRef("");
   const tickerRef = useRef<HTMLDivElement>(null);
+  const lastUserSpeechAtRef = useRef<number>(0);
   const isMac =
     typeof navigator !== "undefined" &&
     navigator.platform.toUpperCase().indexOf("MAC") >= 0;
@@ -118,38 +119,67 @@ export const ResultsSection = ({
     [displayedAnswer, lastAIResponse, theirLastTranscription]
   );
 
+  // Track when the user is actively speaking so we know a new answer
+  // arrived WHILE they were mid-answer (needs buffering), vs. them
+  // listening quietly to a new question (show instantly).
+  useEffect(() => {
+    if (micSpeaking) {
+      lastUserSpeechAtRef.current = Date.now();
+    }
+  }, [micSpeaking]);
+
   // Answer buffer logic:
-  // - If user is NOT speaking (quiet / listening): show new response INSTANTLY with 0ms delay!
-  // - If user IS speaking (micSpeaking === true): buffer response and start countdown so speech is not interrupted!
+  // - New stream is a continuation of the current answer -> update in place.
+  // - User spoke within the last 12s -> a NEW question/answer arrived while
+  //   they were talking -> BUFFER it, show "Next answer" button + countdown.
+  // - User is quiet (just listening) -> show new answer INSTANTLY (0ms).
   useEffect(() => {
     if (!lastAIResponse) return;
 
-    if (!displayedAnswer || !micSpeaking) {
-      // User is not speaking -> instant display with 0ms lag!
+    const isContinuation =
+      displayedAnswer &&
+      lastAIResponse.startsWith(displayedAnswer.slice(0, 20)) &&
+      lastAIResponse.length > displayedAnswer.length;
+
+    if (isContinuation) {
+      setDisplayedAnswer(lastAIResponse);
+      return;
+    }
+
+    const userSpokeRecently =
+      Date.now() - lastUserSpeechAtRef.current < 12000;
+
+    if (!displayedAnswer) {
+      // Very first answer of the conversation: show directly.
       setDisplayedAnswer(lastAIResponse);
       setPendingNewAnswer("");
       setCountdown(null);
       setIsHeld(false);
-    } else if (displayedAnswer && !pendingNewAnswer && lastAIResponse !== displayedAnswer) {
-      if (lastAIResponse.startsWith(displayedAnswer.slice(0, 15))) {
-        setDisplayedAnswer(lastAIResponse);
-      } else {
-        // User IS actively speaking and a new turn arrives -> buffer with countdown
-        setPendingNewAnswer(lastAIResponse);
-        setCountdown(5);
-        setIsHeld(false);
-      }
-    } else if (pendingNewAnswer) {
-      setPendingNewAnswer(lastAIResponse);
+      return;
     }
-  }, [lastAIResponse, displayedAnswer, pendingNewAnswer, micSpeaking]);
 
-  // Countdown timer effect
+    if (userSpokeRecently) {
+      // The interviewer interrupted or re-asked while we were talking.
+      // Keep the current answer on screen, buffer the new one.
+      setPendingNewAnswer(lastAIResponse);
+      if (countdown === null) {
+        setCountdown(10);
+      }
+      setIsHeld(false);
+    } else {
+      // User is quiet and listening: show the new answer instantly.
+      setDisplayedAnswer(lastAIResponse);
+      setPendingNewAnswer("");
+      setCountdown(null);
+      setIsHeld(false);
+    }
+  }, [lastAIResponse, displayedAnswer, countdown, micSpeaking]);
+
+  // Countdown timer effect (auto-apply new answer when timer expires)
   useEffect(() => {
     if (countdown === null || isHeld) return;
 
     if (countdown <= 0) {
-      // Auto-apply new answer when timer hits 0
       if (pendingNewAnswer) {
         setPreviousAnswer(displayedAnswer);
         setDisplayedAnswer(pendingNewAnswer);
@@ -166,7 +196,7 @@ export const ResultsSection = ({
     return () => clearTimeout(timer);
   }, [countdown, isHeld, pendingNewAnswer, displayedAnswer]);
 
-  // Apply new answer immediately
+  // Apply buffered new answer immediately (user clicks "Next answer")
   const handleApplyPendingAnswer = useCallback(() => {
     if (pendingNewAnswer) {
       setPreviousAnswer(displayedAnswer);
@@ -177,7 +207,15 @@ export const ResultsSection = ({
     }
   }, [pendingNewAnswer, displayedAnswer]);
 
-  // Toggle Hold / Pause timer or reset to +10s
+  // Dismiss the buffered answer (keep current one - useful when the
+  // interviewer just asked a clarifying question that doesn't need a change)
+  const handleDismissPendingAnswer = useCallback(() => {
+    setPendingNewAnswer("");
+    setCountdown(null);
+    setIsHeld(false);
+  }, []);
+
+  // Hold button: reset countdown to +10s so the current answer stays
   const handleToggleHold = useCallback(() => {
     setCountdown(10);
     setIsHeld(false);
@@ -484,15 +522,15 @@ export const ResultsSection = ({
         </div>
       )}
 
-      {/* COUNTDOWN TIMER & SMART SWITCH BANNER: Auto-shows or Hold/Show Now */}
+      {/* COUNTDOWN TIMER & SMART SWITCH BANNER (only when user was interrupted mid-answer) */}
       {pendingNewAnswer && (
         <div className="p-2 rounded-xl border border-amber-500/40 bg-amber-500/10 shadow-sm flex items-center justify-between gap-2 animate-in slide-in-from-top-1 duration-200 select-none">
           <div className="flex items-center gap-1.5 min-w-0 flex-1">
             <ZapIcon className="w-4 h-4 text-amber-500 shrink-0 animate-bounce" />
             <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-[0.75em] font-semibold text-amber-900 dark:text-amber-300">
-                  ⚡ Новый ответ
+                  ⚡ Новый ответ от интервьюера
                 </span>
                 {countdown !== null && (
                   <span className="text-[0.7em] font-mono font-bold text-amber-600 dark:text-amber-400 bg-amber-500/20 px-1.5 py-0.5 rounded-full">
@@ -505,26 +543,38 @@ export const ResultsSection = ({
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-1 shrink-0">
+          <div className="flex items-center gap-1 shrink-0 flex-wrap">
+            {/* Keep current answer (dismiss new) - e.g. clarifying question, old answer is fine */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleDismissPendingAnswer}
+              className="h-6 px-2 text-[0.68em] border-amber-500/40 text-amber-900 dark:text-amber-300 hover:bg-amber-500/20 gap-1"
+              title="Оставить текущий ответ (уточняющий вопрос не требует нового ответа)"
+            >
+              <XIcon className="w-2.5 h-2.5" />
+              <span>Оставить текущий</span>
+            </Button>
             {/* Hold Button (+10s timer) */}
             <Button
               size="sm"
               variant="outline"
               onClick={handleToggleHold}
               className="h-6 px-2 text-[0.68em] border-amber-500/40 text-amber-900 dark:text-amber-300 hover:bg-amber-500/20 gap-1"
-              title="Добавить +10 секунд к таймеру удержания ответа"
+              title="Продлить удержание текущего ответа ещё на 10 секунд"
             >
               <PauseIcon className="w-2.5 h-2.5" />
-              <span>+10с Задержать</span>
+              <span>+10с</span>
             </Button>
-            {/* Show Now Button */}
+            {/* Show Next Answer Button */}
             <Button
               size="sm"
               onClick={handleApplyPendingAnswer}
               className="h-6 px-2.5 text-[0.7em] font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow gap-1"
+              title="Показать следующий ответ на переформулированный вопрос"
             >
               <ZapIcon className="w-3 h-3" />
-              <span>Показать сейчас</span>
+              <span>Следующий ответ</span>
             </Button>
           </div>
         </div>

@@ -389,7 +389,7 @@ export function useSystemAudio() {
       role: msg.role,
       content:
         msg.role === "user" && msg.source
-          ? `${msg.source === "me" ? "Me" : "Them"}: ${msg.content}`
+          ? `[${msg.source === "me" ? "Candidate (I am speaking)" : "Interviewer (question)"}] ${msg.content}`
           : msg.content,
     }));
 
