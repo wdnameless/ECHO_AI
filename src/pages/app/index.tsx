@@ -61,17 +61,29 @@ const App = () => {
         }`}
       >
         {systemAudio?.micBridge}
-        <Card className="w-full flex flex-row items-center gap-2 p-2">
+        <Card
+          data-tauri-drag-region="true"
+          className="w-full flex flex-row items-center gap-2 p-2 select-none"
+        >
           <SystemAudio {...systemAudio} />
           {systemAudio?.capturing ? (
-            <div className="flex flex-row items-center gap-2 justify-between w-full">
-              <div className="flex flex-1 items-center gap-2">
+            <div
+              data-tauri-drag-region="true"
+              className="flex flex-row items-center gap-2 justify-between w-full"
+            >
+              <div
+                data-tauri-drag-region="true"
+                className="flex flex-1 items-center gap-2"
+              >
                 <AudioVisualizer
                   isRecording={systemAudio?.capturing}
                   stream={systemAudio?.micStream}
                 />
               </div>
-              <div className="flex !w-fit items-center gap-2">
+              <div
+                data-tauri-drag-region="true"
+                className="flex !w-fit items-center gap-2"
+              >
                 <StatusIndicator
                   setupRequired={systemAudio.setupRequired}
                   error={systemAudio.error}
@@ -87,6 +99,7 @@ const App = () => {
           ) : null}
 
           <div
+            data-tauri-drag-region="true"
             className={`${
               systemAudio?.capturing
                 ? "hidden w-full fade-out transition-all duration-300"

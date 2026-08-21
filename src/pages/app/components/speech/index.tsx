@@ -9,8 +9,8 @@ import {
 import { PermissionFlow } from "./PermissionFlow";
 import {
   AlertCircleIcon,
-  MicIcon,
-  MicOffIcon,
+  MessageSquareQuoteIcon,
+  RadioIcon,
   CameraIcon,
   XIcon,
   PlusIcon,
@@ -135,15 +135,15 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     if (error && !setupRequired)
       return <AlertCircleIcon className="w-3.5 h-3.5 text-red-500" />;
     if (capturing)
-      return <MicIcon className="w-3.5 h-3.5 text-green-500 animate-pulse" />;
-    return <MicOffIcon className="w-3.5 h-3.5 text-muted-foreground" />;
+      return <RadioIcon className="w-3.5 h-3.5 text-green-500 animate-pulse" />;
+    return <MessageSquareQuoteIcon className="w-3.5 h-3.5 text-primary" />;
   };
 
   const getButtonTitle = () => {
     if (setupRequired) return "Setup Required";
     if (error && !setupRequired) return `Error: ${error}`;
-    if (capturing) return "Stop live copilot";
-    return "Start live copilot";
+    if (capturing) return "Stop live conversation copilot";
+    return "Start live conversation copilot";
   };
 
   const hasResponse =

@@ -24,6 +24,8 @@ import {
   ThumbsUpIcon,
   ThumbsDownIcon,
   CheckCircle2Icon,
+  PauseIcon,
+  PlayIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/contexts";
@@ -45,7 +47,7 @@ type Props = {
 };
 
 export const ResultsSection = ({
-  myLastTranscription: _myLastTranscription,
+  myLastTranscription,
   theirLastTranscription,
   lastAIResponse,
   isAIProcessing,
@@ -69,6 +71,10 @@ export const ResultsSection = ({
   // Previous answer history for easy revert
   const [previousAnswer, setPreviousAnswer] = useState<string>("");
 
+  // Countdown timer for automatic switch to new answer
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [isHeld, setIsHeld] = useState<boolean>(false);
+
   // Subtitles / Translations
   const [interviewerTranslation, setInterviewerTranslation] = useState("");
   const [isTranslatingInterviewer, setIsTranslatingInterviewer] = useState(false);
@@ -88,6 +94,7 @@ export const ResultsSection = ({
 
   const prevTheirRef = useRef("");
   const prevAIRef = useRef("");
+  const tickerRef = useRef<HTMLDivElement>(null);
   const isMac =
     typeof navigator !== "undefined" &&
     navigator.platform.toUpperCase().indexOf("MAC") >= 0;
@@ -107,38 +114,66 @@ export const ResultsSection = ({
     [displayedAnswer, lastAIResponse, theirLastTranscription]
   );
 
-  // Logic to prevent active answer from vanishing while candidate is speaking:
-  // 1. If displayedAnswer is empty, immediately show incoming stream.
-  // 2. If displayedAnswer already has text and a NEW response starts streaming (new turn),
-  //    buffer it in pendingNewAnswer and show a prominent switch button!
+  // Answer buffer logic
   useEffect(() => {
     if (!lastAIResponse) return;
 
     if (!displayedAnswer) {
       // First answer -> show directly
       setDisplayedAnswer(lastAIResponse);
+      setCountdown(null);
+      setIsHeld(false);
     } else if (displayedAnswer && !pendingNewAnswer && lastAIResponse !== displayedAnswer) {
-      // If lastAIResponse is just continuing to stream for the current turn:
       if (lastAIResponse.startsWith(displayedAnswer.slice(0, 15))) {
         setDisplayedAnswer(lastAIResponse);
       } else {
-        // New question/clarification arrived! Buffer into pending answer so user doesn't lose text.
+        // New question / turn arrives! Buffer and start 5-second countdown timer
         setPendingNewAnswer(lastAIResponse);
+        setCountdown(5);
+        setIsHeld(false);
       }
     } else if (pendingNewAnswer) {
-      // Continue updating the buffered pending answer stream
       setPendingNewAnswer(lastAIResponse);
     }
   }, [lastAIResponse, displayedAnswer, pendingNewAnswer]);
 
-  // When AI finishes a new pending response, candidate can switch to it
+  // Countdown timer effect
+  useEffect(() => {
+    if (countdown === null || isHeld) return;
+
+    if (countdown <= 0) {
+      // Auto-apply new answer when timer hits 0
+      if (pendingNewAnswer) {
+        setPreviousAnswer(displayedAnswer);
+        setDisplayedAnswer(pendingNewAnswer);
+        setPendingNewAnswer("");
+      }
+      setCountdown(null);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setCountdown((prev) => (prev !== null ? prev - 1 : null));
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [countdown, isHeld, pendingNewAnswer, displayedAnswer]);
+
+  // Apply new answer immediately
   const handleApplyPendingAnswer = useCallback(() => {
     if (pendingNewAnswer) {
       setPreviousAnswer(displayedAnswer);
       setDisplayedAnswer(pendingNewAnswer);
       setPendingNewAnswer("");
+      setCountdown(null);
+      setIsHeld(false);
     }
   }, [pendingNewAnswer, displayedAnswer]);
+
+  // Toggle Hold / Pause timer
+  const handleToggleHold = useCallback(() => {
+    setIsHeld((prev) => !prev);
+  }, []);
 
   const handleRevertToPreviousAnswer = useCallback(() => {
     if (previousAnswer) {
@@ -148,23 +183,37 @@ export const ResultsSection = ({
     }
   }, [previousAnswer, displayedAnswer]);
 
-  // Smooth auto-scroll to bottom during response streaming if user is near bottom
+  // Smooth auto-scroll for main answer area
   useEffect(() => {
     if (!scrollAreaRef?.current || !lastAIResponse) return;
     const viewport = scrollAreaRef.current.querySelector("[data-radix-scroll-area-viewport]") as HTMLElement | null;
     if (viewport) {
-      const isNearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 120;
+      const isNearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 140;
       if (isNearBottom) {
         viewport.scrollTo({ top: viewport.scrollHeight, behavior: "smooth" });
       }
     }
   }, [lastAIResponse, displayedAnswer, scrollAreaRef]);
+
+  // Smooth auto-scroll for live transcript ticker at the top
+  useEffect(() => {
+    if (tickerRef.current) {
+      tickerRef.current.scrollTo({
+        top: tickerRef.current.scrollHeight,
+        behavior: "smooth",
+      });
+    }
+  }, [liveSegments, myLastTranscription, theirLastTranscription]);
+
+  // Clear states on new conversation
   useEffect(() => {
     if (conversation.messages.length === 0) {
       setDisplayedAnswer("");
       setPendingNewAnswer("");
       setPreviousAnswer("");
       setInterviewerTranslation("");
+      setCountdown(null);
+      setIsHeld(false);
     }
   }, [conversation.messages.length]);
 
@@ -242,7 +291,7 @@ export const ResultsSection = ({
                 variant="outline"
                 size="sm"
                 className="h-6 px-2 text-[0.7em] gap-1 font-semibold border-primary/30 bg-primary/5 hover:bg-primary/10 text-foreground shrink-0"
-                title="Switch prompt profile (Interview / General / Custom)"
+                title="Switch prompt profile"
               >
                 {activeProfile?.id === "profile-interview" ? (
                   <GraduationCapIcon className="w-3 h-3 text-primary shrink-0" />
@@ -300,7 +349,7 @@ export const ResultsSection = ({
                 ? "AI generating..."
                 : micSpeaking
                 ? "You're speaking..."
-                : "Live listening"}
+                : "Live stream"}
             </span>
           </div>
         </div>
@@ -347,21 +396,24 @@ export const ResultsSection = ({
         </div>
       </div>
 
-      {/* CONTINUOUS LIVE TRANSCRIPT STREAM TICKER (TOP BAR) */}
-      <div className="rounded-lg border border-border/40 bg-muted/20 p-1.5 space-y-1 w-full min-w-0 max-w-full overflow-hidden">
+      {/* CONTINUOUS LIVE TRANSCRIPT STREAM TICKER (AUTO-SCROLL, ZERO-SCROLLBAR) */}
+      <div className="rounded-lg border border-border/40 bg-muted/20 p-1.5 space-y-1 w-full min-w-0 max-w-full overflow-hidden select-none">
         <div className="flex items-center justify-between text-[0.65em] font-semibold text-muted-foreground uppercase tracking-wider px-0.5">
           <span className="flex items-center gap-1">
             <RadioIcon className="w-2.5 h-2.5 text-primary animate-pulse" />
-            Live Recognition Stream
+            Live Speech Stream
           </span>
-          <span className="text-[0.85em] font-mono lowercase opacity-70">continuous STT</span>
+          <span className="text-[0.85em] font-mono lowercase opacity-70">auto-scroll</span>
         </div>
-        <div className="space-y-0.5 max-h-16 overflow-y-auto pr-0.5 font-sans text-[0.78em] leading-tight w-full min-w-0 break-words">
-          {liveSegments.slice(-3).map((seg) => (
+        <div
+          ref={tickerRef}
+          className="space-y-0.5 max-h-16 overflow-y-auto pr-0.5 font-sans text-[0.78em] leading-tight w-full min-w-0 break-words no-scrollbar"
+        >
+          {liveSegments.slice(-4).map((seg) => (
             <div
               key={seg.id}
               className={cn(
-                "flex items-start gap-1 w-full min-w-0 break-words py-0.5 px-1 rounded",
+                "flex items-start gap-1 w-full min-w-0 break-words py-0.5 px-1 rounded transition-all",
                 seg.source === "me" ? "bg-blue-500/10 text-blue-800 dark:text-blue-300" : "bg-primary/5 text-foreground"
               )}
             >
@@ -375,7 +427,7 @@ export const ResultsSection = ({
           ))}
           {liveSegments.length === 0 && (
             <div className="text-muted-foreground/60 italic text-[0.72em] py-0.5 px-1">
-              Audio stream active. Transcripts from mic and system will flow here continuously...
+              Audio stream active. Transcripts from mic and system appear here in real-time...
             </div>
           )}
         </div>
@@ -416,27 +468,54 @@ export const ResultsSection = ({
         </div>
       )}
 
-      {/* PROMINENT SWITCH BUTTON: New Answer is ready while candidate was reading! */}
+      {/* COUNTDOWN TIMER & SMART SWITCH BANNER: Auto-shows or Hold/Show Now */}
       {pendingNewAnswer && (
-        <div className="p-2 rounded-xl border border-amber-500/40 bg-amber-500/10 shadow-sm flex items-center justify-between gap-2 animate-in slide-in-from-top-1 duration-200">
+        <div className="p-2 rounded-xl border border-amber-500/40 bg-amber-500/10 shadow-sm flex items-center justify-between gap-2 animate-in slide-in-from-top-1 duration-200 select-none">
           <div className="flex items-center gap-1.5 min-w-0 flex-1">
             <ZapIcon className="w-4 h-4 text-amber-500 shrink-0 animate-bounce" />
             <div className="min-w-0 flex-1">
-              <p className="text-[0.75em] font-semibold text-amber-900 dark:text-amber-300 truncate">
-                ⚡ Новая подсказка готова
-              </p>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[0.75em] font-semibold text-amber-900 dark:text-amber-300">
+                  ⚡ Новый ответ
+                </span>
+                {!isHeld && countdown !== null && (
+                  <span className="text-[0.7em] font-mono font-bold text-amber-600 dark:text-amber-400 bg-amber-500/20 px-1 rounded">
+                    автопоказ через {countdown}с
+                  </span>
+                )}
+                {isHeld && (
+                  <span className="text-[0.7em] font-medium text-amber-700 dark:text-amber-400 bg-amber-500/20 px-1 rounded">
+                    ⏸ Удержано (ручной показ)
+                  </span>
+                )}
+              </div>
               <p className="text-[0.68em] text-amber-800/80 dark:text-amber-400/80 truncate">
-                {pendingNewAnswer.slice(0, 60)}...
+                {pendingNewAnswer.slice(0, 50)}...
               </p>
             </div>
           </div>
-          <Button
-            size="sm"
-            onClick={handleApplyPendingAnswer}
-            className="h-6 px-2.5 text-[0.7em] font-semibold bg-amber-600 hover:bg-amber-700 text-white shrink-0 shadow"
-          >
-            Показать новый ответ
-          </Button>
+          <div className="flex items-center gap-1 shrink-0">
+            {/* Hold / Unhold Button */}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleToggleHold}
+              className="h-6 px-2 text-[0.68em] border-amber-500/40 text-amber-900 dark:text-amber-300 hover:bg-amber-500/20 gap-1"
+              title={isHeld ? "Возобновить автопоказ" : "Задержать текущий ответ и отключить таймер"}
+            >
+              {isHeld ? <PlayIcon className="w-2.5 h-2.5" /> : <PauseIcon className="w-2.5 h-2.5" />}
+              <span>{isHeld ? "Авто" : "Задержать"}</span>
+            </Button>
+            {/* Show Now Button */}
+            <Button
+              size="sm"
+              onClick={handleApplyPendingAnswer}
+              className="h-6 px-2.5 text-[0.7em] font-semibold bg-amber-600 hover:bg-amber-700 text-white shadow gap-1"
+            >
+              <ZapIcon className="w-3 h-3" />
+              <span>Показать сейчас</span>
+            </Button>
+          </div>
         </div>
       )}
 
