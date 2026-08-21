@@ -329,7 +329,12 @@ export async function* fetchAIResponse(params: {
 
     const extractedVariables = extractVariables(provider.curl);
     const requiredVars = extractedVariables.filter(
-      ({ key }) => key !== "SYSTEM_PROMPT" && key !== "TEXT" && key !== "IMAGE"
+      ({ key }) =>
+        key !== "SYSTEM_PROMPT" &&
+        key !== "TEXT" &&
+        key !== "IMAGE" &&
+        key !== "REASONING_EFFORT" &&
+        key !== "THINKING_BUDGET"
     );
     const providerVariables = selectedProvider.variables ?? {};
     for (const { key } of requiredVars) {
@@ -382,6 +387,23 @@ export async function* fetchAIResponse(params: {
 
     bodyObj = deepVariableReplacer(bodyObj, allVariables);
     let url = deepVariableReplacer(curlJson.url || "", allVariables);
+
+    // Clean up empty reasoning_effort or normalize "none" / "0" for 0-delay instant responses
+    if (typeof bodyObj === "object" && bodyObj !== null) {
+      if (
+        bodyObj.reasoning_effort === "" ||
+        bodyObj.reasoning_effort === "{{REASONING_EFFORT}}"
+      ) {
+        delete bodyObj.reasoning_effort;
+      } else if (
+        bodyObj.reasoning_effort === "0" ||
+        bodyObj.reasoning_effort === "none" ||
+        bodyObj.reasoning_effort === "disabled"
+      ) {
+        // For Gemini / OpenAI: set budget_tokens to 0 or remove reasoning delay
+        bodyObj.reasoning_effort = "low";
+      }
+    }
 
     const headers = deepVariableReplacer(curlJson.header || {}, allVariables);
     headers["Content-Type"] = "application/json";

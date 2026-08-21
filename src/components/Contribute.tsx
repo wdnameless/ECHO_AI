@@ -1,31 +1,47 @@
-import { Button, Card, CardContent, CardDescription, CardTitle } from "./ui";
+import { GithubIcon } from "@/components";
+import { Button } from "@/components/ui/button";
+import { GlobeIcon, ExternalLinkIcon } from "lucide-react";
 
-const Contribute = () => {
+export const AuthorBanner = () => {
   return (
-    <Card className="w-full">
-      <CardContent className="flex flex-col gap-4 p-4 py-0 md:flex-row md:items-center md:justify-between">
-        <div className="space-y-2 md:max-w-[70%]">
-          <CardTitle className="text-xs lg:text-sm">
-            Contribute to Pluely, Earn Lifetime Access
-          </CardTitle>
-          <CardDescription className="text-[10px] lg:text-xs">
-            Fix a listed critical issue and earn a lifetime Dev Pro license
-            valued at $120. Only issues on our contribute page qualify. read
-            more at pluely.com/contribute
-          </CardDescription>
+    <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm select-none">
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-bold text-foreground">Pluely Fork</span>
+          <span className="text-[10px] font-medium bg-primary/20 text-primary px-1.5 py-0.5 rounded-full">
+            nullform.cv edition
+          </span>
         </div>
-        <Button asChild className="w-full md:w-auto text-[10px] lg:text-xs">
-          <a
-            href="https://pluely.com/contribute"
-            rel="noopener noreferrer"
-            target="_blank"
-          >
-            pluely.com/contribute
-          </a>
+        <p className="text-xs text-muted-foreground">
+          Autonomous real-time AI copilot with Vulkan GPU STT, live subtitles, and adaptive self-evolution.
+        </p>
+      </div>
+
+      <div className="flex items-center gap-2 shrink-0">
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 text-xs gap-1.5"
+          onClick={() => window.open("https://nullform.cv", "_blank")}
+        >
+          <GlobeIcon className="w-3.5 h-3.5 text-primary" />
+          <span>nullform.cv</span>
+          <ExternalLinkIcon className="w-3 h-3 opacity-60" />
         </Button>
-      </CardContent>
-    </Card>
+
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 text-xs gap-1.5"
+          onClick={() => window.open("https://github.com/wdnameless/pluely", "_blank")}
+        >
+          <GithubIcon className="w-3.5 h-3.5" />
+          <span>GitHub Repo</span>
+          <ExternalLinkIcon className="w-3 h-3 opacity-60" />
+        </Button>
+      </div>
+    </div>
   );
 };
 
-export default Contribute;
+export default AuthorBanner;
