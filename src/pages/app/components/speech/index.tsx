@@ -205,10 +205,10 @@ export const SystemAudio = (props: useSystemAudioType) => {
         <PopoverContent
           align="end"
           side="bottom"
-          className="select-none w-screen p-0 border shadow-lg overflow-hidden border-input/50"
+          className="select-none w-screen max-w-full min-w-0 p-0 border shadow-lg overflow-hidden border-input/50"
           sideOffset={8}
         >
-          <div className="flex flex-col h-[calc(100vh-4rem)] overflow-hidden">
+          <div className="flex flex-col h-[calc(100vh-4rem)] max-w-full min-w-0 overflow-hidden">
             {/* Header - Mode Switcher + Actions */}
             <div className="flex-shrink-0 p-3 border-b border-border/50">
               <div className="flex items-center justify-between gap-2">
@@ -224,33 +224,33 @@ export const SystemAudio = (props: useSystemAudioType) => {
                     }
                   />
                 )}
-                {setupRequired && (
-                  <h2 className="font-semibold text-sm">Setup Required</h2>
-                )}
 
-                {/* Action Buttons */}
-                <div className="flex items-center gap-1.5 flex-shrink-0">
+                {/* Right side actions */}
+                <div className="flex items-center gap-1">
                   {/* Screenshot Button */}
-                  {hasActiveLicense && !setupRequired && supportsImages && (
-                    <Button
-                      size="sm"
-                      variant={screenshotImage ? "default" : "outline"}
-                      onClick={handleCaptureScreenshot}
-                      disabled={isCapturingScreenshot}
-                      className={cn(
-                        "h-6 text-[10px] gap-1 px-2",
-                        screenshotImage && "bg-primary text-primary-foreground"
-                      )}
-                      title="Capture screenshot to include with transcription"
-                    >
-                      {isCapturingScreenshot ? (
-                        <LoaderIcon className="w-3 h-3 animate-spin" />
-                      ) : (
-                        <CameraIcon className="w-3 h-3" />
-                      )}
-                      Screenshot
-                    </Button>
-                  )}
+                  {hasActiveLicense &&
+                    supportsImages &&
+                    isVadMode &&
+                    !setupRequired && (
+                      <Button
+                        size="sm"
+                        variant={screenshotImage ? "default" : "outline"}
+                        onClick={handleCaptureScreenshot}
+                        disabled={isCapturingScreenshot || isAIProcessing}
+                        className={cn(
+                          "h-6 text-[10px] gap-1 px-2",
+                          screenshotImage && "bg-primary text-primary-foreground"
+                        )}
+                        title="Capture screenshot to include with transcription"
+                      >
+                        {isCapturingScreenshot ? (
+                          <LoaderIcon className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <CameraIcon className="w-3 h-3" />
+                        )}
+                        Screenshot
+                      </Button>
+                    )}
 
                   {/* New Conversation Button */}
                   {!setupRequired && (
@@ -285,8 +285,8 @@ export const SystemAudio = (props: useSystemAudioType) => {
               </div>
             </div>
 
-            <ScrollArea className="flex-1 min-h-0" ref={scrollAreaRef}>
-              <div className="p-2 space-y-2">
+            <ScrollArea className="flex-1 min-h-0 w-full min-w-0 max-w-full overflow-x-hidden" ref={scrollAreaRef}>
+              <div className="p-2 space-y-2 w-full min-w-0 max-w-full overflow-x-hidden">
                 {/* Screenshot Preview */}
                 {screenshotImage && (
                   <div className="flex items-center gap-2 p-2 rounded-lg bg-primary/5 border border-primary/20">

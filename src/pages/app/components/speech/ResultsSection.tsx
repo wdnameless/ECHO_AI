@@ -18,6 +18,9 @@ import {
   CheckIcon,
   ChevronDownIcon,
   SparklesIcon,
+  ZapIcon,
+  RotateCcwIcon,
+  RadioIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/contexts";
@@ -52,6 +55,15 @@ export const ResultsSection = ({
 
   const [dualTranslate, setDualTranslate] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+
+  // Active answer displayed to the user while speaking
+  const [displayedAnswer, setDisplayedAnswer] = useState<string>("");
+  // Buffered new answer generated while user was still reading current answer
+  const [pendingNewAnswer, setPendingNewAnswer] = useState<string>("");
+  // Previous answer history for easy revert
+  const [previousAnswer, setPreviousAnswer] = useState<string>("");
+
+  // Subtitles / Translations
   const [interviewerTranslation, setInterviewerTranslation] = useState("");
   const [isTranslatingInterviewer, setIsTranslatingInterviewer] = useState(false);
   const [translatedAI, setTranslatedAI] = useState("");
@@ -73,6 +85,57 @@ export const ResultsSection = ({
 
   const activeProfile =
     promptProfiles.find((p) => p.id === activeProfileId) || promptProfiles[0];
+
+  // Logic to prevent active answer from vanishing while candidate is speaking:
+  // 1. If displayedAnswer is empty, immediately show incoming stream.
+  // 2. If displayedAnswer already has text and a NEW response starts streaming (new turn),
+  //    buffer it in pendingNewAnswer and show a prominent switch button!
+  useEffect(() => {
+    if (!lastAIResponse) return;
+
+    if (!displayedAnswer) {
+      // First answer -> show directly
+      setDisplayedAnswer(lastAIResponse);
+    } else if (displayedAnswer && !pendingNewAnswer && lastAIResponse !== displayedAnswer) {
+      // If lastAIResponse is just continuing to stream for the current turn:
+      if (lastAIResponse.startsWith(displayedAnswer.slice(0, 15))) {
+        setDisplayedAnswer(lastAIResponse);
+      } else {
+        // New question/clarification arrived! Buffer into pending answer so user doesn't lose text.
+        setPendingNewAnswer(lastAIResponse);
+      }
+    } else if (pendingNewAnswer) {
+      // Continue updating the buffered pending answer stream
+      setPendingNewAnswer(lastAIResponse);
+    }
+  }, [lastAIResponse, displayedAnswer, pendingNewAnswer]);
+
+  // When AI finishes a new pending response, candidate can switch to it
+  const handleApplyPendingAnswer = useCallback(() => {
+    if (pendingNewAnswer) {
+      setPreviousAnswer(displayedAnswer);
+      setDisplayedAnswer(pendingNewAnswer);
+      setPendingNewAnswer("");
+    }
+  }, [pendingNewAnswer, displayedAnswer]);
+
+  const handleRevertToPreviousAnswer = useCallback(() => {
+    if (previousAnswer) {
+      const current = displayedAnswer;
+      setDisplayedAnswer(previousAnswer);
+      setPreviousAnswer(current);
+    }
+  }, [previousAnswer, displayedAnswer]);
+
+  // Clear states on new conversation
+  useEffect(() => {
+    if (conversation.messages.length === 0) {
+      setDisplayedAnswer("");
+      setPendingNewAnswer("");
+      setPreviousAnswer("");
+      setInterviewerTranslation("");
+    }
+  }, [conversation.messages.length]);
 
   // Instant machine translation of Interviewer speech (< 100ms via Google Translate)
   useEffect(() => {
@@ -97,12 +160,13 @@ export const ResultsSection = ({
 
   // Instant translation of AI response when side-by-side translation is enabled
   useEffect(() => {
-    if (!dualTranslate || !lastAIResponse || lastAIResponse === prevAIRef.current) return;
-    prevAIRef.current = lastAIResponse;
+    const answerToTranslate = displayedAnswer || lastAIResponse;
+    if (!dualTranslate || !answerToTranslate || answerToTranslate === prevAIRef.current) return;
+    prevAIRef.current = answerToTranslate;
 
     let cancelled = false;
     setIsTranslatingAI(true);
-    fastTranslate(lastAIResponse)
+    fastTranslate(answerToTranslate)
       .then((translated) => {
         if (!cancelled) setTranslatedAI(translated);
       })
@@ -114,7 +178,7 @@ export const ResultsSection = ({
     return () => {
       cancelled = true;
     };
-  }, [dualTranslate, lastAIResponse]);
+  }, [dualTranslate, displayedAnswer, lastAIResponse]);
 
   // Click on a message in history to translate instantly
   const handleMessageClick = useCallback(async (message: { id: string; content: string; source: string }) => {
@@ -130,24 +194,23 @@ export const ResultsSection = ({
     }
   }, []);
 
-  const lastLiveText = liveSegments.length > 0 ? liveSegments[liveSegments.length - 1] : null;
-  const hasResponse = !!lastAIResponse || isAIProcessing;
+  const hasResponse = !!displayedAnswer || !!lastAIResponse || isAIProcessing;
 
   return (
     <div
-      className="space-y-2 pt-0.5"
+      className="space-y-2 pt-0.5 w-full min-w-0 max-w-full overflow-x-hidden"
       style={{ fontSize: "var(--app-font-size, 15px)" }}
     >
       {/* Sleek Minimal Top Control Bar */}
-      <div className="flex items-center justify-between border-b border-border/40 pb-1.5 px-0.5 select-none gap-1.5">
+      <div className="flex items-center justify-between border-b border-border/40 pb-1.5 px-0.5 select-none gap-1.5 w-full min-w-0 max-w-full">
         {/* Left: Active Profile Switcher Dropdown */}
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="outline"
                 size="sm"
-                className="h-6 px-2 text-[0.7em] gap-1 font-semibold border-primary/30 bg-primary/5 hover:bg-primary/10 text-foreground"
+                className="h-6 px-2 text-[0.7em] gap-1 font-semibold border-primary/30 bg-primary/5 hover:bg-primary/10 text-foreground shrink-0"
                 title="Switch prompt profile (Interview / General / Custom)"
               >
                 {activeProfile?.id === "profile-interview" ? (
@@ -189,8 +252,8 @@ export const ResultsSection = ({
             </DropdownMenuContent>
           </DropdownMenu>
 
-          {/* Real-time speech status */}
-          <div className="flex items-center gap-1 text-[0.7em] text-muted-foreground truncate">
+          {/* Real-time speech status indicator */}
+          <div className="flex items-center gap-1 text-[0.7em] text-muted-foreground truncate min-w-0">
             <span
               className={cn(
                 "w-1.5 h-1.5 rounded-full shrink-0",
@@ -201,14 +264,12 @@ export const ResultsSection = ({
                   : "bg-emerald-500"
               )}
             />
-            <span className="truncate">
+            <span className="truncate text-foreground/80 font-medium">
               {isAIProcessing
                 ? "AI generating..."
                 : micSpeaking
                 ? "You're speaking..."
-                : lastLiveText
-                ? `${lastLiveText.source === "me" ? "You: " : "Them: "}${lastLiveText.text}`
-                : "Listening"}
+                : "Live listening"}
             </span>
           </div>
         </div>
@@ -249,79 +310,157 @@ export const ResultsSection = ({
             onCheckedChange={setConversationMode}
             className="scale-75"
           />
-          {lastAIResponse && <CopyButton content={lastAIResponse} />}
+          {(displayedAnswer || lastAIResponse) && (
+            <CopyButton content={displayedAnswer || lastAIResponse} />
+          )}
         </div>
       </div>
 
-      {/* Live System Audio / Interviewer Speech & Instant Subtitle Bar */}
+      {/* CONTINUOUS LIVE TRANSCRIPT STREAM TICKER (TOP BAR) */}
+      <div className="rounded-lg border border-border/40 bg-muted/20 p-1.5 space-y-1 w-full min-w-0 max-w-full overflow-hidden">
+        <div className="flex items-center justify-between text-[0.65em] font-semibold text-muted-foreground uppercase tracking-wider px-0.5">
+          <span className="flex items-center gap-1">
+            <RadioIcon className="w-2.5 h-2.5 text-primary animate-pulse" />
+            Live Recognition Stream
+          </span>
+          <span className="text-[0.85em] font-mono lowercase opacity-70">continuous STT</span>
+        </div>
+        <div className="space-y-0.5 max-h-16 overflow-y-auto pr-0.5 font-sans text-[0.78em] leading-tight w-full min-w-0 break-words">
+          {liveSegments.slice(-3).map((seg) => (
+            <div
+              key={seg.id}
+              className={cn(
+                "flex items-start gap-1 w-full min-w-0 break-words py-0.5 px-1 rounded",
+                seg.source === "me" ? "bg-blue-500/10 text-blue-800 dark:text-blue-300" : "bg-primary/5 text-foreground"
+              )}
+            >
+              <span className="font-semibold text-[0.85em] uppercase shrink-0 mt-0.5">
+                {seg.source === "me" ? "🎤 You:" : "🎧 Them:"}
+              </span>
+              <span className="flex-1 min-w-0 break-words select-text">
+                {seg.text}
+              </span>
+            </div>
+          ))}
+          {liveSegments.length === 0 && (
+            <div className="text-muted-foreground/60 italic text-[0.72em] py-0.5 px-1">
+              Audio stream active. Transcripts from mic and system will flow here continuously...
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Live System Audio / Interviewer Question & Instant Subtitle Bar */}
       {theirLastTranscription && (
-        <div className="p-2.5 rounded-xl border border-primary/20 bg-primary/5 space-y-1 animate-in fade-in duration-150">
-          <div className="flex items-center justify-between text-[0.7em]">
+        <div className="p-2 rounded-xl border border-primary/20 bg-primary/5 space-y-0.5 w-full min-w-0 max-w-full overflow-hidden animate-in fade-in duration-150">
+          <div className="flex items-center justify-between text-[0.68em]">
             <span className="font-semibold text-primary flex items-center gap-1 uppercase tracking-wider">
               <HeadphonesIcon className="w-3 h-3" />
-              Interviewer Speech
+              Interviewer Question
             </span>
             {isTranslatingInterviewer && (
-              <span className="text-muted-foreground flex items-center gap-1 text-[0.65em]">
-                <Loader2 className="w-2.5 h-2.5 animate-spin" />
+              <span className="text-muted-foreground flex items-center gap-1 text-[0.6em]">
+                <Loader2 className="w-2 h-2 animate-spin" />
                 translating...
               </span>
             )}
           </div>
-          {/* Original speech */}
-          <p className="text-[0.85em] text-foreground/90 font-medium select-text leading-snug">
+          {/* Original speech - wrapped safely */}
+          <p className="text-[0.85em] text-foreground/90 font-medium select-text leading-snug break-words w-full min-w-0"
+            style={{ wordBreak: "break-word", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
+          >
             {theirLastTranscription}
           </p>
           {/* Instant Russian translation subtitle */}
           {interviewerTranslation && interviewerTranslation !== theirLastTranscription && (
-            <div className="pt-1 border-t border-primary/10 text-primary/90 text-[0.8em] leading-snug select-text flex items-start gap-1">
-              <span className="text-[0.65em] font-semibold text-primary/60 uppercase shrink-0 mt-0.5">
+            <div className="pt-0.5 border-t border-primary/10 text-primary/90 text-[0.8em] leading-snug select-text flex items-start gap-1 break-words w-full min-w-0"
+              style={{ wordBreak: "break-word", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
+            >
+              <span className="text-[0.62em] font-semibold text-primary/60 uppercase shrink-0 mt-0.5">
                 RU:
               </span>
-              <span>{interviewerTranslation}</span>
+              <span className="flex-1 min-w-0 break-words">{interviewerTranslation}</span>
             </div>
           )}
         </div>
       )}
 
-      {/* Main Focus Area: Generated AI Answer */}
+      {/* PROMINENT SWITCH BUTTON: New Answer is ready while candidate was reading! */}
+      {pendingNewAnswer && (
+        <div className="p-2 rounded-xl border border-amber-500/40 bg-amber-500/10 shadow-sm flex items-center justify-between gap-2 animate-in slide-in-from-top-1 duration-200">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            <ZapIcon className="w-4 h-4 text-amber-500 shrink-0 animate-bounce" />
+            <div className="min-w-0 flex-1">
+              <p className="text-[0.75em] font-semibold text-amber-900 dark:text-amber-300 truncate">
+                ⚡ Новая подсказка готова
+              </p>
+              <p className="text-[0.68em] text-amber-800/80 dark:text-amber-400/80 truncate">
+                {pendingNewAnswer.slice(0, 60)}...
+              </p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            onClick={handleApplyPendingAnswer}
+            className="h-6 px-2.5 text-[0.7em] font-semibold bg-amber-600 hover:bg-amber-700 text-white shrink-0 shadow"
+          >
+            Показать новый ответ
+          </Button>
+        </div>
+      )}
+
+      {/* Main Focus Area: Generated AI Answer (Rock-solid text wrapping) */}
       <div
         className={cn(
-          "gap-2.5",
+          "gap-2 w-full min-w-0 max-w-full overflow-hidden",
           dualTranslate && hasResponse ? "grid grid-cols-1 md:grid-cols-2" : "block"
         )}
       >
-        {/* Left / Main: The Generated AI Answer */}
-        <div className="space-y-1.5">
-          {isAIProcessing && !lastAIResponse ? (
+        {/* Left / Main: The Current Active AI Answer */}
+        <div className="space-y-1 w-full min-w-0 max-w-full overflow-hidden">
+          {isAIProcessing && !displayedAnswer && !lastAIResponse ? (
             <div className="flex items-center gap-2 py-4 px-2 text-primary animate-pulse">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span className="text-[0.85em] font-medium">Thinking aloud...</span>
             </div>
-          ) : lastAIResponse ? (
-            <div className="p-3 rounded-xl border border-border/60 bg-background shadow-sm space-y-1">
-              <div className="flex items-center justify-between text-[0.65em] text-muted-foreground">
+          ) : displayedAnswer || lastAIResponse ? (
+            <div className="p-3 rounded-xl border border-border/60 bg-background shadow-sm space-y-1 w-full min-w-0 max-w-full overflow-hidden">
+              <div className="flex items-center justify-between text-[0.65em] text-muted-foreground select-none">
                 <span className="font-semibold text-primary uppercase tracking-wider flex items-center gap-1">
                   <SparklesIcon className="w-3 h-3" />
-                  Your AI Cue
+                  Your Active Answer
                 </span>
+                {previousAnswer && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleRevertToPreviousAnswer}
+                    className="h-5 text-[0.9em] gap-1 px-1.5 text-muted-foreground hover:text-foreground"
+                    title="Switch back to previous answer"
+                  >
+                    <RotateCcwIcon className="w-2.5 h-2.5" />
+                    Предыдущий ответ
+                  </Button>
+                )}
               </div>
+              {/* Guaranteed unbroken text wrapping */}
               <div
-                className="text-[0.92em] leading-relaxed text-foreground select-text"
+                className="text-[0.92em] leading-relaxed text-foreground select-text w-full min-w-0 max-w-full break-words"
                 style={{
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
                   overflowWrap: "anywhere",
+                  hyphens: "auto",
                   maxWidth: "100%",
                 }}
               >
-                {lastAIResponse}
+                {displayedAnswer || lastAIResponse}
               </div>
             </div>
           ) : (
             !theirLastTranscription && (
-              <div className="py-6 text-center text-muted-foreground/60 text-[0.8em]">
-                Ready for conversation. System audio & mic will appear here live.
+              <div className="py-5 text-center text-muted-foreground/60 text-[0.8em]">
+                Ready. Sound from system and mic is recognized continuously above.
               </div>
             )
           )}
@@ -329,22 +468,22 @@ export const ResultsSection = ({
 
         {/* Right: Instant Google Translation Panel (When RU ↔ EN Toggle is ON) */}
         {dualTranslate && hasResponse && (
-          <div className="p-3 rounded-xl border border-border/50 bg-muted/10 space-y-2">
+          <div className="p-2.5 rounded-xl border border-border/50 bg-muted/10 space-y-1.5 w-full min-w-0 max-w-full overflow-hidden">
             <div className="flex items-center justify-between border-b border-border/30 pb-1">
-              <span className="text-[0.75em] font-semibold text-primary flex items-center gap-1">
+              <span className="text-[0.72em] font-semibold text-primary flex items-center gap-1">
                 <Languages className="w-3 h-3" />
                 Instant Translation (Google API)
               </span>
               {isTranslatingAI && (
-                <span className="text-[0.65em] text-muted-foreground flex items-center gap-1">
-                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                <span className="text-[0.62em] text-muted-foreground flex items-center gap-1">
+                  <Loader2 className="w-2 h-2 animate-spin" />
                   translating...
                 </span>
               )}
             </div>
 
             {selectedMessage ? (
-              <div className="space-y-1 bg-background/80 p-2 rounded-lg border border-primary/20">
+              <div className="space-y-1 bg-background/80 p-2 rounded-lg border border-primary/20 w-full min-w-0 max-w-full">
                 <div className="flex items-center justify-between">
                   <span className="text-[0.65em] font-medium text-primary">Selected turn</span>
                   <Button
@@ -356,13 +495,20 @@ export const ResultsSection = ({
                     <XIcon className="w-3 h-3" />
                   </Button>
                 </div>
-                <div className="text-[0.85em] leading-relaxed text-foreground select-text">
+                <div
+                  className="text-[0.85em] leading-relaxed text-foreground select-text w-full min-w-0 break-words"
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    overflowWrap: "anywhere",
+                  }}
+                >
                   {isTranslatingSelected ? "Translating..." : selectedTranslation}
                 </div>
               </div>
             ) : (
               <div
-                className="text-[0.88em] leading-relaxed text-foreground/90 select-text"
+                className="text-[0.88em] leading-relaxed text-foreground/90 select-text w-full min-w-0 max-w-full break-words"
                 style={{
                   whiteSpace: "pre-wrap",
                   wordBreak: "break-word",
@@ -382,16 +528,16 @@ export const ResultsSection = ({
 
       {/* Collapsible Clean History Drawer */}
       {showHistory && conversation.messages.length > 0 && (
-        <div className="mt-2.5 pt-2 border-t border-border/40 space-y-1.5 animate-in fade-in duration-200">
+        <div className="mt-2 pt-1.5 border-t border-border/40 space-y-1 animate-in fade-in duration-200 w-full min-w-0 max-w-full">
           <div className="flex items-center justify-between px-1">
-            <span className="text-[0.7em] font-semibold text-muted-foreground uppercase tracking-wider">
+            <span className="text-[0.68em] font-semibold text-muted-foreground uppercase tracking-wider">
               Conversation History ({conversation.messages.length})
             </span>
-            <Button size="icon" variant="ghost" className="h-5 w-5" onClick={() => setShowHistory(false)}>
+            <Button size="icon" variant="ghost" className="h-4 w-4" onClick={() => setShowHistory(false)}>
               <XIcon className="w-3 h-3" />
             </Button>
           </div>
-          <div className="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+          <div className="space-y-1 max-h-48 overflow-y-auto pr-1 w-full min-w-0">
             {conversation.messages.slice(0, 15).reverse().map((msg, i) => (
               <div
                 key={i}
@@ -403,13 +549,13 @@ export const ResultsSection = ({
                   })
                 }
                 className={cn(
-                  "p-2 rounded-lg border text-[0.8em] cursor-pointer transition-colors hover:border-primary/40",
+                  "p-1.5 rounded-lg border text-[0.78em] cursor-pointer transition-colors hover:border-primary/40 w-full min-w-0 max-w-full break-words",
                   msg.role === "assistant"
                     ? "bg-primary/5 border-primary/20"
                     : "bg-muted/30 border-border/30"
                 )}
               >
-                <div className="flex items-center justify-between mb-0.5 text-[0.65em] text-muted-foreground">
+                <div className="flex items-center justify-between mb-0.5 text-[0.62em] text-muted-foreground">
                   <span className="font-semibold uppercase">
                     {msg.role === "assistant"
                       ? "AI Cue"
@@ -424,7 +570,14 @@ export const ResultsSection = ({
                     })}
                   </span>
                 </div>
-                <div className="text-foreground/90 leading-relaxed select-text">
+                <div
+                  className="text-foreground/90 leading-relaxed select-text w-full min-w-0 break-words"
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                    overflowWrap: "anywhere",
+                  }}
+                >
                   <Markdown>{msg.content}</Markdown>
                 </div>
               </div>
