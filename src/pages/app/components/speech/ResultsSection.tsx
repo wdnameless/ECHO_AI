@@ -202,10 +202,16 @@ export const ResultsSection = ({
             </div>
           ) : lastAIResponse ? (
             <div className="p-3 rounded-xl border border-primary/20 bg-primary/5 shadow-sm">
-              <div className="prose prose-sm max-w-none dark:prose-invert text-[0.92em] leading-relaxed text-foreground select-text">
-                <Markdown isStreaming={isAIProcessing}>
-                  {lastAIResponse}
-                </Markdown>
+              <div
+                className="text-[0.92em] leading-relaxed text-foreground select-text"
+                style={{
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                  overflowWrap: "anywhere",
+                  maxWidth: "100%",
+                }}
+              >
+                {lastAIResponse}
               </div>
             </div>
           ) : (
