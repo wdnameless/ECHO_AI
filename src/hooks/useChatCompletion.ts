@@ -436,24 +436,165 @@ export const useChatCompletion = (
 
       try {
         if (prompt) {
-          // Auto mode: Submit directly to AI with screenshot
-          const attachedFile: AttachedFile = {
-            id: Date.now().toString(),
-            name: `screenshot_${Date.now()}.png`,
-            type: "image/png",
-            base64: base64,
-            size: base64.length,
-          };
+          // Auto mode: Submit directly to AI with screenshot.
+          // NOTE: do NOT go through submit() - the setTimeout there captures
+          // a stale closure without the just-added screenshot. Send inline.
+          const requestId = generateRequestId();
+          currentRequestIdRef.current = requestId;
 
-          // Store files temporarily and submit
-          setState((prev) => ({
-            ...prev,
-            attachedFiles: [...prev.attachedFiles, attachedFile],
-            input: prompt,
+          if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+          }
+          abortControllerRef.current = new AbortController();
+          const signal = abortControllerRef.current.signal;
+
+          const messageHistory = (messages?.messages || []).map((msg) => ({
+            role: msg.role,
+            content: msg.content,
           }));
 
-          // Submit with the prompt and screenshot
-          setTimeout(() => submit(prompt), 100);
+          const usePluelyAPI = await shouldUsePluelyAPI();
+          if (!selectedAIProvider.provider && !usePluelyAPI) {
+            setState((prev) => ({
+              ...prev,
+              error: "Please select an AI provider in settings",
+            }));
+            return;
+          }
+          const provider = allAiProviders.find(
+            (p) => p.id === selectedAIProvider.provider
+          );
+          if (!provider && !usePluelyAPI) {
+            setState((prev) => ({
+              ...prev,
+              error: "Invalid provider selected",
+            }));
+            return;
+          }
+
+          const timestamp = Date.now();
+          const userMsg: ChatMessage = {
+            id: generateMessageId("user", timestamp),
+            role: "user",
+            content: prompt,
+            timestamp,
+          };
+          const updatedMessages = {
+            ...messages!,
+            messages: [...(messages?.messages || []), userMsg],
+          };
+          setMessages(updatedMessages);
+
+          setState((prev) => ({
+            ...prev,
+            input: "",
+            isLoading: true,
+            error: null,
+            attachedFiles: [],
+          }));
+
+          let fullResponse = "";
+          try {
+            for await (const chunk of fetchAIResponse({
+              provider: usePluelyAPI ? undefined : provider,
+              selectedProvider: selectedAIProvider,
+              systemPrompt: systemPrompt || undefined,
+              history: messageHistory,
+              userMessage: prompt,
+              imagesBase64: [base64],
+              signal,
+            })) {
+              if (currentRequestIdRef.current !== requestId || signal.aborted) {
+                return;
+              }
+              fullResponse += chunk;
+              const assistantMsg: ChatMessage = {
+                id: generateMessageId("assistant", timestamp + MESSAGE_ID_OFFSET),
+                role: "assistant",
+                content: fullResponse,
+                timestamp: timestamp + MESSAGE_ID_OFFSET,
+              };
+              const updatedWithResponse = {
+                ...updatedMessages,
+                messages: [...updatedMessages.messages, assistantMsg],
+              };
+              const lastMessage =
+                updatedWithResponse.messages[
+                  updatedWithResponse.messages.length - 1
+                ];
+              if (lastMessage.role === "assistant") {
+                updatedWithResponse.messages[
+                  updatedWithResponse.messages.length - 1
+                ] = assistantMsg;
+              } else {
+                updatedWithResponse.messages.push(assistantMsg);
+              }
+              setMessages(updatedWithResponse);
+              scrollToBottom();
+            }
+          } catch (e: any) {
+            if (currentRequestIdRef.current === requestId && !signal.aborted) {
+              setState((prev) => ({
+                ...prev,
+                isLoading: false,
+                error: e.message || "An error occurred",
+              }));
+            }
+            return;
+          }
+
+          if (currentRequestIdRef.current !== requestId || signal.aborted) {
+            return;
+          }
+
+          setState((prev) => ({ ...prev, isLoading: false }));
+
+          if (fullResponse) {
+            const assistantMsg: ChatMessage = {
+              id: generateMessageId("assistant", timestamp + MESSAGE_ID_OFFSET),
+              role: "assistant",
+              content: fullResponse,
+              timestamp: timestamp + MESSAGE_ID_OFFSET,
+            };
+            const newMessages = [
+              ...(messages?.messages || []),
+              userMsg,
+              assistantMsg,
+            ];
+            let existingConversation = null;
+            if (conversationId) {
+              try {
+                existingConversation = await getConversationById(conversationId);
+              } catch (error) {
+                console.error("Failed to get existing conversation:", error);
+              }
+            }
+            const title =
+              existingConversation?.title ||
+              messages?.title ||
+              generateConversationTitle(prompt);
+            const conversation: ChatConversation = {
+              id: conversationId,
+              title,
+              messages: newMessages,
+              createdAt:
+                existingConversation?.createdAt ||
+                messages?.createdAt ||
+                timestamp,
+              updatedAt: timestamp,
+            };
+            try {
+              await saveConversation(conversation);
+              const updatedConversation = await getConversationById(
+                conversationId
+              );
+              if (updatedConversation) {
+                setMessages(updatedConversation);
+              }
+            } catch (error) {
+              console.error("Failed to save conversation:", error);
+            }
+          }
         } else {
           // Manual mode: Add to attached files
           const attachedFile: AttachedFile = {
@@ -481,7 +622,15 @@ export const useChatCompletion = (
         }));
       }
     },
-    [state.attachedFiles.length, submit]
+    [
+      state.attachedFiles.length,
+      selectedAIProvider,
+      allAiProviders,
+      systemPrompt,
+      messages,
+      conversationId,
+      setMessages,
+    ]
   );
 
   const onRemoveAllFiles = () => {

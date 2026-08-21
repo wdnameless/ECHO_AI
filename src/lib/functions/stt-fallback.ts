@@ -22,23 +22,26 @@ export interface TranscribeWithFallbackParams {
   audio: Blob | File;
   /** Kept for API compatibility; cloud fallback is no longer automatic. */
   allowCloudFallback?: boolean;
+  /** "high" = final segment (processed first), "low" = live partial. */
+  priority?: "high" | "low";
 }
 
 export async function transcribeWithFallback({
   audio,
   provider,
   selectedProvider,
+  priority = "high",
 }: TranscribeWithFallbackParams): Promise<string> {
   // If the cloud Pluely API is enabled, use it directly (explicit user choice).
   const usePluelyAPI = await shouldUsePluelyAPI();
   if (usePluelyAPI) {
-    return fetchSTT({ provider: undefined, selectedProvider, audio });
+    return fetchSTT({ provider: undefined, selectedProvider, audio, priority });
   }
 
   // If the user explicitly selected a non-local provider (e.g. Groq, OpenAI),
   // use it directly - that is a deliberate manual choice in Settings.
   if (provider && provider.id !== "handy-local-whisper") {
-    return fetchSTT({ provider, selectedProvider, audio });
+    return fetchSTT({ provider, selectedProvider, audio, priority });
   }
 
   // Missing provider: explicit error, never silently hit a cloud API.
@@ -51,7 +54,7 @@ export async function transcribeWithFallback({
   // Local Handy path: GPU model first, then the in-server local whisper.
   // The Python server already implements the GPU -> local-CPU fallback chain,
   // so a single request is enough - no cloud involved.
-  const result = await fetchSTT({ provider, selectedProvider, audio });
+  const result = await fetchSTT({ provider, selectedProvider, audio, priority });
   if (
     result &&
     !result.startsWith("Pluely STT Error") &&

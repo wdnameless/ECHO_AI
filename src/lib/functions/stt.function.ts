@@ -11,6 +11,23 @@ import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
 import { getResponseSettings } from "@/lib";
 
+// Cache parsed curl configs: curl2Json is pure, so parsing the same provider
+// curl on every request is wasted CPU on the hot path.
+const curlParseCache = new Map<string, any>();
+const CURL_PARSE_CACHE_MAX = 20;
+
+function parseCurlCached(curl: string): any {
+  const cached = curlParseCache.get(curl);
+  if (cached !== undefined) return cached;
+  const parsed = curl2Json(curl);
+  if (curlParseCache.size >= CURL_PARSE_CACHE_MAX) {
+    const oldest = curlParseCache.keys().next().value;
+    if (oldest !== undefined) curlParseCache.delete(oldest);
+  }
+  curlParseCache.set(curl, parsed);
+  return parsed;
+}
+
 // Pluely STT function
 async function fetchPluelySTT(audio: File | Blob): Promise<string> {
   try {
@@ -44,6 +61,8 @@ export interface STTParams {
     variables: Record<string, string>;
   };
   audio: File | Blob;
+  /** "high" = final segment (processed first), "low" = live partial. */
+  priority?: "high" | "low";
 }
 
 /**
@@ -53,7 +72,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
   let warnings: string[] = [];
 
   try {
-    const { provider, selectedProvider, audio } = params;
+    const { provider, selectedProvider, audio, priority = "high" } = params;
 
     // Check if we should use Pluely API instead
     const usePluelyAPI = await shouldUsePluelyAPI();
@@ -67,7 +86,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
 
     let curlJson: any;
     try {
-      curlJson = curl2Json(provider.curl);
+      curlJson = parseCurlCached(provider.curl);
     } catch (error) {
       throw new Error(
         `Failed to parse curl: ${
@@ -150,6 +169,12 @@ export async function fetchSTT(params: STTParams): Promise<string> {
 
     let finalHeaders = { ...headers };
     let body: FormData | string | Blob;
+
+    // Local Handy server: pass priority so final segments jump the queue.
+    const isLocalHandy = url.includes("127.0.0.1:8000");
+    if (isLocalHandy) {
+      finalHeaders["X-Priority"] = priority;
+    }
 
     const isForm =
       provider.curl.includes("-F ") || provider.curl.includes("--form");

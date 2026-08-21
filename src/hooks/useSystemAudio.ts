@@ -145,10 +145,14 @@ export function useSystemAudio() {
   const isSavingRef = useRef<boolean>(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const capturingRef = useRef<boolean>(capturing);
+  // Streaming render throttle: chunks accumulate in a ref and flush to React
+  // state at most every ~80ms, so long answers don't re-render per chunk.
+  const streamBufferRef = useRef<string>("");
+  const streamFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
   // Cooldown after an AI response: short sounds right after an answer must
   // not trigger another AI call (prevents "false reacting" loops).
   const lastAIResponseAtRef = useRef<number>(0);
-  const AI_RESPONSE_COOLDOWN_MS = 4000;
+  const AI_RESPONSE_COOLDOWN_MS = 2000;
   const lastThemSegmentAtRef = useRef<number>(0);
   const respondToMicRef = useRef<boolean>(respondToMic);
 
@@ -344,7 +348,28 @@ export function useSystemAudio() {
             signal: abortControllerRef.current.signal,
           })) {
             fullResponse += chunk;
-            setLastAIResponse((prev) => prev + chunk);
+            // Throttled flush: buffer chunks, update React state at most
+            // every 80ms to keep the UI smooth on long answers.
+            streamBufferRef.current += chunk;
+            if (!streamFlushTimerRef.current) {
+              streamFlushTimerRef.current = setTimeout(() => {
+                streamFlushTimerRef.current = null;
+                const buffered = streamBufferRef.current;
+                streamBufferRef.current = "";
+                if (buffered) {
+                  setLastAIResponse((prev) => prev + buffered);
+                }
+              }, 80);
+            }
+          }
+          // Final flush of any remaining buffered chunks.
+          if (streamFlushTimerRef.current) {
+            clearTimeout(streamFlushTimerRef.current);
+            streamFlushTimerRef.current = null;
+          }
+          if (streamBufferRef.current) {
+            setLastAIResponse((prev) => prev + streamBufferRef.current);
+            streamBufferRef.current = "";
           }
         } catch (aiError: any) {
           setError(aiError.message || "Failed to get AI response");
@@ -385,15 +410,20 @@ export function useSystemAudio() {
     [selectedAIProvider, allAiProviders]
   );
 
-  // Prefix user turns for the LLM history so it knows who said what
+  // Prefix user turns for the LLM history so it knows who said what.
+  // Cap at the last 20 messages: unbounded history bloats the prompt and
+  // slows down every answer in long interviews.
+  const MAX_HISTORY_MESSAGES = 20;
   const buildHistory = (messages: ChatMessage[]): Message[] =>
-    messages.map((msg) => ({
-      role: msg.role,
-      content:
-        msg.role === "user" && msg.source
-          ? `[${msg.source === "me" ? "Candidate (I am speaking)" : "Interviewer (question)"}] ${msg.content}`
-          : msg.content,
-    }));
+    messages
+      .slice(0, MAX_HISTORY_MESSAGES)
+      .map((msg) => ({
+        role: msg.role,
+        content:
+          msg.role === "user" && msg.source
+            ? `[${msg.source === "me" ? "Candidate (I am speaking)" : "Interviewer (question)"}] ${msg.content}`
+            : msg.content,
+      }));
 
   const appendLiveSegment = (
     source: "me" | "them",
@@ -462,6 +492,7 @@ export function useSystemAudio() {
         provider: providerConfig,
         selectedProvider: selectedSttProvider,
         audio: audioBlob,
+        priority: "high",
       });
 
       const timeoutPromise = new Promise<string>((_, reject) => {
@@ -506,12 +537,18 @@ export function useSystemAudio() {
         }
 
         // Cooldown guard: right after an AI answer, short utterances are
-        // usually reactions to the answer, not new questions.
+        // usually reactions to the answer, not new questions. Question
+        // starters ("почему", "what", "how"...) always pass through.
         const sinceLastResponse = Date.now() - lastAIResponseAtRef.current;
+        const isQuestionStart =
+          /^(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|расскажи|объясни|what|how|why|where|when|who|which|can you|could you|tell me|explain)\b/i.test(
+            transcription.trim()
+          );
         if (
           lastAIResponseAtRef.current > 0 &&
           sinceLastResponse < AI_RESPONSE_COOLDOWN_MS &&
-          transcription.trim().length < 60
+          transcription.trim().length < 60 &&
+          !isQuestionStart
         ) {
           console.log(
             `[Pluely] Skipping AI processing during post-answer cooldown (${sinceLastResponse}ms): "${transcription}"`
@@ -525,7 +562,7 @@ export function useSystemAudio() {
         const now = Date.now();
         if (source === "them") {
           const lastThemSeg = lastThemSegmentAtRef.current;
-          if (lastThemSeg && now - lastThemSeg < 2500) {
+          if (lastThemSeg && now - lastThemSeg < 1200) {
             console.log(
               `[Pluely] Skipping AI trigger: interviewer continues speaking (debounce ${now - lastThemSeg}ms)`
             );
@@ -639,6 +676,8 @@ export function useSystemAudio() {
               // Live partials must NEVER hit the cloud (Groq 429 protection):
               // only the local Handy Nemotron model processes these chunks.
               allowCloudFallback: false,
+              // Partials are low priority: final segments jump the queue.
+              priority: "low",
             });
             if (text && !text.toLowerCase().startsWith("pluely stt error")) {
               appendLiveSegment("them", text.trim(), true);

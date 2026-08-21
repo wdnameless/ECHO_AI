@@ -53,6 +53,7 @@ function MicVADBridge({
 
   const vadRef = useRef<MicVAD | null>(null);
   const listeningRef = useRef(false);
+  const lastSpeakingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,12 +111,18 @@ function MicVADBridge({
             `[MICVAD] frames=${d.frames} maxProb=${d.maxProb.toFixed(3)} speechFrames=${d.speechFrames}`
           );
         }
-        onStateChangeRef.current({
-          listening: listeningRef.current,
-          speaking: probs.isSpeech > 0.6,
-          loading: false,
-          errored: null,
-        });
+        // Only push React state when the speaking flag actually flips -
+        // avoids a full re-render on every audio frame (~30-100 fps).
+        const speaking = probs.isSpeech > 0.6;
+        if (speaking !== lastSpeakingRef.current) {
+          lastSpeakingRef.current = speaking;
+          onStateChangeRef.current({
+            listening: listeningRef.current,
+            speaking,
+            loading: false,
+            errored: null,
+          });
+        }
       },
       onSpeechStart: () => {
         onMicSpeechStartRef.current?.();

@@ -21,10 +21,94 @@ import {
 } from "@/config/humanizer.rules";
 import { getActiveProfileId, SELF_EVOLUTION_PROFILE_ID } from "../storage/prompt-profiles";
 import { buildSelfEvolutionPromptBlock } from "../storage/user-facts";
-import { getWebSearchSettings, performWebSearch } from "../web-search";
+import { getWebSearchSettings, performWebSearch, SearchResultItem } from "../web-search";
 import { getRagContext } from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { detectLanguage } from "@/lib/language-detect";
+
+// Cache parsed curl configs: curl2Json is pure, so parsing the same provider
+// curl on every request is wasted CPU on the hot path.
+const curlParseCache = new Map<string, any>();
+const CURL_PARSE_CACHE_MAX = 20;
+
+function parseCurlCached(curl: string): any {
+  const cached = curlParseCache.get(curl);
+  if (cached !== undefined) return cached;
+  const parsed = curl2Json(curl);
+  if (curlParseCache.size >= CURL_PARSE_CACHE_MAX) {
+    const oldest = curlParseCache.keys().next().value;
+    if (oldest !== undefined) curlParseCache.delete(oldest);
+  }
+  curlParseCache.set(curl, parsed);
+  return parsed;
+}
+
+// ---------------------------------------------------------------------------
+// Parallel web search: results are raced against the first token so search
+// NEVER blocks the answer. If search wins, the request silently restarts with
+// the enriched prompt (user sees nothing). If the first token wins, results
+// are cached and injected on the next turn.
+// ---------------------------------------------------------------------------
+const searchResultsCache = new Map<
+  string,
+  { results: SearchResultItem[]; ts: number }
+>();
+const SEARCH_CACHE_TTL_MS = 5 * 60_000;
+const SEARCH_CACHE_MAX = 30;
+
+function shouldSearch(userMessage: string): boolean {
+  return (
+    userMessage.trim().length > 5 &&
+    (userMessage.includes("?") ||
+      /кто|что|где|когда|почему|как|сколько|курс|новост|документаци|search|what|how|why|latest|current|docs/i.test(
+        userMessage
+      ))
+  );
+}
+
+function getCachedSearchResults(query: string): SearchResultItem[] | null {
+  const key = query.trim().toLowerCase().slice(0, 120);
+  const entry = searchResultsCache.get(key);
+  if (entry && Date.now() - entry.ts < SEARCH_CACHE_TTL_MS) {
+    return entry.results;
+  }
+  return null;
+}
+
+function cacheSearchResults(query: string, results: SearchResultItem[]) {
+  const key = query.trim().toLowerCase().slice(0, 120);
+  if (searchResultsCache.size >= SEARCH_CACHE_MAX) {
+    const oldest = searchResultsCache.keys().next().value;
+    if (oldest !== undefined) searchResultsCache.delete(oldest);
+  }
+  searchResultsCache.set(key, { results, ts: Date.now() });
+}
+
+function buildSearchBlock(results: SearchResultItem[]): string {
+  const searchBlock = results
+    .map((r, i) => `[${i + 1}] ${r.title} (${r.url}):\n${r.snippet}`)
+    .join("\n\n");
+  return `[LIVE WEB SEARCH RESULTS - РЕЗУЛЬТАТЫ ПОИСКА В ИНТЕРНЕТЕ]\n${searchBlock}\nИспользуй эти актуальные данные для точного ответа.\n[/LIVE WEB SEARCH RESULTS]`;
+}
+
+function startParallelWebSearch(
+  userMessage: string
+): Promise<SearchResultItem[] | null> {
+  const settings = getWebSearchSettings();
+  if (!settings.enabled || !shouldSearch(userMessage)) {
+    return Promise.resolve(null);
+  }
+  const cached = getCachedSearchResults(userMessage);
+  if (cached) {
+    return Promise.resolve(cached);
+  }
+  return performWebSearch(userMessage)
+    .then((results) => (results.length > 0 ? results : null))
+    .catch((err) => {
+      console.warn("[AI Response] Live web search failed:", err);
+      return null;
+    });
+}
 
 async function buildEnhancedSystemPrompt(
   baseSystemPrompt?: string,
@@ -103,31 +187,8 @@ async function buildEnhancedSystemPrompt(
     }
   }
 
-  // Live Web Search & Research Injection (if enabled)
-  const searchSettings = getWebSearchSettings();
-  if (searchSettings.enabled && userMessage && userMessage.trim().length > 5) {
-    // Only search if message looks like a question or explicit research request
-    const needsSearch =
-      userMessage.includes("?") ||
-      /кто|что|где|когда|почему|как|сколько|курс|новост|документаци|search|what|how|why|latest|current|docs/i.test(
-        userMessage
-      );
-    if (needsSearch) {
-      try {
-        const searchResults = await performWebSearch(userMessage);
-        if (searchResults.length > 0) {
-          const searchBlock = searchResults
-            .map((r, i) => `[${i + 1}] ${r.title} (${r.url}):\n${r.snippet}`)
-            .join("\n\n");
-          prompts.push(
-            `[LIVE WEB SEARCH RESULTS - РЕЗУЛЬТАТЫ ПОИСКА В ИНТЕРНЕТЕ]\n${searchBlock}\nИспользуй эти актуальные данные для точного ответа.\n[/LIVE WEB SEARCH RESULTS]`
-          );
-        }
-      } catch (err) {
-        console.warn("[AI Response] Live web search failed:", err);
-      }
-    }
-  }
+  // NOTE: Live web search is no longer awaited here - it runs in parallel
+  // inside fetchAIResponse and never blocks the first token.
 
   // Anti-filler & question intent instruction
   prompts.push(
@@ -264,7 +325,10 @@ async function* fetchPluelyAIResponse(params: {
   }
 }
 
-export async function* fetchAIResponse(params: {
+// Core streaming implementation (Pluely API or configured provider).
+// Extracted so the parallel-search race can restart it with an enriched
+// system prompt without duplicating the request-building logic.
+async function* streamAIResponse(params: {
   provider: TYPE_PROVIDER | undefined;
   selectedProvider: {
     provider: string;
@@ -275,7 +339,7 @@ export async function* fetchAIResponse(params: {
   userMessage: string;
   imagesBase64?: string[];
   signal?: AbortSignal;
-}): AsyncIterable<string> {
+}): AsyncGenerator<string, void, unknown> {
   try {
     const {
       provider,
@@ -292,16 +356,11 @@ export async function* fetchAIResponse(params: {
       return;
     }
 
-    const enhancedSystemPrompt = await buildEnhancedSystemPrompt(
-      systemPrompt,
-      userMessage
-    );
-
     // Check if we should use Pluely API instead
     const usePluelyAPI = await shouldUsePluelyAPI();
     if (usePluelyAPI) {
       yield* fetchPluelyAIResponse({
-        systemPrompt: enhancedSystemPrompt,
+        systemPrompt,
         userMessage,
         imagesBase64,
         history,
@@ -318,7 +377,7 @@ export async function* fetchAIResponse(params: {
 
     let curlJson;
     try {
-      curlJson = curl2Json(provider.curl);
+      curlJson = parseCurlCached(provider.curl);
     } catch (error) {
       throw new Error(
         `Failed to parse curl: ${
@@ -382,7 +441,7 @@ export async function* fetchAIResponse(params: {
           value,
         ])
       ),
-      SYSTEM_PROMPT: enhancedSystemPrompt || "",
+      SYSTEM_PROMPT: systemPrompt || "",
     };
 
     bodyObj = deepVariableReplacer(bodyObj, allVariables);
@@ -538,9 +597,125 @@ export async function* fetchAIResponse(params: {
     }
   } catch (error) {
     throw new Error(
-      `Error in fetchAIResponse: ${
+      `Error in streamAIResponse: ${
         error instanceof Error ? error.message : "Unknown error"
       }`
     );
   }
+}
+
+/**
+ * Public entry point. Web search (when enabled) runs IN PARALLEL with the
+ * request and never blocks the first token:
+ *  - search wins  -> the request silently restarts with the enriched prompt
+ *                    (the user sees nothing, the answer just uses fresh data);
+ *  - token wins   -> the answer streams immediately and the search results
+ *                    are cached for the next turn.
+ */
+export async function* fetchAIResponse(params: {
+  provider: TYPE_PROVIDER | undefined;
+  selectedProvider: {
+    provider: string;
+    variables: Record<string, string>;
+  };
+  systemPrompt?: string;
+  history?: Message[];
+  userMessage: string;
+  imagesBase64?: string[];
+  signal?: AbortSignal;
+}): AsyncIterable<string> {
+  const { userMessage, signal } = params;
+
+  // Kick off the search immediately (fire-and-forget promise).
+  const searchPromise = startParallelWebSearch(userMessage);
+
+  // Build the base prompt (RAG, humanizer, etc.) - no search inside.
+  const baseSystemPrompt = await buildEnhancedSystemPrompt(
+    params.systemPrompt,
+    userMessage
+  );
+
+  // First attempt gets its own controller so it can be aborted silently
+  // if the search wins the race (no wasted tokens on a dropped request).
+  const firstAttemptController = new AbortController();
+  const abortFromExternal = () => firstAttemptController.abort();
+  signal?.addEventListener("abort", abortFromExternal, { once: true });
+
+  // Race: first token vs search results.
+  const firstChunkPromise = (async () => {
+    try {
+      const iterator = streamAIResponse({
+        ...params,
+        systemPrompt: baseSystemPrompt,
+        signal: firstAttemptController.signal,
+      });
+      const first = await iterator.next();
+      return { iterator, first };
+    } catch (err) {
+      // First attempt crashed: let the search win the race if it can.
+      return {
+        iterator: null as any,
+        first: { done: true as const, value: undefined as any },
+        error: err,
+      };
+    }
+  })();
+
+  const searchResult = await Promise.race([
+    searchPromise,
+    firstChunkPromise.then(({ first }) => {
+      // If the first chunk is already an error/empty, let search win.
+      if (first.done || !first.value) {
+        return searchPromise;
+      }
+      return null;
+    }),
+  ]);
+
+  if (searchResult && searchResult.length > 0) {
+    // Search finished before the first token: abort the first attempt and
+    // restart silently with the enriched prompt. The user never sees the
+    // aborted first attempt.
+    firstAttemptController.abort();
+    signal?.removeEventListener("abort", abortFromExternal);
+    cacheSearchResults(userMessage, searchResult);
+    const enrichedPrompt = `${baseSystemPrompt} ${buildSearchBlock(searchResult)}`;
+    yield* streamAIResponse({
+      ...params,
+      systemPrompt: enrichedPrompt,
+    });
+    return;
+  }
+
+  // First token won (or search disabled/empty): stream the original request.
+  signal?.removeEventListener("abort", abortFromExternal);
+  const { iterator, first } = await firstChunkPromise;
+  if (signal?.aborted) {
+    return;
+  }
+  if (!iterator) {
+    // The first attempt crashed and search did not save us - surface it.
+    throw new Error(
+      `Error in fetchAIResponse: ${
+        (first as any)?.error instanceof Error
+          ? (first as any).error.message
+          : "Unknown error"
+      }`
+    );
+  }
+  if (!first.done) {
+    yield first.value;
+    for await (const chunk of iterator) {
+      if (signal?.aborted) {
+        return;
+      }
+      yield chunk;
+    }
+  }
+  // Cache results for the next turn if they arrived late.
+  searchPromise.then((results) => {
+    if (results && results.length > 0) {
+      cacheSearchResults(userMessage, results);
+    }
+  });
 }

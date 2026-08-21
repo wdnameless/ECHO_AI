@@ -523,8 +523,9 @@ pub async fn stop_system_audio_capture(app: AppHandle) -> Result<(), String> {
         }
     }
 
-    // LONGER delay for proper cleanup (300ms instead of 150ms)
-    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    // Brief delay for proper cleanup (was 300+200ms - halved for snappier
+    // capture restarts during interviews).
+    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
     // Mark as not capturing
     *state
@@ -533,7 +534,7 @@ pub async fn stop_system_audio_capture(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Failed to update capturing state: {}", e))? = false;
 
     // Additional cleanup delay (CRITICAL for mic indicator)
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
     // Emit stopped event
     let _ = app.emit("capture-stopped", ());

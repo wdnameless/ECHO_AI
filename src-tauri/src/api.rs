@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_machine_uid::MachineUidExt;
 
@@ -32,6 +32,17 @@ static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 fn http_client() -> &'static reqwest::Client {
     HTTP_CLIENT.get_or_init(reqwest::Client::new)
 }
+
+// Cache for /api/response config: removes a network round-trip before every
+// chat and transcription request. TTL 10 minutes.
+static API_CONFIG_CACHE: OnceLock<Mutex<Option<(ApiResponseConfig, std::time::Instant)>>> =
+    OnceLock::new();
+
+fn api_config_cache() -> &'static Mutex<Option<(ApiResponseConfig, std::time::Instant)>> {
+    API_CONFIG_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+const API_CONFIG_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
 // Secure storage functions
 fn get_secure_storage_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -150,7 +161,7 @@ pub struct PluelyPromptsResponse {
 }
 
 // API Response Configuration Structs
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ApiResponseConfig {
     url: String,
     user_token: String,
@@ -297,6 +308,18 @@ async fn fetch_api_response_config(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<ApiResponseConfig, String> {
+    // Serve from cache when fresh (10 min TTL).
+    {
+        let cache = api_config_cache();
+        if let Ok(guard) = cache.lock() {
+            if let Some((config, at)) = guard.as_ref() {
+                if at.elapsed() < API_CONFIG_CACHE_TTL {
+                    return Ok(config.clone());
+                }
+            }
+        }
+    }
+
     // Get environment variables
     let app_endpoint = get_app_endpoint()?;
     let api_access_key = get_api_access_key()?;
@@ -362,6 +385,15 @@ async fn fetch_api_response_config(
         .json()
         .await
         .map_err(|e| format!("Failed to parse API config response: {}", e))?;
+
+    // Store in cache
+    {
+        let cache = api_config_cache();
+        if let Ok(mut guard) = cache.lock() {
+            *guard = Some((api_config.clone(), std::time::Instant::now()));
+        }
+    }
+
     Ok(api_config)
 }
 

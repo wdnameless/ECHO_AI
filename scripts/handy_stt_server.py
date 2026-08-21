@@ -1,11 +1,19 @@
 """
 Handy Local STT Server
 OpenAI-compatible transcription endpoint at http://127.0.0.1:8000
-that wraps the Handy CLI (handy.exe --transcribe-file) so Pluely's
-"Handy Local STT (Local Whisper)" provider works out of the box.
+that Pluely's "Handy Local STT (Local Whisper)" provider uses.
 
-Uses the model selected inside the Handy app (settings_store.json).
-Pure Python standard library - no dependencies.
+Engine priority (all local, no cloud):
+  1. faster-whisper (CTranslate2) - model loaded ONCE and kept in memory.
+     GPU (CUDA) -> float16, CPU -> int8. Default model: "small" (RU+EN).
+     Override with PLUELY_WHISPER_MODEL env var.
+  2. Handy CLI (handy.exe --transcribe-file) - fallback if faster-whisper
+     is not installed.
+  3. openai-whisper (CPU) - last resort.
+
+Priority queue: final segments (X-Priority: high) are transcribed before
+live partials (X-Priority: low), so the answer pipeline never waits behind
+a backlog of 1-second partial chunks.
 """
 
 import glob
@@ -18,6 +26,7 @@ import tempfile
 import threading
 import time
 import traceback
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -31,11 +40,6 @@ for _stream in (sys.stdout, sys.stderr):
 HOST = "127.0.0.1"
 PORT = 8000
 
-# Global serialization: handy.exe spawns a fresh process per request and
-# each one loads the model into VRAM. Concurrent requests -> GPU OOM /
-# crashes / errors. All transcription must be strictly serialized.
-TRANSCRIBE_LOCK = threading.Lock()
-
 APPDATA = os.environ.get("APPDATA", "")
 HANDY_SETTINGS = os.path.join(APPDATA, "com.pais.handy", "settings_store.json")
 
@@ -46,11 +50,13 @@ HANDY_EXE_CANDIDATES = [
     r"C:\Program Files (x86)\Handy\handy.exe",
 ]
 
-_lock = threading.Lock()
+WHISPER_MODEL_NAME = os.environ.get("PLUELY_WHISPER_MODEL", "small")
+
+_log_lock = threading.Lock()
 
 
 def log(msg: str) -> None:
-    with _lock:
+    with _log_lock:
         print(f"[handy_stt][{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
@@ -78,42 +84,78 @@ def read_selected_model() -> str:
     return ""
 
 
-def resolve_gguf(model_id: str) -> str:
-    """Resolve model id to the local GGUF file in the HuggingFace cache."""
-    cache_root = os.path.join(
-        os.environ.get("USERPROFILE", ""), ".cache", "huggingface", "hub"
-    )
-    if not os.path.isdir(cache_root):
-        return ""
-    model_basename = os.path.basename(model_id)
-    for repo_dir in glob.glob(os.path.join(cache_root, "models--*")):
-        name_part = os.path.basename(repo_dir).replace("models--", "").replace("--", "/")
-        if name_part not in model_id:
-            continue
-        snapshots = os.path.join(repo_dir, "snapshots")
-        if not os.path.isdir(snapshots):
-            continue
-        for rev in os.listdir(snapshots):
-            rev_path = os.path.join(snapshots, rev)
-            for root, _, files in os.walk(rev_path):
-                for f in files:
-                    if f.endswith(".gguf"):
-                        full = os.path.join(root, f)
-                        if f == model_basename:
-                            return full
-                        if len(files) == 1:
-                            return full
-    return ""
+# ---------------------------------------------------------------------------
+# ENGINE 1: faster-whisper (persistent, in-memory model)
+# ---------------------------------------------------------------------------
+_fw_model = None
+_fw_lock = threading.Lock()
+_fw_ready = False
+_fw_error = ""
 
 
-def transcribe_wav(wav_path: str, model_id: str) -> str:
-    # Strictly serialize: only ONE handy.exe on the GPU at a time.
-    with TRANSCRIBE_LOCK:
+def _load_faster_whisper():
+    global _fw_model, _fw_ready, _fw_error
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as e:
+        _fw_error = f"faster-whisper not installed: {e}"
+        log(_fw_error)
+        return
+
+    try:
+        import torch
+        use_cuda = torch.cuda.is_available()
+    except Exception:
+        use_cuda = False
+
+    device = "cuda" if use_cuda else "cpu"
+    compute_type = "float16" if use_cuda else "int8"
+    log(f"Loading faster-whisper model '{WHISPER_MODEL_NAME}' on {device}/{compute_type}...")
+    try:
+        _fw_model = WhisperModel(
+            WHISPER_MODEL_NAME,
+            device=device,
+            compute_type=compute_type,
+        )
+        _fw_ready = True
+        log("faster-whisper model loaded and kept in memory")
+    except Exception as e:
+        _fw_error = f"faster-whisper load failed: {e}"
+        log(_fw_error)
+
+
+def transcribe_faster_whisper(wav_path: str) -> str:
+    global _fw_model
+    with _fw_lock:
+        if _fw_model is None:
+            return ""
+        try:
+            segments, _info = _fw_model.transcribe(
+                wav_path,
+                language=None,
+                beam_size=1,
+                vad_filter=True,
+                condition_on_previous_text=False,
+            )
+            text = " ".join(seg.text.strip() for seg in segments).strip()
+            return text
+        except Exception as e:
+            log("faster-whisper failed: " + str(e))
+            return ""
+
+
+# ---------------------------------------------------------------------------
+# ENGINE 2: Handy CLI (fallback, spawns a process per request)
+# ---------------------------------------------------------------------------
+_handy_lock = threading.Lock()
+
+
+def transcribe_handy(wav_path: str, model_id: str) -> str:
+    with _handy_lock:
         handy = find_handy_exe()
         cmd = [handy, "--transcribe-file", wav_path]
         if model_id:
             cmd += ["--model", model_id]
-        # Prefer the Vulkan GPU device (index 0) for ~40x real-time transcription.
         cmd += ["--device-index", "0", "--json"]
         log("Running: " + " ".join(cmd))
         proc = subprocess.run(
@@ -140,27 +182,23 @@ def transcribe_wav(wav_path: str, model_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LOCAL OFFLINE FALLBACK - openai-whisper (CPU, base.pt already cached).
-# Used when the Handy GPU model fails or is not selected - NO CLOUD,
-# NO API KEYS, NO 429 rate limits.
+# ENGINE 3: openai-whisper (CPU, last resort)
 # ---------------------------------------------------------------------------
 _whisper_model = None
 _whisper_lock = threading.Lock()
-WHISPER_MODEL_NAME = os.environ.get("PLUELY_WHISPER_MODEL", "base")
 
 
 def transcribe_local_whisper(wav_path: str) -> str:
-    """Transcribe using locally installed openai-whisper (CPU)."""
     global _whisper_model
     with _whisper_lock:
         if _whisper_model is None:
-            log(f"Loading local whisper model '{WHISPER_MODEL_NAME}' (CPU)...")
+            log("Loading local whisper model (CPU)...")
             try:
                 import whisper
             except ImportError as e:
                 log(f"openai-whisper not installed: {e}")
                 return ""
-            _whisper_model = whisper.load_model(WHISPER_MODEL_NAME)
+            _whisper_model = whisper.load_model("base")
             log("Local whisper model loaded")
         try:
             result = _whisper_model.transcribe(
@@ -178,8 +216,89 @@ def transcribe_local_whisper(wav_path: str) -> str:
             return ""
 
 
+# ---------------------------------------------------------------------------
+# Priority queue: high (final segments) before low (live partials)
+# ---------------------------------------------------------------------------
+_high_queue = deque()
+_low_queue = deque()
+_queue_cv = threading.Condition()
+_engine_state = {"engine": "starting", "model": WHISPER_MODEL_NAME, "ready": False}
+
+
+def enqueue(wav_path: str, priority: str) -> str:
+    """Blocking: enqueue and wait for the transcription result."""
+    result_holder = {}
+    done = threading.Event()
+    with _queue_cv:
+        item = (wav_path, result_holder, done)
+        if priority == "low":
+            _low_queue.append(item)
+        else:
+            _high_queue.append(item)
+        _queue_cv.notify()
+    done.wait()
+    return result_holder.get("text", "")
+
+
+def _worker():
+    while True:
+        with _queue_cv:
+            while not _high_queue and not _low_queue:
+                _queue_cv.wait()
+            if _high_queue:
+                wav_path, holder, done = _high_queue.popleft()
+            else:
+                wav_path, holder, done = _low_queue.popleft()
+
+        text = ""
+        try:
+            if _fw_ready:
+                text = transcribe_faster_whisper(wav_path)
+            if not text:
+                model_id = read_selected_model()
+                if model_id:
+                    text = transcribe_handy(wav_path, model_id)
+            if not text:
+                text = transcribe_local_whisper(wav_path)
+        except Exception as e:
+            log("Worker transcription error: " + str(e))
+        finally:
+            holder["text"] = text
+            done.set()
+
+
+def _warmup():
+    """Load the persistent engine at startup so the first request is fast."""
+    _load_faster_whisper()
+    if _fw_ready:
+        _engine_state.update(engine="faster-whisper", ready=True)
+        # Verify the pipeline with a tiny silent wav.
+        try:
+            import struct
+            import wave as wavemod
+
+            fd, tmp = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            with wavemod.open(tmp, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(struct.pack("<" + "h" * 1600, *([0] * 1600)))
+            transcribe_faster_whisper(tmp)
+            os.remove(tmp)
+            log("Warmup transcription OK")
+        except Exception as e:
+            log("Warmup check skipped: " + str(e))
+    else:
+        _engine_state.update(engine="handy-cli", ready=False)
+        log("faster-whisper unavailable, will use Handy CLI fallback")
+
+
+# ---------------------------------------------------------------------------
+# HTTP server
+# ---------------------------------------------------------------------------
 class STTHandler(BaseHTTPRequestHandler):
-    server_version = "HandySTT/1.0"
+    server_version = "HandySTT/2.0"
 
     def log_message(self, fmt, *args):
         log(f"{self.address_string()} - {fmt % args}")
@@ -197,24 +316,21 @@ class STTHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Priority")
         self.end_headers()
 
     def do_GET(self):
         path = urlsplit(self.path).path
         if path == "/health":
-            model = read_selected_model()
-            ready = bool(model) and os.path.isfile(find_handy_exe()) if True else False
-            try:
-                find_handy_exe()
-                ready = bool(model)
-            except Exception:
-                ready = False
-            self._send_json(200, {"status": "ok" if ready else "degraded", "model": model})
+            self._send_json(200, {
+                "status": "ok" if _engine_state["ready"] else "degraded",
+                "engine": _engine_state["engine"],
+                "model": _engine_state["model"],
+                "error": _fw_error or None,
+            })
             return
         if path == "/v1/models":
-            model = read_selected_model()
-            self._send_json(200, {"data": [{"id": model or "handy-local"}]})
+            self._send_json(200, {"data": [{"id": _engine_state["model"]}]})
             return
         self._send_json(404, {"error": "Not found"})
 
@@ -232,10 +348,9 @@ class STTHandler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Empty request body"})
                 return
 
-            model_id = read_selected_model()
-            if not model_id:
-                self._send_json(500, {"error": "No model selected in Handy. Open Handy and pick a model."})
-                return
+            priority = self.headers.get("X-Priority", "high").lower()
+            if priority not in ("high", "low"):
+                priority = "high"
 
             wav = extract_multipart(body, content_type)
             if not wav:
@@ -246,14 +361,8 @@ class STTHandler(BaseHTTPRequestHandler):
             try:
                 with os.fdopen(fd, "wb") as f:
                     f.write(wav)
-                log(f"Transcribing {len(wav)} bytes with model {model_id}")
-                text = transcribe_wav(tmp, model_id)
-
-                # If Handy (GPU) failed - fall back to LOCAL offline whisper (CPU).
-                # No cloud, no API keys, no 429 rate limits.
-                if not text:
-                    log("Handy GPU returned empty - trying local offline whisper...")
-                    text = transcribe_local_whisper(tmp)
+                log(f"Transcribing {len(wav)} bytes (priority={priority})")
+                text = enqueue(tmp, priority)
             finally:
                 try:
                     os.remove(tmp)
@@ -261,7 +370,7 @@ class STTHandler(BaseHTTPRequestHandler):
                     pass
 
             if not text:
-                self._send_json(500, {"error": "Handy returned an empty transcription"})
+                self._send_json(500, {"error": "Transcription failed (all engines returned empty)"})
                 return
             log(f"OK: {text[:80]}")
             self._send_json(200, {"text": text})
@@ -281,39 +390,12 @@ def extract_multipart(body: bytes, content_type: str):
         if head_end < 0:
             continue
         headers = part[:head_end].decode("latin-1", errors="replace")
-        content = part[head_end + 4 :]
+        content = part[head_end + 4:]
         if content.endswith(b"\r\n"):
             content = content[:-2]
         if re.search(r'name="file"', headers, re.I):
             file_field = content
     return file_field
-
-
-def _warmup_gpu():
-    """Load the Handy model into VRAM once at startup so the first real
-    request does not pay the model-load latency (~700ms). Also verifies the
-    GPU pipeline works before serving."""
-    try:
-        model_id = read_selected_model()
-        if not model_id:
-            return
-        handy = find_handy_exe()
-        cmd = [handy, "--transcribe-file", "--device-index", "0"]
-        if model_id:
-            cmd += ["--model", model_id]
-        log("Warmup: loading GPU model...")
-        subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        log("Warmup complete (model cached in VRAM)")
-    except Exception as e:
-        log("Warmup skipped: " + str(e))
 
 
 def main():
@@ -325,8 +407,8 @@ def main():
             print(f"ERROR {e}")
         return
 
-    # Warm the GPU model in the background so the first utterance is fast.
-    threading.Thread(target=_warmup_gpu, daemon=True).start()
+    threading.Thread(target=_warmup, daemon=True).start()
+    threading.Thread(target=_worker, daemon=True).start()
 
     server = ThreadingHTTPServer((HOST, PORT), STTHandler)
     log(f"Listening on http://{HOST}:{PORT}")

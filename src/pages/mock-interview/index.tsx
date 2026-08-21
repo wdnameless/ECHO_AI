@@ -96,8 +96,16 @@ function splitSentences(text: string): string[] {
 }
 
 function speak(text: string, onDone?: () => void) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+  if (typeof window === "undefined") {
     onDone?.();
+    return;
+  }
+  // WebView2 on Windows often lacks the Web Speech API - fall back to the
+  // Rust SAPI command (speak_text) which always works on Windows.
+  if (!("speechSynthesis" in window)) {
+    invoke("speak_text", { text })
+      .then(() => onDone?.())
+      .catch(() => onDone?.());
     return;
   }
   window.speechSynthesis.cancel();
@@ -158,6 +166,9 @@ const MockInterview = () => {
   const questionRef = useRef<string>("");
   const phaseRef = useRef<Phase>("idle");
   phaseRef.current = phase;
+  // Streaming render throttle: flush to React state at most every 80ms.
+  const streamBufferRef = useRef<string>("");
+  const streamFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -297,7 +308,27 @@ const MockInterview = () => {
             return;
           }
           fullResponse += chunk;
-          setStreamingText(fullResponse);
+          // Throttled flush: update UI at most every 80ms.
+          streamBufferRef.current += chunk;
+          if (!streamFlushTimerRef.current) {
+            streamFlushTimerRef.current = setTimeout(() => {
+              streamFlushTimerRef.current = null;
+              const buffered = streamBufferRef.current;
+              streamBufferRef.current = "";
+              if (buffered) {
+                setStreamingText((prev) => prev + buffered);
+              }
+            }, 80);
+          }
+        }
+
+        if (streamFlushTimerRef.current) {
+          clearTimeout(streamFlushTimerRef.current);
+          streamFlushTimerRef.current = null;
+        }
+        if (streamBufferRef.current) {
+          setStreamingText((prev) => prev + streamBufferRef.current);
+          streamBufferRef.current = "";
         }
 
         if (signal.aborted) {
@@ -317,6 +348,8 @@ const MockInterview = () => {
   const startInterview = useCallback(() => {
     setMessages([]);
     setQuestionCount(0);
+    translatedCountRef.current = 0;
+    setTranslatedMessages([]);
     setPhase("asking");
     runPhase(INTERVIEW_START_PROMPT, (full) => {
       setMessages([{ role: "assistant", content: full }]);
@@ -377,6 +410,8 @@ const MockInterview = () => {
     setQuestionCount(0);
     setError(null);
     questionRef.current = "";
+    translatedCountRef.current = 0;
+    setTranslatedMessages([]);
   }, [cancelRequest, stopListening]);
 
   // Ask the AI to generate a model answer for the current question with Instant Anchors.
@@ -425,7 +460,26 @@ const MockInterview = () => {
         userMessage: `${ANSWER_GENERATOR_PROMPT}\n\nInterviewer Question: ${question}\n\nStart your answer by naturally continuing this opening thought: "${initialAnchor}"`,
       })) {
         full += chunk;
-        setAnswer(full);
+        // Throttled flush: update the textarea at most every 80ms.
+        streamBufferRef.current += chunk;
+        if (!streamFlushTimerRef.current) {
+          streamFlushTimerRef.current = setTimeout(() => {
+            streamFlushTimerRef.current = null;
+            const buffered = streamBufferRef.current;
+            streamBufferRef.current = "";
+            if (buffered) {
+              setAnswer((prev) => prev + buffered);
+            }
+          }, 80);
+        }
+      }
+      if (streamFlushTimerRef.current) {
+        clearTimeout(streamFlushTimerRef.current);
+        streamFlushTimerRef.current = null;
+      }
+      if (streamBufferRef.current) {
+        setAnswer((prev) => prev + streamBufferRef.current);
+        streamBufferRef.current = "";
       }
       setAnswer(full.trim());
       setError(null);
@@ -437,24 +491,46 @@ const MockInterview = () => {
   }, [allAiProviders, selectedAIProvider, systemPrompt]);
 
   const isBusy = phase === "asking" || phase === "finishing";
+  // Voice works via Web Speech API or the Rust SAPI fallback (Windows).
   const canSpeak =
-    typeof window !== "undefined" && "speechSynthesis" in window;
+    typeof window !== "undefined" &&
+    ("speechSynthesis" in window || navigator.platform.toLowerCase().includes("win"));
 
-  // Translate messages into counterpart language when dualPane is active
+  // Auto-start voice listening whenever the interviewer finishes asking,
+  // so the candidate can answer hands-free without clicking "Answer by voice".
+  useEffect(() => {
+    if (phase === "answering" && serverStatus && !isListening && !isBusy) {
+      const t = setTimeout(() => {
+        startListening();
+      }, 400);
+      return () => clearTimeout(t);
+    }
+  }, [phase, serverStatus, isListening, isBusy, startListening]);
+
+  // Translate messages into counterpart language when dualPane is active.
+  // Incremental: only NEW messages are translated, previous translations are
+  // kept, so the whole log is not re-sent to the LLM on every turn.
+  const translatedCountRef = useRef(0);
   const translateMessages = useCallback(async () => {
     if (!messages.length) return;
+    const startIdx = translatedCountRef.current;
+    if (startIdx >= messages.length) return;
     setIsTranslating(true);
     try {
       const usePluelyAPI = await shouldUsePluelyAPI();
       const provider = allAiProviders.find(
         (p) => p.id === selectedAIProvider.provider
       );
-      const textToTranslate = messages
-        .map((m, i) => `[${i + 1}] ${m.role === "assistant" ? "Interviewer" : "Candidate"}: ${m.content}`)
+      const newMessages = messages.slice(startIdx);
+      const textToTranslate = newMessages
+        .map(
+          (m, i) =>
+            `[${i + 1}] ${m.role === "assistant" ? "Interviewer" : "Candidate"}: ${m.content}`
+        )
         .join("\n\n");
 
       // Explicit direction based on the source language of the interview.
-      const sourceIsRussian = messages.some((m) => /[а-яё]/i.test(m.content));
+      const sourceIsRussian = newMessages.some((m) => /[а-яё]/i.test(m.content));
       const direction = sourceIsRussian
         ? "Translate the following interview log from Russian into English."
         : "Translate the following interview log from English into Russian.";
@@ -476,7 +552,8 @@ const MockInterview = () => {
         .split(/\[\d+\]\s*(?:Interviewer|Candidate):\s*/)
         .map((s) => s.trim())
         .filter(Boolean);
-      setTranslatedMessages(parsed);
+      translatedCountRef.current = messages.length;
+      setTranslatedMessages((prev) => [...prev, ...parsed]);
     } catch {
       // ignore translation error
     } finally {
