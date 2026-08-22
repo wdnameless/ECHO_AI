@@ -7,7 +7,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tauri_plugin_machine_uid::MachineUidExt;
 
 fn get_app_endpoint() -> Result<String, String> {
@@ -518,6 +518,7 @@ pub async fn chat_stream_response(
     system_prompt: Option<String>,
     image_base64: Option<serde_json::Value>,
     history: Option<String>,
+    on_event: tauri::ipc::Channel<String>,
 ) -> Result<String, String> {
     // Get stored credentials to get selected model
     let (_, _, selected_model) = get_stored_credentials(&app).await?;
@@ -724,8 +725,9 @@ pub async fn chat_stream_response(
                                                 delta.get("content").and_then(|c| c.as_str())
                                             {
                                                 full_response.push_str(content);
-                                                // Emit just the content to frontend
-                                                let _ = app.emit("chat_stream_chunk", content);
+                                                // Push the chunk straight through the
+                                                // Channel - no event bus, no polling.
+                                                let _ = on_event.send(content.to_string());
                                                 stream_started = true;
                                             }
                                         }
@@ -758,7 +760,7 @@ pub async fn chat_stream_response(
     }
 
     // Emit completion event
-    let _ = app.emit("chat_stream_complete", &full_response);
+    let _ = on_event.send(format!("\u{0}__DONE__\u{0}"));
 
     if stream_started && !full_response.is_empty() {
         tauri::async_runtime::spawn({

@@ -7,11 +7,9 @@ import {
 } from "./common.function";
 import { Message, TYPE_PROVIDER } from "@/types";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
-import { CHUNK_POLL_INTERVAL_MS } from "../chat-constants";
 import { getResponseSettings, RESPONSE_LENGTHS, LANGUAGES } from "@/lib";
 import { MARKDOWN_FORMATTING_INSTRUCTIONS, STORAGE_KEYS } from "@/config/constants";
 import {
@@ -203,87 +201,70 @@ async function* fetchPluelyAIResponse(params: {
       imageBase64 = imagesBase64.length === 1 ? imagesBase64[0] : imagesBase64;
     }
 
-    // Set up streaming event listener
-    let streamComplete = false;
-    const streamChunks: string[] = [];
+    // Stream chunks straight through a Tauri Channel - no event bus, no
+    // 16ms polling loop. The Rust side pushes each delta into the channel
+    // as it arrives, so the first token reaches the UI with zero added
+    // latency.
+    const channel = new Channel<string>();
+    let streamError: string | null = null;
+    let done = false;
 
-    const unlisten = await listen("chat_stream_chunk", (event) => {
-      const chunk = event.payload as string;
-      streamChunks.push(chunk);
-    });
-
-    const unlistenComplete = await listen("chat_stream_complete", () => {
-      streamComplete = true;
-    });
-
-    try {
-      // Check if aborted before starting invoke
-      if (signal?.aborted) {
-        unlisten();
-        unlistenComplete();
-        return;
-      }
-
-      // Start the streaming request fire-and-forget so the polling loop below
-      // starts immediately and yields chunks as they arrive
-      let streamError: string | null = null;
-      invoke("chat_stream_response", {
-        userMessage,
-        systemPrompt,
-        imageBase64,
-        history: historyString,
-      }).catch((err) => {
+    // Fire-and-forget: the Rust side pushes deltas into the channel.
+    invoke("chat_stream_response", {
+      userMessage,
+      systemPrompt,
+      imageBase64,
+      history: historyString,
+      onEvent: channel,
+    })
+      .catch((err) => {
         streamError = String(err);
-        streamComplete = true;
+        done = true;
+      })
+      .finally(() => {
+        done = true;
       });
 
-      // Yield chunks as they come in
-      let lastIndex = 0;
-      while (!streamComplete) {
-        // Check if aborted during streaming
-        if (signal?.aborted) {
-          unlisten();
-          unlistenComplete();
-          return;
-        }
+    // The channel is a pull-based queue: onmessage fires as chunks arrive.
+    // We bridge it into an async generator so the caller can `for await`.
+    const pending: string[] = [];
+    let resolveNext: (() => void) | null = null;
 
-        // Wait a bit for chunks to accumulate
-        await new Promise((resolve) =>
-          setTimeout(resolve, CHUNK_POLL_INTERVAL_MS)
-        );
+    channel.onmessage = (chunk) => {
+      pending.push(chunk);
+      resolveNext?.();
+      resolveNext = null;
+    };
 
-        // Check again after timeout
-        if (signal?.aborted) {
-          unlisten();
-          unlistenComplete();
-          return;
-        }
-
-        // Yield any new chunks
-        for (let i = lastIndex; i < streamChunks.length; i++) {
-          yield streamChunks[i];
-        }
-        lastIndex = streamChunks.length;
-      }
-
-      // Final abort check before yielding remaining chunks
+    while (true) {
       if (signal?.aborted) {
-        unlisten();
-        unlistenComplete();
         return;
       }
-
-      // Yield any remaining chunks
-      for (let i = lastIndex; i < streamChunks.length; i++) {
-        yield streamChunks[i];
+      if (pending.length > 0) {
+        const chunk = pending.shift()!;
+        if (chunk === "\u{0}__DONE__\u{0}") {
+          break;
+        }
+        yield chunk;
+        continue;
       }
-
-      if (streamError) {
-        yield `Pluely API Error: ${streamError}`;
+      if (done) {
+        break;
       }
-    } finally {
-      unlisten();
-      unlistenComplete();
+      // Wait for the next chunk. Re-check after registering the resolver to
+      // close the race where a chunk arrives between the checks above and
+      // the await below (otherwise the loop would hang forever).
+      await new Promise<void>((resolve) => {
+        resolveNext = resolve;
+        if (pending.length > 0 || done) {
+          resolveNext = null;
+          resolve();
+        }
+      });
+    }
+
+    if (streamError) {
+      yield `Pluely API Error: ${streamError}`;
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
