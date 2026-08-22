@@ -138,6 +138,17 @@ export const ResultsSection = ({
     wasSpeakingRef.current = micSpeaking;
   }, [micSpeaking]);
 
+  // Robust fallback: any mic transcription (even if VAD missed the speech
+  // flag) means the user was talking - remember it so a new AI answer that
+  // arrives right after is buffered, not force-switched.
+  const prevMyTranscriptionRef = useRef("");
+  useEffect(() => {
+    if (myLastTranscription && myLastTranscription !== prevMyTranscriptionRef.current) {
+      prevMyTranscriptionRef.current = myLastTranscription;
+      lastUserSpeechAtRef.current = Date.now();
+    }
+  }, [myLastTranscription]);
+
   // Answer buffer logic:
   // - New stream is a continuation of the current answer -> update in place.
   // - A NEW response began while the user was speaking (or just stopped
@@ -158,7 +169,18 @@ export const ResultsSection = ({
     }
 
     const userSpokeRecently =
-      Date.now() - lastUserSpeechAtRef.current < 4000;
+      Date.now() - lastUserSpeechAtRef.current < 6000;
+
+    // HARD RULE: while the user is actively speaking, a new AI answer is
+    // ALWAYS buffered - never force-switch the screen mid-answer.
+    if (micSpeaking) {
+      setPendingNewAnswer(lastAIResponse);
+      if (countdown === null) {
+        setCountdown(10);
+      }
+      setIsHeld(false);
+      return;
+    }
 
     if (!displayedAnswer) {
       // Very first answer of the conversation: show directly.
@@ -273,14 +295,17 @@ export const ResultsSection = ({
     }
   }, [conversation.messages.length]);
 
-  // Instant machine translation of Interviewer speech (< 100ms via Google Translate)
+  // Instant machine translation of Interviewer speech (< 100ms via Google Translate).
+  // Direction is ALWAYS the opposite of the source language: RU speech -> EN
+  // translation, EN speech -> RU translation. Never translate into the same
+  // language the speaker is using.
   useEffect(() => {
     if (!theirLastTranscription || theirLastTranscription === prevTheirRef.current) return;
     prevTheirRef.current = theirLastTranscription;
 
     let cancelled = false;
     setIsTranslatingInterviewer(true);
-    fastTranslate(theirLastTranscription, "ru")
+    fastTranslate(theirLastTranscription)
       .then((translated) => {
         if (!cancelled) setInterviewerTranslation(translated);
       })
@@ -420,7 +445,7 @@ export const ResultsSection = ({
             title={
               handy.online
                 ? `Handy local STT is ONLINE (${handy.model || "model"})`
-                : "Handy local STT is OFFLINE - using Groq cloud fallback"
+                : "Handy local STT is OFFLINE - using the selected provider as fallback"
             }
           >
             <span
@@ -431,7 +456,7 @@ export const ResultsSection = ({
             />
             {handy.online
               ? handyModelShort || "Handy STT"
-              : "STT offline → Groq"}
+              : "STT offline → fallback"}
           </span>
         </div>
 

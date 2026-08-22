@@ -181,6 +181,12 @@ export function useSystemAudio() {
     onMicSegment: (audioBlob) => {
       void transcribeSegment(audioBlob, "me");
     },
+    onInterimTranscript: (text) => {
+      // Live word-by-word streaming from the mic (Web Speech API interim
+      // results) - shows the candidate's speech in the ticker in real time,
+      // before the final STT segment arrives.
+      appendLiveSegment("me", text, true);
+    },
   });
 
   const micStartRef = useRef<() => void>(() => {});

@@ -137,16 +137,18 @@ def _load_faster_whisper():
         log(_fw_error)
 
 
-def transcribe_faster_whisper(wav_path: str) -> str:
+def transcribe_faster_whisper(wav_path: str, language: str = "auto") -> str:
     global _fw_model
     with _fw_lock:
         if _fw_model is None:
             return ""
         try:
-            language = None if STT_LANGUAGE == "auto" else STT_LANGUAGE
+            # Fixed language (ru|en) when provided - the model NEVER
+            # auto-detects other languages.
+            lang = language if language in ("ru", "en") else None
             segments, _info = _fw_model.transcribe(
                 wav_path,
-                language=language,
+                language=lang,
                 beam_size=STT_BEAM_SIZE,
                 vad_filter=True,
                 condition_on_previous_text=False,
@@ -203,7 +205,7 @@ _whisper_model = None
 _whisper_lock = threading.Lock()
 
 
-def transcribe_local_whisper(wav_path: str) -> str:
+def transcribe_local_whisper(wav_path: str, language: str = "auto") -> str:
     global _whisper_model
     with _whisper_lock:
         if _whisper_model is None:
@@ -218,7 +220,7 @@ def transcribe_local_whisper(wav_path: str) -> str:
         try:
             result = _whisper_model.transcribe(
                 wav_path,
-                language=None,
+                language=language if language in ("ru", "en") else None,
                 fp16=False,
                 no_speech_threshold=0.6,
                 condition_on_previous_text=False,
@@ -240,12 +242,12 @@ _queue_cv = threading.Condition()
 _engine_state = {"engine": "starting", "model": WHISPER_MODEL_NAME, "ready": False}
 
 
-def enqueue(wav_path: str, priority: str) -> str:
+def enqueue(wav_path: str, priority: str, language: str = "auto") -> str:
     """Blocking: enqueue and wait for the transcription result."""
     result_holder = {}
     done = threading.Event()
     with _queue_cv:
-        item = (wav_path, result_holder, done)
+        item = (wav_path, language, result_holder, done)
         if priority == "low":
             _low_queue.append(item)
         else:
@@ -261,20 +263,20 @@ def _worker():
             while not _high_queue and not _low_queue:
                 _queue_cv.wait()
             if _high_queue:
-                wav_path, holder, done = _high_queue.popleft()
+                wav_path, language, holder, done = _high_queue.popleft()
             else:
-                wav_path, holder, done = _low_queue.popleft()
+                wav_path, language, holder, done = _low_queue.popleft()
 
         text = ""
         try:
             if _fw_ready:
-                text = transcribe_faster_whisper(wav_path)
+                text = transcribe_faster_whisper(wav_path, language)
             if not text:
                 model_id = read_selected_model()
                 if model_id:
                     text = transcribe_handy(wav_path, model_id)
             if not text:
-                text = transcribe_local_whisper(wav_path)
+                text = transcribe_local_whisper(wav_path, language)
         except Exception as e:
             log("Worker transcription error: " + str(e))
         finally:
@@ -367,6 +369,12 @@ class STTHandler(BaseHTTPRequestHandler):
             if priority not in ("high", "low"):
                 priority = "high"
 
+            # Fixed language from the app (ru|en). The model NEVER
+            # auto-detects: only these two languages are transcribed.
+            lang = self.headers.get("X-Language", "").lower()
+            if lang not in ("ru", "en"):
+                lang = STT_LANGUAGE if STT_LANGUAGE in ("ru", "en") else "auto"
+
             wav = extract_multipart(body, content_type)
             if not wav:
                 self._send_json(400, {"error": "No audio file field in the request"})
@@ -376,8 +384,8 @@ class STTHandler(BaseHTTPRequestHandler):
             try:
                 with os.fdopen(fd, "wb") as f:
                     f.write(wav)
-                log(f"Transcribing {len(wav)} bytes (priority={priority})")
-                text = enqueue(tmp, priority)
+                log(f"Transcribing {len(wav)} bytes (priority={priority}, lang={lang})")
+                text = enqueue(tmp, priority, lang)
             finally:
                 try:
                     os.remove(tmp)

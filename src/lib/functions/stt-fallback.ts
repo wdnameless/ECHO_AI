@@ -38,35 +38,59 @@ export async function transcribeWithFallback({
     return fetchSTT({ provider: undefined, selectedProvider, audio, priority });
   }
 
-  // If the user explicitly selected a non-local provider (e.g. Groq, OpenAI),
-  // use it directly - that is a deliberate manual choice in Settings.
-  if (provider && provider.id !== "handy-local-whisper") {
-    return fetchSTT({ provider, selectedProvider, audio, priority });
+  // LOCAL-FIRST: the local Handy server is ALWAYS tried first, regardless of
+  // which provider the user selected in Settings. Cloud providers (Groq,
+  // OpenAI, etc.) are used ONLY as a fallback when the local server is
+  // offline - this is what kills the 429 rate-limit storms.
+  const localProvider = {
+    id: "handy-local-whisper",
+    name: "Handy Local STT (Local Whisper)",
+    curl: `curl -X POST "http://127.0.0.1:8000/v1/audio/transcriptions" \\
+      -H "Authorization: Bearer {{API_KEY}}" \\
+      -F "file={{AUDIO}}" \\
+      -F "model={{MODEL}}"`,
+    responseContentPath: "text",
+    streaming: false,
+  };
+
+  try {
+    const localResult = await fetchSTT({
+      provider: localProvider,
+      selectedProvider: {
+        provider: "handy-local-whisper",
+        variables: selectedProvider.variables,
+      },
+      audio,
+      priority,
+    });
+    if (
+      localResult &&
+      !localResult.startsWith("Pluely STT Error") &&
+      !/HTTP \d+/.test(localResult) &&
+      !localResult.startsWith("Network error")
+    ) {
+      return localResult;
+    }
+  } catch {
+    // Local server offline - fall through to the user-selected provider.
   }
 
-  // Missing provider: explicit error, never silently hit a cloud API.
-  if (!provider) {
-    throw new Error(
-      "Speech provider config not found. Please configure a provider in Settings."
-    );
+  // Local server is offline: use the user-selected provider (may be cloud).
+  if (provider) {
+    const result = await fetchSTT({ provider, selectedProvider, audio, priority });
+    if (
+      result &&
+      !result.startsWith("Pluely STT Error") &&
+      !/HTTP \d+/.test(result) &&
+      !result.startsWith("Network error")
+    ) {
+      return result;
+    }
   }
 
-  // Local Handy path: GPU model first, then the in-server local whisper.
-  // The Python server already implements the GPU -> local-CPU fallback chain,
-  // so a single request is enough - no cloud involved.
-  const result = await fetchSTT({ provider, selectedProvider, audio, priority });
-  if (
-    result &&
-    !result.startsWith("Pluely STT Error") &&
-    !/HTTP \d+/.test(result) &&
-    !result.startsWith("Network error")
-  ) {
-    return result;
-  }
-
-  // Local server is offline or failed - clear error, no cloud fallback.
+  // Everything failed - clear error, no silent cloud fallback.
   throw new Error(
     "Local STT server is not running. Starting it automatically or restart Pluely. " +
-      "Groq cloud fallback has been removed to avoid rate limits."
+      "Cloud fallback only when the local server is offline."
   );
 }

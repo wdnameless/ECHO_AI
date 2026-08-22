@@ -27,6 +27,8 @@ export async function fastTranslate(
   let tl = targetLang;
   if (!tl) {
     const detected = detectLanguage(trimmed);
+    // ALWAYS translate to the OPPOSITE language: RU -> EN, EN -> RU.
+    // Never translate into the same language the speaker is using.
     tl = detected === "russian" ? "en" : "ru";
   }
 

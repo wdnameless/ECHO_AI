@@ -107,7 +107,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     // Build variable map
     const responseSettings = getResponseSettings();
     const defaultLanguage =
-      responseSettings.language === "russian" ? "ru" : "en-US";
+      responseSettings.language === "russian" ? "ru" : "en";
     const allVariables: Record<string, string> = {
       LANGUAGE: defaultLanguage,
       ...Object.fromEntries(
@@ -170,10 +170,13 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     let finalHeaders = { ...headers };
     let body: FormData | string | Blob;
 
-    // Local Handy server: pass priority so final segments jump the queue.
+    // Local Handy server: pass priority so final segments jump the queue,
+    // and the fixed language (ru|en) so the model never auto-detects or
+    // transcribes other languages.
     const isLocalHandy = url.includes("127.0.0.1:8000");
     if (isLocalHandy) {
       finalHeaders["X-Priority"] = priority;
+      finalHeaders["X-Language"] = defaultLanguage;
     }
 
     const isForm =
