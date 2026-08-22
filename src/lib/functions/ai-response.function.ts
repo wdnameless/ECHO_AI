@@ -336,11 +336,11 @@ async function* streamAIResponse(params: {
     const extractedVariables = extractVariables(provider.curl);
     const requiredVars = extractedVariables.filter(
       ({ key }) =>
-        key !== "SYSTEM_PROMPT" &&
-        key !== "TEXT" &&
-        key !== "IMAGE" &&
-        key !== "REASONING_EFFORT" &&
-        key !== "THINKING_BUDGET"
+        key !== "system_prompt" &&
+        key !== "text" &&
+        key !== "image" &&
+        key !== "reasoning_effort" &&
+        key !== "thinking_budget"
     );
     const providerVariables = selectedProvider.variables ?? {};
     for (const { key } of requiredVars) {
