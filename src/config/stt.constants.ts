@@ -20,19 +20,6 @@ export const SPEECH_TO_TEXT_PROVIDERS = [
     streaming: false,
   },
   {
-    id: "groq",
-    name: "Groq Whisper",
-    curl: `curl -X POST https://api.groq.com/openai/v1/audio/transcriptions \\
-      -H "Authorization: bearer {{API_KEY}}" \\
-      -F "file={{AUDIO}}" \\
-      -F model={{MODEL}} \\
-      -F temperature=0 \\
-      -F response_format=text \\
-      -F language={{LANGUAGE}}`,
-    responseContentPath: "text",
-    streaming: false,
-  },
-  {
     id: "elevenlabs-stt",
     name: "ElevenLabs Speech-to-Text",
     curl: `curl -X POST "https://api.elevenlabs.io/v1/speech-to-text" \\

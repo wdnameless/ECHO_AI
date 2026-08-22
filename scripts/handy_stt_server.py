@@ -57,6 +57,10 @@ WHISPER_MODEL_NAME = os.environ.get("PLUELY_WHISPER_MODEL", "small")
 STT_LANGUAGE = os.environ.get("PLUELY_STT_LANGUAGE", "auto").lower() or "auto"
 # Beam size for decoding: 1 = fastest (greedy), 5 = most accurate.
 STT_BEAM_SIZE = int(os.environ.get("PLUELY_STT_BEAM_SIZE", "1"))
+# Number of CPU threads for the encoder/decoder (0 = auto).
+STT_CPU_THREADS = int(os.environ.get("PLUELY_STT_CPU_THREADS", "0"))
+# Parallel inference workers (1 = sequential; useful for partial burst load).
+STT_NUM_WORKERS = int(os.environ.get("PLUELY_STT_NUM_WORKERS", "1"))
 # Context hint improves recognition of tech/job interview terms ("Kubernetes",
 # "Docker", "микросервисы") and works for BOTH fixed-language and auto modes.
 STT_INITIAL_PROMPT = os.environ.get(
@@ -125,10 +129,16 @@ def _load_faster_whisper():
     compute_type = "float16" if use_cuda else "int8"
     log(f"Loading faster-whisper model '{WHISPER_MODEL_NAME}' on {device}/{compute_type}...")
     try:
+        load_kwargs = {}
+        if STT_CPU_THREADS > 0:
+            load_kwargs["cpu_threads"] = STT_CPU_THREADS
+        if STT_NUM_WORKERS > 0:
+            load_kwargs["num_workers"] = STT_NUM_WORKERS
         _fw_model = WhisperModel(
             WHISPER_MODEL_NAME,
             device=device,
             compute_type=compute_type,
+            **load_kwargs,
         )
         _fw_ready = True
         log("faster-whisper model loaded and kept in memory")
@@ -153,6 +163,9 @@ def transcribe_faster_whisper(wav_path: str, language: str = "auto") -> str:
                 vad_filter=True,
                 condition_on_previous_text=False,
                 initial_prompt=STT_INITIAL_PROMPT,
+                # Skip word timestamps: the app only needs the plain text.
+                # Disabling timestamp decoding measurably cuts latency.
+                without_timestamps=True,
             )
             text = " ".join(seg.text.strip() for seg in segments).strip()
             return text

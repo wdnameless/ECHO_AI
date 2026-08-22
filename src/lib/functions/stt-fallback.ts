@@ -3,18 +3,30 @@ import { shouldUsePluelyAPI } from "./pluely.api";
 import { TYPE_PROVIDER } from "@/types";
 
 /**
- * LOCAL-FIRST STT pipeline.
+ * 100% LOCAL STT pipeline.
  *
- * The automatic fallback chain is now 100% local:
- *   1. Handy GPU model (Nemotron 3.5 ASR Streaming, Vulkan) - primary
- *   2. Local openai-whisper (CPU, base.pt cached) - in-process fallback
- *      inside the local server (see scripts/handy_stt_server.py)
+ * The app ONLY uses the local Handy STT server (faster-whisper / Handy GPU
+ * / local CPU whisper in-process). Cloud STT providers (Groq, OpenAI, etc.)
+ * are NOT called automatically - ever. This permanently kills the 429
+ * "rate limit reached" storms.
  *
- * There is NO automatic Groq/cloud fallback anymore - this is what caused
- * the 429 "Too Many Requests" storms. If the local server is offline the
- * request fails with a clear error; the user can pick a cloud provider
- * manually in Settings if they want to.
+ * Chain inside the local server (scripts/handy_stt_server.py):
+ *   1. faster-whisper (CTranslate2, GPU) - primary, model stays in memory
+ *   2. Handy GPU model (Nemotron 3.5 ASR Streaming, Vulkan) - fallback
+ *   3. local openai-whisper (CPU) - last resort
+ *
+ * If the local server is offline the request fails with a clear error.
  */
+
+const LOCAL_PROVIDER: TYPE_PROVIDER = {
+  id: "handy-local-whisper",
+  curl: `curl -X POST "http://127.0.0.1:8000/v1/audio/transcriptions" \\
+      -H "Authorization: Bearer {{API_KEY}}" \\
+      -F "file={{AUDIO}}" \\
+      -F "model={{MODEL}}"`,
+  responseContentPath: "text",
+  streaming: false,
+};
 
 export interface TranscribeWithFallbackParams {
   provider?: TYPE_PROVIDER;
@@ -28,7 +40,7 @@ export interface TranscribeWithFallbackParams {
 
 export async function transcribeWithFallback({
   audio,
-  provider,
+  provider: _provider,
   selectedProvider,
   priority = "high",
 }: TranscribeWithFallbackParams): Promise<string> {
@@ -38,59 +50,45 @@ export async function transcribeWithFallback({
     return fetchSTT({ provider: undefined, selectedProvider, audio, priority });
   }
 
-  // LOCAL-FIRST: the local Handy server is ALWAYS tried first, regardless of
-  // which provider the user selected in Settings. Cloud providers (Groq,
-  // OpenAI, etc.) are used ONLY as a fallback when the local server is
-  // offline - this is what kills the 429 rate-limit storms.
-  const localProvider = {
-    id: "handy-local-whisper",
-    name: "Handy Local STT (Local Whisper)",
-    curl: `curl -X POST "http://127.0.0.1:8000/v1/audio/transcriptions" \\
-      -H "Authorization: Bearer {{API_KEY}}" \\
-      -F "file={{AUDIO}}" \\
-      -F "model={{MODEL}}"`,
-    responseContentPath: "text",
-    streaming: false,
+  // LOCAL ONLY: the local Handy server handles every request. The selected
+  // provider is ignored for transcription - cloud STT (Groq, OpenAI, ...)
+  // is never called, which is what caused the 429 rate-limit storms.
+  const localVariables = {
+    ...(selectedProvider?.variables || {}),
+    // Keep API_KEY/MODEL if the user configured them for the local server;
+    // fall back to safe defaults otherwise.
+    API_KEY:
+      selectedProvider?.variables?.["API_KEY"] ||
+      selectedProvider?.variables?.["api_key"] ||
+      "local",
+    MODEL:
+      selectedProvider?.variables?.["MODEL"] ||
+      selectedProvider?.variables?.["model"] ||
+      "small",
   };
 
-  try {
-    const localResult = await fetchSTT({
-      provider: localProvider,
-      selectedProvider: {
-        provider: "handy-local-whisper",
-        variables: selectedProvider.variables,
-      },
-      audio,
-      priority,
-    });
-    if (
-      localResult &&
-      !localResult.startsWith("Pluely STT Error") &&
-      !/HTTP \d+/.test(localResult) &&
-      !localResult.startsWith("Network error")
-    ) {
-      return localResult;
-    }
-  } catch {
-    // Local server offline - fall through to the user-selected provider.
+  const result = await fetchSTT({
+    provider: LOCAL_PROVIDER,
+    selectedProvider: {
+      provider: "handy-local-whisper",
+      variables: localVariables,
+    },
+    audio,
+    priority,
+  });
+
+  if (
+    result &&
+    !result.startsWith("Pluely STT Error") &&
+    !/HTTP \d+/.test(result) &&
+    !result.startsWith("Network error")
+  ) {
+    return result;
   }
 
-  // Local server is offline: use the user-selected provider (may be cloud).
-  if (provider) {
-    const result = await fetchSTT({ provider, selectedProvider, audio, priority });
-    if (
-      result &&
-      !result.startsWith("Pluely STT Error") &&
-      !/HTTP \d+/.test(result) &&
-      !result.startsWith("Network error")
-    ) {
-      return result;
-    }
-  }
-
-  // Everything failed - clear error, no silent cloud fallback.
+  // Local server is offline or failed - clear error, NO cloud fallback.
   throw new Error(
     "Local STT server is not running. Starting it automatically or restart Pluely. " +
-      "Cloud fallback only when the local server is offline."
+      "Cloud STT has been fully disabled - everything runs on local models."
   );
 }

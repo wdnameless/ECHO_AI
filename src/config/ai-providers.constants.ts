@@ -84,25 +84,6 @@ export const AI_PROVIDERS = [
     streaming: true,
   },
   {
-    id: "groq",
-    name: "Groq (Llama 3.3 70B, Llama 3.1 8B - Fastest)",
-    curl: `curl https://api.groq.com/openai/v1/chat/completions \\
-    -H "Content-Type: application/json" \\
-    -H "Authorization: Bearer {{API_KEY}}" \\
-    -d '{
-      "model": "{{MODEL}}",
-      "messages": [{"role": "system", "content": "{{SYSTEM_PROMPT}}"}, {"role": "user", "content": [{"type": "text", "text": "{{TEXT}}"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,{{IMAGE}}"}}]}],
-      "temperature": 1,
-      "max_completion_tokens": 8192,
-      "top_p": 1,
-      "stream": true,
-      "reasoning_effort": "{{REASONING_EFFORT}}",
-      "stop": null
-    }'`,
-    responseContentPath: "choices[0].message.content",
-    streaming: true,
-  },
-  {
     id: "perplexity",
     name: "Perplexity AI",
     curl: `curl -X POST https://api.perplexity.ai/chat/completions \\
