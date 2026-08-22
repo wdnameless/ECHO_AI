@@ -51,6 +51,19 @@ HANDY_EXE_CANDIDATES = [
 ]
 
 WHISPER_MODEL_NAME = os.environ.get("PLUELY_WHISPER_MODEL", "small")
+# Optional: fix the STT language instead of auto-detecting. Auto-detect on
+# every request costs time and can jump between languages mid-utterance.
+# Allowed: "ru", "en", "auto". Set PLUELY_STT_LANGUAGE=en for English-only.
+STT_LANGUAGE = os.environ.get("PLUELY_STT_LANGUAGE", "auto").lower() or "auto"
+# Beam size for decoding: 1 = fastest (greedy), 5 = most accurate.
+STT_BEAM_SIZE = int(os.environ.get("PLUELY_STT_BEAM_SIZE", "1"))
+# Context hint improves recognition of tech/job interview terms ("Kubernetes",
+# "Docker", "микросервисы") and works for BOTH fixed-language and auto modes.
+STT_INITIAL_PROMPT = os.environ.get(
+    "PLUELY_STT_INITIAL_PROMPT",
+    "Расскажите про ваш опыт, проекты, стек технологий, Kubernetes, Docker, "
+    "микросервисы, базы данных, собеседование, резюме.",
+)
 
 _log_lock = threading.Lock()
 
@@ -130,12 +143,14 @@ def transcribe_faster_whisper(wav_path: str) -> str:
         if _fw_model is None:
             return ""
         try:
+            language = None if STT_LANGUAGE == "auto" else STT_LANGUAGE
             segments, _info = _fw_model.transcribe(
                 wav_path,
-                language=None,
-                beam_size=1,
+                language=language,
+                beam_size=STT_BEAM_SIZE,
                 vad_filter=True,
                 condition_on_previous_text=False,
+                initial_prompt=STT_INITIAL_PROMPT,
             )
             text = " ".join(seg.text.strip() for seg in segments).strip()
             return text

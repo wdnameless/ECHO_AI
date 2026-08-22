@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/contexts";
 import { fetchAIResponse, transcribeWithFallback } from "@/lib/functions";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
+import { QuestionAssembler } from "@/lib/question-assembler";
 import { GENERAL_PROFILE_ID, getActiveProfileId } from "@/lib/storage/prompt-profiles";
 import {
   DEFAULT_QUICK_ACTIONS,
@@ -153,7 +154,6 @@ export function useSystemAudio() {
   // not trigger another AI call (prevents "false reacting" loops).
   const lastAIResponseAtRef = useRef<number>(0);
   const AI_RESPONSE_COOLDOWN_MS = 2000;
-  const lastThemSegmentAtRef = useRef<number>(0);
   const respondToMicRef = useRef<boolean>(respondToMic);
 
   useEffect(() => {
@@ -293,6 +293,30 @@ export function useSystemAudio() {
       if (errorUnlisten) errorUnlisten();
       if (discardedUnlisten) discardedUnlisten();
     };
+  }, []);
+
+  // Assembler for interviewer ("them") speech: merges VAD segments into one
+  // question while the interviewer pauses mid-thought. Emits on "?" or after
+  // a gap timer. Kept in a ref so the STT callback can use it without
+  // re-registering listeners.
+  const questionAssemblerRef = useRef<QuestionAssembler | null>(null);
+  const questionFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
+  if (!questionAssemblerRef.current) {
+    questionAssemblerRef.current = new QuestionAssembler({
+      gapMs: 1500,
+      maxWindowMs: 6000,
+      immediateOnQuestionMark: true,
+      duplicateSimilarityThreshold: 0.75,
+    });
+  }
+
+  // Abort any pending question assembly and drop the gap timer.
+  const resetQuestionAssembly = useCallback(() => {
+    questionAssemblerRef.current?.reset();
+    if (questionFlushTimerRef.current) {
+      clearTimeout(questionFlushTimerRef.current);
+      questionFlushTimerRef.current = null;
+    }
   }, []);
 
   // AI Processing function
@@ -463,6 +487,62 @@ export function useSystemAudio() {
     });
   };
 
+  // Runs all the guards (filler/cooldown) and starts the AI response.
+  const triggerAIForQuestion = useCallback(
+    async (question: string, source: "me" | "them") => {
+      // Check if the transcription is a meaningful query/question rather than
+      // a conversational filler/backchannel.
+      if (!shouldTriggerAIResponse(question)) {
+        console.log(
+          `[Pluely] Skipping AI processing for conversational filler/backchannel: "${question}"`
+        );
+        return;
+      }
+
+      // Cooldown guard: right after an AI answer, short utterances are usually
+      // reactions to the answer, not new questions. Question starters always
+      // pass through.
+      const sinceLastResponse = Date.now() - lastAIResponseAtRef.current;
+      const isQuestionStart =
+        /^(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|расскажи|объясни|what|how|why|where|when|who|which|can you|could you|tell me|explain)\b/i.test(
+          question.trim()
+        );
+      if (
+        lastAIResponseAtRef.current > 0 &&
+        sinceLastResponse < AI_RESPONSE_COOLDOWN_MS &&
+        question.trim().length < 60 &&
+        !isQuestionStart
+      ) {
+        console.log(
+          `[Pluely] Skipping AI processing during post-answer cooldown (${sinceLastResponse}ms): "${question}"`
+        );
+        return;
+      }
+
+      const effectiveSystemPrompt = useSystemPrompt
+        ? systemPrompt || DEFAULT_SYSTEM_PROMPT
+        : contextContent || DEFAULT_SYSTEM_PROMPT;
+
+      const previousMessages = buildHistory(conversation.messages);
+
+      await processWithAI(
+        question,
+        effectiveSystemPrompt,
+        previousMessages,
+        pendingScreenshotRef.current ? [pendingScreenshotRef.current] : [],
+        source
+      );
+    },
+    [
+      processWithAI,
+      useSystemPrompt,
+      systemPrompt,
+      contextContent,
+      conversation,
+      buildHistory,
+    ]
+  );
+
   // Shared STT pipeline for both sources (mic = "me", system audio = "them").
   // Mic and system segments are processed in parallel (separate busy flags).
   const transcribeSegment = async (audioBlob: Blob, source: "me" | "them") => {
@@ -528,62 +608,49 @@ export function useSystemAudio() {
           return;
         }
 
-        // Check if the transcription is a meaningful query/question rather than a conversational filler/backchannel
-        if (!shouldTriggerAIResponse(transcription)) {
-          console.log(
-            `[Pluely] Skipping AI processing for conversational filler/backchannel: "${transcription}"`
-          );
-          return;
-        }
-
-        // Cooldown guard: right after an AI answer, short utterances are
-        // usually reactions to the answer, not new questions. Question
-        // starters ("почему", "what", "how"...) always pass through.
-        const sinceLastResponse = Date.now() - lastAIResponseAtRef.current;
-        const isQuestionStart =
-          /^(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|расскажи|объясни|what|how|why|where|when|who|which|can you|could you|tell me|explain)\b/i.test(
-            transcription.trim()
-          );
-        if (
-          lastAIResponseAtRef.current > 0 &&
-          sinceLastResponse < AI_RESPONSE_COOLDOWN_MS &&
-          transcription.trim().length < 60 &&
-          !isQuestionStart
-        ) {
-          console.log(
-            `[Pluely] Skipping AI processing during post-answer cooldown (${sinceLastResponse}ms): "${transcription}"`
-          );
-          return;
-        }
-
-        // VAD segmentation debounce: while the interviewer keeps talking /
-        // clarifying (rapid successive segments), do NOT trigger AI for each
-        // fragment. Only a final, complete question should trigger.
-        const now = Date.now();
+        // Interviewer speech: merge segments into ONE question. The AI is
+        // triggered only when the question is complete (emitted) - so pauses
+        // mid-question no longer produce partial/duplicate AI calls.
         if (source === "them") {
-          const lastThemSeg = lastThemSegmentAtRef.current;
-          if (lastThemSeg && now - lastThemSeg < 1200) {
+          const assembler = questionAssemblerRef.current!;
+          const result = assembler.push({
+            source: "them",
+            text: transcription,
+            timestamp: Date.now(),
+          });
+
+          if (result.kind === "discarded") {
             console.log(
-              `[Pluely] Skipping AI trigger: interviewer continues speaking (debounce ${now - lastThemSeg}ms)`
+              `[Pluely] Question fragment discarded (${result.reason}): "${transcription}"`
             );
             return;
           }
-          lastThemSegmentAtRef.current = now;
+
+          // (Re)arm the gap timer: if the interviewer goes quiet, emit the
+          // accumulated question and let the AI answer it.
+          if (questionFlushTimerRef.current) {
+            clearTimeout(questionFlushTimerRef.current);
+          }
+          questionFlushTimerRef.current = setTimeout(() => {
+            questionFlushTimerRef.current = null;
+            const emitted = questionAssemblerRef.current?.flush("them");
+            if (emitted?.kind === "emitted") {
+              void triggerAIForQuestion(emitted.question, "them");
+            }
+          }, 1500);
+
+          if (result.kind === "emitted") {
+            if (questionFlushTimerRef.current) {
+              clearTimeout(questionFlushTimerRef.current);
+              questionFlushTimerRef.current = null;
+            }
+            await triggerAIForQuestion(result.question, "them");
+          }
+          return;
         }
 
-        const effectiveSystemPrompt = useSystemPrompt
-          ? systemPrompt || DEFAULT_SYSTEM_PROMPT
-          : contextContent || DEFAULT_SYSTEM_PROMPT;
-
-        const previousMessages = buildHistory(conversation.messages);
-
-        await processWithAI(
-          transcription,
-          effectiveSystemPrompt,
-          previousMessages,
-          pendingScreenshotRef.current ? [pendingScreenshotRef.current] : [],
-          source
-        );
+        // Microphone source: trigger AI directly (question is complete).
+        await triggerAIForQuestion(transcription, "me");
       } else {
         setError("Received empty transcription");
       }
@@ -965,6 +1032,9 @@ export function useSystemAudio() {
       micStopRef.current();
       stopMicVisualizerStream();
 
+      // Drop any in-progress question assembly
+      resetQuestionAssembly();
+
       // Reset ALL states
       setCapturing(false);
       setIsMicProcessing(false);
@@ -1132,6 +1202,7 @@ export function useSystemAudio() {
   ]);
 
   const startNewConversation = useCallback(() => {
+    resetQuestionAssembly();
     setConversation({
       id: generateConversationId("sysaudio"),
       title: "",

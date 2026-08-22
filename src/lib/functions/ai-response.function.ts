@@ -22,6 +22,13 @@ import {
 import { getActiveProfileId, SELF_EVOLUTION_PROFILE_ID } from "../storage/prompt-profiles";
 import { buildSelfEvolutionPromptBlock } from "../storage/user-facts";
 import { getWebSearchSettings, performWebSearch, SearchResultItem } from "../web-search";
+import {
+  buildSearchBlock,
+  cacheSearchResults,
+  getCachedSearchResults,
+  parallelSearchStream,
+  shouldSearch,
+} from "./parallel-search";
 import { getRagContext } from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { detectLanguage } from "@/lib/language-detect";
@@ -49,47 +56,6 @@ function parseCurlCached(curl: string): any {
 // the enriched prompt (user sees nothing). If the first token wins, results
 // are cached and injected on the next turn.
 // ---------------------------------------------------------------------------
-const searchResultsCache = new Map<
-  string,
-  { results: SearchResultItem[]; ts: number }
->();
-const SEARCH_CACHE_TTL_MS = 5 * 60_000;
-const SEARCH_CACHE_MAX = 30;
-
-function shouldSearch(userMessage: string): boolean {
-  return (
-    userMessage.trim().length > 5 &&
-    (userMessage.includes("?") ||
-      /кто|что|где|когда|почему|как|сколько|курс|новост|документаци|search|what|how|why|latest|current|docs/i.test(
-        userMessage
-      ))
-  );
-}
-
-function getCachedSearchResults(query: string): SearchResultItem[] | null {
-  const key = query.trim().toLowerCase().slice(0, 120);
-  const entry = searchResultsCache.get(key);
-  if (entry && Date.now() - entry.ts < SEARCH_CACHE_TTL_MS) {
-    return entry.results;
-  }
-  return null;
-}
-
-function cacheSearchResults(query: string, results: SearchResultItem[]) {
-  const key = query.trim().toLowerCase().slice(0, 120);
-  if (searchResultsCache.size >= SEARCH_CACHE_MAX) {
-    const oldest = searchResultsCache.keys().next().value;
-    if (oldest !== undefined) searchResultsCache.delete(oldest);
-  }
-  searchResultsCache.set(key, { results, ts: Date.now() });
-}
-
-function buildSearchBlock(results: SearchResultItem[]): string {
-  const searchBlock = results
-    .map((r, i) => `[${i + 1}] ${r.title} (${r.url}):\n${r.snippet}`)
-    .join("\n\n");
-  return `[LIVE WEB SEARCH RESULTS - РЕЗУЛЬТАТЫ ПОИСКА В ИНТЕРНЕТЕ]\n${searchBlock}\nИспользуй эти актуальные данные для точного ответа.\n[/LIVE WEB SEARCH RESULTS]`;
-}
 
 function startParallelWebSearch(
   userMessage: string
@@ -142,26 +108,26 @@ async function buildEnhancedSystemPrompt(
   // Add markdown formatting instructions
   prompts.push(MARKDOWN_FORMATTING_INSTRUCTIONS);
 
-  // RAG context: resume and job description
+  // RAG context: resume and job description (fetched in parallel - they are
+  // independent DB reads, no reason to serialize them).
   const resumeEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_RESUME_ENABLED) === "true";
   const jobEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_JOB_ENABLED) === "true";
 
-  if (resumeEnabled) {
-    const resume = await getRagContext("resume");
-    if (resume?.content?.trim()) {
-      prompts.push(
-        `[CONTEXT: MY RESUME]\n${resume.content.trim()}\n[/CONTEXT]`
-      );
-    }
+  const [resumeCtx, jobCtx] = await Promise.all([
+    resumeEnabled ? getRagContext("resume") : Promise.resolve(null),
+    jobEnabled ? getRagContext("job") : Promise.resolve(null),
+  ]);
+
+  if (resumeCtx?.content?.trim()) {
+    prompts.push(
+      `[CONTEXT: MY RESUME]\n${resumeCtx.content.trim()}\n[/CONTEXT]`
+    );
   }
 
-  if (jobEnabled) {
-    const job = await getRagContext("job");
-    if (job?.content?.trim()) {
-      prompts.push(
-        `[CONTEXT: JOB DESCRIPTION]\n${job.content.trim()}\n[/CONTEXT]`
-      );
-    }
+  if (jobCtx?.content?.trim()) {
+    prompts.push(
+      `[CONTEXT: JOB DESCRIPTION]\n${jobCtx.content.trim()}\n[/CONTEXT]`
+    );
   }
 
   // Humanizer rules
@@ -434,14 +400,24 @@ async function* streamAIResponse(params: {
       bodyObj[messagesKey] = finalMessages;
     }
 
+    const userVariables = Object.fromEntries(
+      Object.entries(selectedProvider.variables).map(([key, value]) => [
+        key.toUpperCase(),
+        value,
+      ])
+    );
+
+    // Zero-reasoning by default: "low" (or "minimal" for Gemini) gives the
+    // fastest first token. The user can still override via provider variables
+    // (e.g. REASONING_EFFORT=high) for complex questions.
+    const reasoningEffort =
+      userVariables["REASONING_EFFORT"] ||
+      (provider?.id === "gemini" ? "low" : "low");
+
     const allVariables = {
-      ...Object.fromEntries(
-        Object.entries(selectedProvider.variables).map(([key, value]) => [
-          key.toUpperCase(),
-          value,
-        ])
-      ),
+      ...userVariables,
       SYSTEM_PROMPT: systemPrompt || "",
+      REASONING_EFFORT: reasoningEffort,
     };
 
     bodyObj = deepVariableReplacer(bodyObj, allVariables);
@@ -635,87 +611,19 @@ export async function* fetchAIResponse(params: {
     userMessage
   );
 
-  // First attempt gets its own controller so it can be aborted silently
-  // if the search wins the race (no wasted tokens on a dropped request).
-  const firstAttemptController = new AbortController();
-  const abortFromExternal = () => firstAttemptController.abort();
-  signal?.addEventListener("abort", abortFromExternal, { once: true });
-
-  // Race: first token vs search results.
-  const firstChunkPromise = (async () => {
-    try {
-      const iterator = streamAIResponse({
-        ...params,
-        systemPrompt: baseSystemPrompt,
-        signal: firstAttemptController.signal,
-      });
-      const first = await iterator.next();
-      return { iterator, first };
-    } catch (err) {
-      // First attempt crashed: let the search win the race if it can.
-      return {
-        iterator: null as any,
-        first: { done: true as const, value: undefined as any },
-        error: err,
-      };
-    }
-  })();
-
-  const searchResult = await Promise.race([
+  yield* parallelSearchStream({
+    userMessage,
+    basePrompt: baseSystemPrompt,
     searchPromise,
-    firstChunkPromise.then(({ first }) => {
-      // If the first chunk is already an error/empty, let search win.
-      if (first.done || !first.value) {
-        return searchPromise;
-      }
-      return null;
-    }),
-  ]);
-
-  if (searchResult && searchResult.length > 0) {
-    // Search finished before the first token: abort the first attempt and
-    // restart silently with the enriched prompt. The user never sees the
-    // aborted first attempt.
-    firstAttemptController.abort();
-    signal?.removeEventListener("abort", abortFromExternal);
-    cacheSearchResults(userMessage, searchResult);
-    const enrichedPrompt = `${baseSystemPrompt} ${buildSearchBlock(searchResult)}`;
-    yield* streamAIResponse({
-      ...params,
-      systemPrompt: enrichedPrompt,
-    });
-    return;
-  }
-
-  // First token won (or search disabled/empty): stream the original request.
-  signal?.removeEventListener("abort", abortFromExternal);
-  const { iterator, first } = await firstChunkPromise;
-  if (signal?.aborted) {
-    return;
-  }
-  if (!iterator) {
-    // The first attempt crashed and search did not save us - surface it.
-    throw new Error(
-      `Error in fetchAIResponse: ${
-        (first as any)?.error instanceof Error
-          ? (first as any).error.message
-          : "Unknown error"
-      }`
-    );
-  }
-  if (!first.done) {
-    yield first.value;
-    for await (const chunk of iterator) {
-      if (signal?.aborted) {
-        return;
-      }
-      yield chunk;
-    }
-  }
-  // Cache results for the next turn if they arrived late.
-  searchPromise.then((results) => {
-    if (results && results.length > 0) {
-      cacheSearchResults(userMessage, results);
-    }
+    createStream: (prompt, attemptSignal) =>
+      streamAIResponse({
+        ...params,
+        systemPrompt: prompt,
+        signal: attemptSignal,
+      }),
+    buildPromptWithEntries: (basePrompt, results) =>
+      `${basePrompt} ${buildSearchBlock(results)}`,
+    onLate: (query, results) => cacheSearchResults(query, results),
+    signal,
   });
 }
