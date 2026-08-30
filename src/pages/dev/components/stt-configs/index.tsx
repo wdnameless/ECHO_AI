@@ -7,7 +7,7 @@ import { useHandyStatus } from "@/hooks/useHandyStatus";
 import { cn } from "@/lib/utils";
 
 export const STTProviders = (settings: UseSettingsReturn) => {
-  const handy = useHandyStatus(5000);
+  const handy = useHandyStatus();
 
   const handyModelShort = handy.model
     ? handy.model.split("/").pop()?.replace(".gguf", "") || handy.model

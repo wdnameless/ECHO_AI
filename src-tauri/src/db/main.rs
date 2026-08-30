@@ -24,5 +24,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("migrations/rag-contexts.sql"),
             kind: MigrationKind::Up,
         },
+        // Migration 4: Self-Evolution persistence (style profile + feedback log)
+        Migration {
+            version: 4,
+            description: "create_self_evolution_tables",
+            sql: include_str!("migrations/self-evolution.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }

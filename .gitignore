@@ -30,3 +30,10 @@ dist-ssr
 
 __pycache__/
 *.pyc
+
+# Models and large binaries
+*.gguf
+*.bin
+src-tauri/resources/nemotron*
+src-tauri/resources/*.gguf
+src-tauri/resources/pluely-asr*

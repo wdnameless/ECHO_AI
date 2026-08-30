@@ -325,18 +325,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     );
     if (savedSelectedAi) {
       const parsedAi = JSON.parse(savedSelectedAi);
-      if (
-        parsedAi &&
-        typeof parsedAi === "object" &&
-        parsedAi.variables &&
-        parsedAi.variables.MODEL === "gemini 3.6 flash high"
-      ) {
-        parsedAi.variables.MODEL = "gemini-3.6-flash-low";
-        safeLocalStorage.setItem(
-          STORAGE_KEYS.SELECTED_AI_PROVIDER,
-          JSON.stringify(parsedAi)
-        );
-      }
+      // No legacy-model shim: the user's stored selection is the source of
+      // truth. The old recurring "gemini 3.6 flash high" rewrite clobbered
+      // newer user selections and re-persisted them every app start.
       setSelectedAIProvider(parsedAi);
     } else {
       // Default to Nullform AI Gateway with gemini-3.6-flash-low

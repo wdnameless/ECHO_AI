@@ -242,21 +242,35 @@ export async function fetchSTT(params: STTParams): Promise<string> {
       body = JSON.stringify(deepVariableReplacer(dataObj, allVariables));
     }
 
-    const fetchFunction = url?.includes("http") ? tauriFetch : fetch;
+    const fetchFunction = (input: RequestInfo | URL, init?: RequestInit) => {
+      const urlStr = String(input);
+      if (urlStr.includes("127.0.0.1") || urlStr.includes("localhost")) {
+        return window.fetch(input, init).catch(() => tauriFetch(input, init));
+      }
+      return (url?.includes("http") ? tauriFetch(input, init) : window.fetch(input, init))
+        .catch(() => window.fetch(input, init));
+    };
 
-    // Send request
-    let response: Response;
-    try {
-      response = await fetchFunction(url, {
-        method: curlJson.method || "POST",
-        headers: finalHeaders,
-        body: curlJson.method === "GET" ? undefined : body,
-      });
-    } catch (e) {
-      throw new Error(`Network error: ${e instanceof Error ? e.message : e}`);
-    }
+    // Send request — one automatic retry on transient server errors
+    // (502/503/429): the local STT queue or a busy gateway should never
+    // lose a speech segment.
+    let response: Response | null = null;
+    let lastErrMsg = "";
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        response = await fetchFunction(url, {
+          method: curlJson.method || "POST",
+          headers: finalHeaders,
+          body: curlJson.method === "GET" ? undefined : body,
+        });
+      } catch (e) {
+        lastErrMsg = `Network error: ${e instanceof Error ? e.message : e}`;
+        response = null;
+        continue;
+      }
 
-    if (!response.ok) {
+      if (response.ok) break;
+
       let errText = "";
       try {
         errText = await response.text();
@@ -268,7 +282,19 @@ export async function fetchSTT(params: STTParams): Promise<string> {
       } catch {
         errMsg = errText || response.statusText;
       }
-      throw new Error(`HTTP ${response.status}: ${errMsg}`);
+      lastErrMsg = `HTTP ${response.status}: ${errMsg}`;
+
+      const retryable = [502, 503, 429].includes(response.status);
+      response = null;
+      if (retryable && attempt === 0) {
+        await new Promise((r) => setTimeout(r, 400));
+        continue;
+      }
+      break;
+    }
+
+    if (!response || !response.ok) {
+      throw new Error(lastErrMsg || "STT request failed");
     }
 
     const responseText = await response.text();

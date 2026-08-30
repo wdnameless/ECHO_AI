@@ -17,15 +17,12 @@ import {
   HUMANIZER_INSTRUCTIONS,
   INTERVIEW_MODE_INSTRUCTIONS,
 } from "@/config/humanizer.rules";
-import { getActiveProfileId, SELF_EVOLUTION_PROFILE_ID } from "../storage/prompt-profiles";
 import { buildSelfEvolutionPromptBlock } from "../storage/user-facts";
 import { getWebSearchSettings, performWebSearch, SearchResultItem } from "../web-search";
 import {
   buildSearchBlock,
   cacheSearchResults,
   getCachedSearchResults,
-  parallelSearchStream,
-  shouldSearch,
 } from "./parallel-search";
 import { getRagContext } from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
@@ -48,31 +45,40 @@ function parseCurlCached(curl: string): any {
   return parsed;
 }
 
+/**
+ * Resolves the effective LLM model name for a provider.
+ * Priority: (1) the user-selected `model` variable (case-insensitive) always
+ * wins, (2) a `{{MODEL}}` placeholder in the curl is resolved from variables
+ * (same source as 1), (3) as a last resort the literal `"model": "..."`
+ * string baked into the provider curl body is parsed out.
+ */
+export function resolveProviderModel(
+  provider: TYPE_PROVIDER | undefined,
+  selectedProvider:
+    | { provider: string; variables: Record<string, string> }
+    | null
+    | undefined
+): string {
+  const vars = selectedProvider?.variables ?? {};
+  const varsModel = Object.entries(vars).find(
+    ([k, v]) => k.toLowerCase() === "model" && v && v.trim() !== ""
+  )?.[1];
+  if (varsModel?.trim()) return varsModel.trim();
+  // Priority 2: a `{{MODEL}}` placeholder also resolves from variables (same
+  // lookup as priority 1, already covered above).
+  if (provider?.curl) {
+    const m = provider.curl.match(/"model"\s*:\s*"([^"{]+)"/);
+    if (m?.[1]) return m[1];
+  }
+  return "";
+}
+
 // ---------------------------------------------------------------------------
 // Parallel web search: results are raced against the first token so search
 // NEVER blocks the answer. If search wins, the request silently restarts with
 // the enriched prompt (user sees nothing). If the first token wins, results
 // are cached and injected on the next turn.
 // ---------------------------------------------------------------------------
-
-function startParallelWebSearch(
-  userMessage: string
-): Promise<SearchResultItem[] | null> {
-  const settings = getWebSearchSettings();
-  if (!settings.enabled || !shouldSearch(userMessage)) {
-    return Promise.resolve(null);
-  }
-  const cached = getCachedSearchResults(userMessage);
-  if (cached) {
-    return Promise.resolve(cached);
-  }
-  return performWebSearch(userMessage)
-    .then((results) => (results.length > 0 ? results : null))
-    .catch((err) => {
-      console.warn("[AI Response] Live web search failed:", err);
-      return null;
-    });
-}
 
 async function buildEnhancedSystemPrompt(
   baseSystemPrompt?: string,
@@ -142,9 +148,10 @@ async function buildEnhancedSystemPrompt(
     }
   }
 
-  // Self-Evolution Memory & Personal Facts injection
-  const activeProfile = getActiveProfileId();
-  if (activeProfile === SELF_EVOLUTION_PROFILE_ID) {
+  // Self-Evolution Memory & Personal Facts injection (ALWAYS on): every
+  // like/dislike immediately shapes the next answer, and the strict RU/EN
+  // language rule lives inside this block.
+  {
     const evolutionBlock = buildSelfEvolutionPromptBlock();
     if (evolutionBlock) {
       prompts.push(evolutionBlock);
@@ -402,6 +409,32 @@ async function* streamAIResponse(params: {
     };
 
     bodyObj = deepVariableReplacer(bodyObj, allVariables);
+
+    // Hard model override: the user's selected model variable ALWAYS wins over
+    // any literal model string baked into the provider curl. Without this, a
+    // template with a hardcoded "gemini-3.6-flash" silently ignores a newer
+    // model configured in settings. Sibling model-like keys (model_id,
+    // model_name, modelVersion) that don't match the chosen value are removed
+    // so the provider can never fall back to a stale model.
+    const selectedModel = Object.entries(selectedProvider.variables).find(
+      ([k, v]) => k.toLowerCase() === "model" && v && v.trim() !== ""
+    )?.[1];
+    if (
+      typeof bodyObj === "object" &&
+      bodyObj !== null &&
+      selectedModel?.trim()
+    ) {
+      bodyObj.model = selectedModel.trim();
+      for (const siblingKey of ["model_id", "model_name", "modelVersion"]) {
+        if (
+          siblingKey in bodyObj &&
+          typeof bodyObj[siblingKey] === "string" &&
+          bodyObj[siblingKey] !== selectedModel.trim()
+        ) {
+          delete bodyObj[siblingKey];
+        }
+      }
+    }
     let url = deepVariableReplacer(curlJson.url || "", allVariables);
 
     // Clean up empty reasoning_effort or normalize "none" / "0" for 0-delay instant responses
@@ -419,6 +452,21 @@ async function* streamAIResponse(params: {
         // For Gemini / OpenAI: set budget_tokens to 0 or remove reasoning delay
         bodyObj.reasoning_effort = "low";
       }
+
+      // Gemini rejects empty image fields with HTTP 400 ("Unable to process
+      // input image"). Remove any image-related field left empty after
+      // variable replacement (no screenshot attached this turn).
+      for (const k of Object.keys(bodyObj)) {
+        const v = bodyObj[k];
+        if (
+          /image/i.test(k) &&
+          (v === "" ||
+            v === null ||
+            (Array.isArray(v) && v.length === 0))
+        ) {
+          delete bodyObj[k];
+        }
+      }
     }
 
     const headers = deepVariableReplacer(curlJson.header || {}, allVariables);
@@ -435,6 +483,18 @@ async function* streamAIResponse(params: {
           bodyObj.stream = true;
         }
       }
+    }
+
+    // Cap answer length unless the provider template specifies it: interview
+    // answers are short by design, and a hard cap makes generation finish
+    // roughly 2x faster (fewer tokens to stream).
+    if (
+      typeof bodyObj === "object" &&
+      bodyObj !== null &&
+      bodyObj.max_tokens === undefined &&
+      bodyObj.maxOutputTokens === undefined
+    ) {
+      bodyObj.max_tokens = 600;
     }
 
     const fetchFunction = url?.includes("http") ? tauriFetch : fetch;
@@ -462,14 +522,33 @@ async function* streamAIResponse(params: {
     }
 
     if (!response.ok) {
-      let errorText = "";
-      try {
-        errorText = await response.text();
-      } catch {}
-      yield `API request failed: ${response.status} ${response.statusText}${
-        errorText ? ` - ${errorText}` : ""
-      }`;
-      return;
+      // One automatic retry on transient gateway errors (502/503/429):
+      // overloaded gateways recover within a few hundred milliseconds and
+      // the answer should never be lost to a blip.
+      if ([502, 503, 429].includes(response.status)) {
+        await new Promise((r) => setTimeout(r, 500));
+        try {
+          response = await fetchFunction(url, {
+            method: curlJson.method || "POST",
+            headers,
+            body: curlJson.method === "GET" ? undefined : JSON.stringify(bodyObj),
+            signal,
+          });
+        } catch {
+          /* fall through to the error below */
+        }
+      }
+
+      if (!response || !response.ok) {
+        let errorText = "";
+        try {
+          if (response) errorText = await response.text();
+        } catch {}
+        yield `API request failed: ${response?.status ?? "network"} ${
+          response?.statusText ?? "error"
+        }${errorText ? ` - ${errorText}` : ""}`;
+        return;
+      }
     }
 
     if (!provider?.streaming) {
@@ -583,8 +662,29 @@ export async function* fetchAIResponse(params: {
 }): AsyncIterable<string> {
   const { userMessage, signal } = params;
 
-  // Kick off the search immediately (fire-and-forget promise).
-  const searchPromise = startParallelWebSearch(userMessage);
+  // Web search with a HARD budget: await it for at most ~1.1s, then start
+  // the stream either way. Single request (no abort+restart), predictable
+  // worst-case latency; late results are cached and used next turn.
+  let searchResults: SearchResultItem[] | null = null;
+  try {
+    const settings = getWebSearchSettings();
+    if (settings.enabled && userMessage.trim()) {
+      const cached = getCachedSearchResults(userMessage);
+      if (cached) {
+        searchResults = cached;
+      } else {
+        searchResults = await Promise.race([
+          performWebSearch(userMessage).catch(() => null),
+          new Promise<null>((r) => setTimeout(() => r(null), 1100)),
+        ]);
+        if (searchResults && searchResults.length > 0) {
+          cacheSearchResults(userMessage, searchResults);
+        }
+      }
+    }
+  } catch {
+    searchResults = null;
+  }
 
   // Build the base prompt (RAG, humanizer, etc.) - no search inside.
   const baseSystemPrompt = await buildEnhancedSystemPrompt(
@@ -592,19 +692,14 @@ export async function* fetchAIResponse(params: {
     userMessage
   );
 
-  yield* parallelSearchStream({
-    userMessage,
-    basePrompt: baseSystemPrompt,
-    searchPromise,
-    createStream: (prompt, attemptSignal) =>
-      streamAIResponse({
-        ...params,
-        systemPrompt: prompt,
-        signal: attemptSignal,
-      }),
-    buildPromptWithEntries: (basePrompt, results) =>
-      `${basePrompt} ${buildSearchBlock(results)}`,
-    onLate: (query, results) => cacheSearchResults(query, results),
+  const enrichedPrompt =
+    searchResults && searchResults.length > 0
+      ? `${baseSystemPrompt} ${buildSearchBlock(searchResults)}`
+      : baseSystemPrompt;
+
+  yield* streamAIResponse({
+    ...params,
+    systemPrompt: enrichedPrompt,
     signal,
   });
 }

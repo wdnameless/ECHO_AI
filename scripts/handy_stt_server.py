@@ -4,11 +4,14 @@ OpenAI-compatible transcription endpoint at http://127.0.0.1:8000
 that Pluely's "Handy Local STT (Local Whisper)" provider uses.
 
 Engine priority (all local, no cloud):
-  1. faster-whisper (CTranslate2) - model loaded ONCE and kept in memory.
+  0. Nemotron 3.5 ASR 0.6B (sherpa-onnx, CUDA) - the model the user has
+     loaded in Handy, run natively via the sherpa-onnx websocket server
+     (GPU, model stays in memory). Auto-discovered from the Handy HuggingFace
+     cache. This is the primary engine.
+  1. faster-whisper (CTranslate2) - loaded ONCE and kept in memory.
      GPU (CUDA) -> float16, CPU -> int8. Default model: "small" (RU+EN).
-     Override with PLUELY_WHISPER_MODEL env var.
-  2. Handy CLI (handy.exe --transcribe-file) - fallback if faster-whisper
-     is not installed.
+  2. Handy CLI (handy.exe --transcribe-file) - fallback if sherpa/faster
+     are unavailable.
   3. openai-whisper (CPU) - last resort.
 
 Priority queue: final segments (X-Priority: high) are transcribed before
@@ -20,6 +23,8 @@ import glob
 import json
 import os
 import re
+import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -29,6 +34,16 @@ import traceback
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    import websocket as ws_client
+except ImportError:
+    ws_client = None
 
 # Windows console uses cp1252/cp866 by default which crashes on Russian text.
 for _stream in (sys.stdout, sys.stderr):
@@ -49,6 +64,158 @@ HANDY_EXE_CANDIDATES = [
     r"C:\Program Files\Handy\handy.exe",
     r"C:\Program Files (x86)\Handy\handy.exe",
 ]
+
+# ---------------------------------------------------------------------------
+# Nemotron 3.5 ASR (sherpa-onnx) - PRIMARY ENGINE
+# The model is discovered from the Handy HuggingFace cache (the same GGUF the
+# user loads in Handy) converted ONNX export; we run it natively through the
+# sherpa-onnx online websocket server on CUDA.
+# ---------------------------------------------------------------------------
+NEMOTRON_SHERPA_PORT = int(os.environ.get("PLUELY_NEMOTRON_PORT", "6007"))
+NEMOTRON_SHERPA_EXE_CANDIDATES = [
+    os.environ.get("PLUELY_SHERPA_EXE", ""),
+    os.path.join(os.environ.get("USERPROFILE", ""), ".cache", "pluely", "sherpa-onnx", "sherpa-onnx-online-websocket-server.exe"),
+    r"D:\TMP\opencode\sherpa-gpu\sherpa-onnx-v1.13.6-cuda-12.x-cudnn-9.x-onnxruntime1.27.1-win-x64-cuda\bin\sherpa-onnx-online-websocket-server.exe",
+]
+
+# ONNX files in the same repo family (snapshot subdirs of the GGUF repo or
+# the standalone sherpa export).
+NEMOTRON_ONNX_DIRS = [
+    os.environ.get("PLUELY_NEMOTRON_ONNX_DIR", ""),
+    os.path.join(os.environ.get("USERPROFILE", ""), ".cache", "pluely", "nemotron-sherpa"),
+    os.path.join(os.environ.get("USERPROFILE", ""), ".cache", "huggingface", "hub"),
+]
+
+_nemotron_server = None
+_nemotron_ready = False
+_nemotron_error = ""
+
+def find_nemotron_files():
+    """Locate encoder/decoder/joiner/tokens for the sherpa-onnx Nemotron export."""
+    for base in NEMOTRON_ONNX_DIRS:
+        if not base or not os.path.isdir(base):
+            continue
+        # direct dir (snapshot or our bundled copy)
+        enc = os.path.join(base, "encoder.int8.onnx")
+        dec = os.path.join(base, "decoder.int8.onnx")
+        joi = os.path.join(base, "joiner.int8.onnx")
+        tok = os.path.join(base, "tokens.txt")
+        if all(os.path.isfile(p) for p in (enc, dec, joi, tok)):
+            return {"encoder": enc, "decoder": dec, "joiner": joi, "tokens": tok}
+        # scan HF hub model dirs
+        if "huggingface" in base:
+            for model_dir in glob.glob(os.path.join(base, "models--csukuangfj2--sherpa-onnx-nemotron-*")):
+                for snap in glob.glob(os.path.join(model_dir, "snapshots", "*")):
+                    enc = os.path.join(snap, "encoder.int8.onnx")
+                    dec = os.path.join(snap, "decoder.int8.onnx")
+                    joi = os.path.join(snap, "joiner.int8.onnx")
+                    tok = os.path.join(snap, "tokens.txt")
+                    if all(os.path.isfile(p) for p in (enc, dec, joi, tok)):
+                        return {"encoder": enc, "decoder": dec, "joiner": joi, "tokens": tok}
+    return None
+
+
+def _nemotron_exe():
+    for c in NEMOTRON_SHERPA_EXE_CANDIDATES:
+        if c and os.path.isfile(c):
+            return c
+    return None
+
+
+def start_nemotron_server():
+    """Start the sherpa-onnx websocket server (CUDA) if possible."""
+    global _nemotron_server, _nemotron_ready, _nemotron_error
+    try:
+        files = find_nemotron_files()
+        if not files:
+            _nemotron_error = "Nemotron ONNX files not found"
+            log("Nemotron: " + _nemotron_error)
+            return
+        exe = _nemotron_exe()
+        if not exe:
+            _nemotron_error = "sherpa-onnx websocket server not found"
+            log("Nemotron: " + _nemotron_error)
+            return
+        cmd = [
+            exe,
+            "--port", str(NEMOTRON_SHERPA_PORT),
+            "--tokens", files["tokens"],
+            "--encoder", files["encoder"],
+            "--decoder", files["decoder"],
+            "--joiner", files["joiner"],
+            "--provider", "cuda",
+            "--feat-dim", "128",
+            "--num-work-threads", "4",
+        ]
+        _nemotron_server = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        # wait for the port to open
+        import socket
+        for _ in range(60):
+            time.sleep(0.5)
+            try:
+                s = socket.create_connection(("127.0.0.1", NEMOTRON_SHERPA_PORT), timeout=0.5)
+                s.close()
+                _nemotron_ready = True
+                log("Nemotron sherpa server up (CUDA)")
+                return
+            except OSError:
+                pass
+        _nemotron_error = "sherpa server did not open the port"
+        log("Nemotron: " + _nemotron_error)
+    except Exception as e:
+        _nemotron_error = f"start failed: {e}"
+        log("Nemotron: " + _nemotron_error)
+
+
+def transcribe_nemotron(wav_path: str, language: str = "auto") -> str:
+    """Send a WAV through the sherpa-onnx websocket server (Nemotron)."""
+    if not _nemotron_ready or np is None or ws_client is None:
+        return ""
+    try:
+        import wave as wavemod
+        with wavemod.open(wav_path, "rb") as w:
+            if w.getframerate() != 16000 or w.getnchannels() != 1 or w.getsampwidth() != 2:
+                return ""
+            samples = w.readframes(w.getnframes())
+        samples_float32 = np.frombuffer(samples, dtype=np.int16).astype(np.float32) / 32768
+
+        ws = ws_client.create_connection(
+            f"ws://127.0.0.1:{NEMOTRON_SHERPA_PORT}", timeout=60
+        )
+        chunks = 8000  # 0.5s
+        results = []
+        start = 0
+        while start < samples_float32.shape[0]:
+            end = min(start + chunks, samples_float32.shape[0])
+            ws.send(samples_float32[start:end].tobytes(), opcode=ws_client.ABNF.OPCODE_BINARY)
+            start += chunks
+        ws.send("Done!")
+        ws.settimeout(30)
+        try:
+            while True:
+                msg = ws.recv()
+                if msg == "Done!":
+                    break
+                try:
+                    j = json.loads(msg)
+                    if j.get("text"):
+                        results.append(j["text"])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        ws.close()
+        text = results[-1].strip() if results else ""
+        return text
+    except Exception as e:
+        log("Nemotron transcribe failed: " + str(e))
+        return ""
+
 
 WHISPER_MODEL_NAME = os.environ.get("PLUELY_WHISPER_MODEL", "small")
 # Optional: fix the STT language instead of auto-detecting. Auto-detect on
@@ -282,12 +449,18 @@ def _worker():
 
         text = ""
         try:
-            if _fw_ready:
+            # PRIMARY: Nemotron 3.5 ASR via sherpa-onnx (CUDA, persistent).
+            if _nemotron_ready:
+                text = transcribe_nemotron(wav_path, language)
+            # Fallback 1: faster-whisper (GPU/CUDA, in-memory).
+            if not text and _fw_ready:
                 text = transcribe_faster_whisper(wav_path, language)
+            # Fallback 2: Handy CLI (Vulkan GPU).
             if not text:
                 model_id = read_selected_model()
                 if model_id:
                     text = transcribe_handy(wav_path, model_id)
+            # Last resort: local CPU whisper.
             if not text:
                 text = transcribe_local_whisper(wav_path, language)
         except Exception as e:
@@ -299,6 +472,8 @@ def _worker():
 
 def _warmup():
     """Load the persistent engine at startup so the first request is fast."""
+    # PRIMARY: start the Nemotron sherpa-onnx server (CUDA) in the background.
+    threading.Thread(target=start_nemotron_server, daemon=True).start()
     _load_faster_whisper()
     if _fw_ready:
         _engine_state.update(engine="faster-whisper", ready=True)
@@ -448,7 +623,15 @@ def main():
 
     server = ThreadingHTTPServer((HOST, PORT), STTHandler)
     log(f"Listening on http://{HOST}:{PORT}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        # Stop the Nemotron sherpa server (CUDA) when we exit.
+        if _nemotron_server is not None:
+            try:
+                _nemotron_server.terminate()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

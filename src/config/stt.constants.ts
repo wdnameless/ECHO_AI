@@ -1,8 +1,17 @@
 export const SPEECH_TO_TEXT_PROVIDERS = [
   {
     id: "handy-local-whisper",
-    name: "Handy Local STT (Local Whisper)",
-    curl: `curl -X POST "http://127.0.0.1:8000/v1/audio/transcriptions" \\
+    name: "Nemotron GPU ASR (Local Streaming)",
+    curl: `curl -X POST "http://127.0.0.1:9877/v1/asr/transcribe" \\
+      -H "Content-Type: audio/wav" \\
+      --data-binary {{AUDIO}}`,
+    responseContentPath: "text",
+    streaming: false,
+  },
+  {
+    id: "pluely-asr-nemotron",
+    name: "Nemotron 3.5 ASR (GPU 0ms)",
+    curl: `curl -X POST "http://127.0.0.1:9877/v1/audio/transcriptions" \\
       -H "Authorization: Bearer {{API_KEY}}" \\
       -F "file={{AUDIO}}" \\
       -F "model={{MODEL}}"`,

@@ -55,6 +55,24 @@ export async function fastTranslate(
     trimmed
   )}`;
 
+  // 1) Local pluely-asr proxy (most reliable: no WebView/network quirks).
+  try {
+    const local = await fetch(
+      `http://127.0.0.1:9877/translate?text=${encodeURIComponent(
+        trimmed
+      )}&tl=${tl}`
+    );
+    if (local.ok) {
+      const data = await local.json();
+      if (data?.translation) {
+        cacheSet(cacheKey, data.translation);
+        return data.translation;
+      }
+    }
+  } catch {
+    /* local service down — fall through to Google */
+  }
+
   try {
     // Try Tauri native fetch first, fallback to browser fetch
     let response: Response;
@@ -89,17 +107,54 @@ export async function fastTranslate(
       const result = translatedParts.join("").trim() || trimmed;
 
       // Store in cache (bounded)
-      if (translationCache.size >= MAX_CACHE_SIZE) {
-        const oldest = translationCache.keys().next().value;
-        if (oldest !== undefined) translationCache.delete(oldest);
-      }
-      translationCache.set(cacheKey, { text: result, ts: Date.now() });
+      cacheSet(cacheKey, result);
       return result;
+    }
+
+    // 2) MyMemory fallback before giving up.
+    const memory = await myMemoryTranslate(trimmed, tl);
+    if (memory) {
+      cacheSet(cacheKey, memory);
+      return memory;
     }
 
     return trimmed;
   } catch (error) {
     console.warn("[FastTranslator] Translation failed, returning original:", error);
+    // 2) MyMemory fallback before giving up.
+    const memory = await myMemoryTranslate(trimmed, tl);
+    if (memory) {
+      cacheSet(cacheKey, memory);
+      return memory;
+    }
     return trimmed;
+  }
+}
+
+function cacheSet(key: string, text: string) {
+  if (translationCache.size >= MAX_CACHE_SIZE) {
+    const oldest = translationCache.keys().next().value;
+    if (oldest !== undefined) translationCache.delete(oldest);
+  }
+  translationCache.set(key, { text, ts: Date.now() });
+}
+
+async function myMemoryTranslate(
+  text: string,
+  tl: "ru" | "en"
+): Promise<string | null> {
+  try {
+    const pair = tl === "ru" ? "en|ru" : "ru|en";
+    const resp = await fetch(
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
+        text.slice(0, 500)
+      )}&langpair=${pair}`
+    );
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const t = data?.responseData?.translatedText;
+    return typeof t === "string" && t.trim() ? t.trim() : null;
+  } catch {
+    return null;
   }
 }

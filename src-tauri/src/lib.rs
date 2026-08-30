@@ -84,6 +84,7 @@ pub fn run() {
             handy_server::handy_server_status_detailed,
             handy_server::start_handy_server,
             handy_server::speak_text,
+            handy_server::read_asr_port_file,
             capture::capture_to_base64,
             capture::start_screen_capture,
             capture::capture_selected_area,

@@ -20,10 +20,9 @@ import { TYPE_PROVIDER } from "@/types";
 
 const LOCAL_PROVIDER: TYPE_PROVIDER = {
   id: "handy-local-whisper",
-  curl: `curl -X POST "http://127.0.0.1:8000/v1/audio/transcriptions" \\
-      -H "Authorization: Bearer {{API_KEY}}" \\
-      -F "file={{AUDIO}}" \\
-      -F "model={{MODEL}}"`,
+  curl: `curl -X POST "http://127.0.0.1:9877/v1/asr/transcribe" \\
+      -H "Content-Type: audio/wav" \\
+      --data-binary {{AUDIO}}`,
   responseContentPath: "text",
   streaming: false,
 };

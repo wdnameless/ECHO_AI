@@ -415,6 +415,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       micSpeaking={props.micSpeaking}
                       micListening={props.micListening}
                       scrollAreaRef={scrollAreaRef}
+                      pipelineError={props.error}
                     />
                   </>
                 )}

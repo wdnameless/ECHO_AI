@@ -147,6 +147,8 @@ async fn run_vad_capture(
     let mut silence_chunks = 0;
     let mut speech_chunks = 0;
     let mut last_partial_samples = 0;
+    let mut frame_emitted_len = 0usize;
+    let mut frames_since_frame = 0usize;
     let max_samples = sr as usize * 30; // 30s safety cap per utterance
 
     while let Some(sample) = stream.next().await {
@@ -173,6 +175,9 @@ async fn run_vad_capture(
                     in_speech = true;
                     speech_chunks = 0;
                     last_partial_samples = 0;
+                    frame_emitted_len = 0;
+                    frames_since_frame = 0;
+                    frame_emitted_len = 0;
 
                     // Include pre-speech buffer for natural sound
                     speech_buffer.extend(pre_speech.drain(..));
@@ -183,6 +188,22 @@ async fn run_vad_capture(
                 speech_chunks += 1;
                 speech_buffer.extend_from_slice(&mono);
                 silence_chunks = 0; // Reset silence counter on any speech
+
+                // Live PCM frames for WS streaming: emit NEW audio since the
+                // last frame as base64(f32 LE @16kHz) every ~250ms. The
+                // frontend forwards these to pluely-asr /v1/asr/stream.
+                frames_since_frame += mono.len();
+                if frames_since_frame >= sr as usize / 4 {
+                    let new_slice = &speech_buffer[frame_emitted_len..];
+                    let resampled = resample_to_16k(new_slice, sr);
+                    let mut bytes = Vec::with_capacity(resampled.len() * 4);
+                    for f in &resampled {
+                        bytes.extend_from_slice(&f.to_le_bytes());
+                    }
+                    let _ = app.emit("speech-frame", B64.encode(&bytes));
+                    frame_emitted_len = speech_buffer.len();
+                    frames_since_frame = 0;
+                }
 
                 // Live partial streaming: emit a chunk of accumulated audio
                 // roughly every second so the frontend can transcribe it in
@@ -210,6 +231,8 @@ async fn run_vad_capture(
                     in_speech = false;
                     speech_chunks = 0;
                     last_partial_samples = 0;
+                    frame_emitted_len = 0;
+                    frames_since_frame = 0;
                 }
             } else {
                 // Silence detected
@@ -256,6 +279,8 @@ async fn run_vad_capture(
                         silence_chunks = 0;
                         speech_chunks = 0;
                         last_partial_samples = 0;
+                    frame_emitted_len = 0;
+                    frames_since_frame = 0;
                     }
                 } else {
                     // Not in speech yet - maintain rolling pre-speech buffer

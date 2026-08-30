@@ -3,6 +3,10 @@ import { UseSettingsReturn } from "@/types";
 import curl2Json, { ResultJSON } from "@bany/curl-to-json";
 import { KeyIcon, TrashIcon } from "lucide-react";
 import { useEffect, useState } from "react";
+import {
+  buildDynamicMessages,
+  deepVariableReplacer,
+} from "@/lib/functions/common.function";
 
 export const Providers = ({
   allAiProviders,
@@ -12,6 +16,10 @@ export const Providers = ({
 }: UseSettingsReturn) => {
   const [localSelectedProvider, setLocalSelectedProvider] =
     useState<ResultJSON | null>(null);
+  const [testState, setTestState] = useState<
+    | { status: "idle" | "testing" }
+    | { status: "ok" | "error"; message: string }
+  >({ status: "idle" });
 
   useEffect(() => {
     if (selectedAIProvider?.provider) {
@@ -225,6 +233,120 @@ export const Providers = ({
               </div>
             );
           })}
+      </div>
+
+      {/* Test the selected provider with a real request */}
+      <div className="pt-2 border-t border-border/40">
+        <Button
+          onClick={async () => {
+            setTestState({ status: "testing" });
+            try {
+              const provider = allAiProviders?.find(
+                (p) => p?.id === selectedAIProvider?.provider
+              );
+              if (!provider) throw new Error("Provider not selected");
+
+              const json = curl2Json(provider.curl);
+              const url = json?.url;
+              if (!url) throw new Error("Invalid provider URL");
+
+              // Resolve variables from the selected provider config.
+              const vars: Record<string, string> = {
+                ...(selectedAIProvider?.variables ?? {}),
+                TEXT: "Привет! Это тестовый запрос. Ответь одним коротким предложением.",
+                SYSTEM_PROMPT: "Ты — ассистент. Отвечай кратко.",
+              };
+              const modelVar = Object.keys(vars).find(
+                (k) => k.toLowerCase() === "model"
+              );
+              if (modelVar) vars[modelVar] = vars[modelVar] || "test";
+
+              // Build the body exactly like the real pipeline: dynamic
+              // messages ({{TEXT}}/{{IMAGE}} handled properly — empty image
+              // parts are REMOVED, not left as empty strings) + variable
+              // replacement for the rest.
+              let bodyObj: any = json?.data
+                ? JSON.parse(JSON.stringify(json.data))
+                : {};
+              const messagesKey = Object.keys(bodyObj).find((key) =>
+                ["messages", "contents", "conversation", "history"].includes(
+                  key
+                )
+              );
+              if (messagesKey && Array.isArray(bodyObj[messagesKey])) {
+                bodyObj[messagesKey] = buildDynamicMessages(
+                  bodyObj[messagesKey],
+                  [],
+                  vars.TEXT,
+                  []
+                );
+              }
+              bodyObj = deepVariableReplacer(bodyObj, vars);
+
+              // Belt-and-braces: strip any image field left empty.
+              if (bodyObj && typeof bodyObj === "object") {
+                for (const k of Object.keys(bodyObj)) {
+                  const v = bodyObj[k];
+                  if (
+                    /image/i.test(k) &&
+                    (v === "" ||
+                      v === null ||
+                      (Array.isArray(v) && v.length === 0))
+                  ) {
+                    delete bodyObj[k];
+                  }
+                }
+              }
+              const finalBody = JSON.stringify(bodyObj);
+
+              const started = Date.now();
+              const res = await fetch(url, {
+                method: json?.method || "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  ...(json?.header ?? {}),
+                },
+                body: finalBody,
+              });
+              const elapsed = Date.now() - started;
+              const text = await res.text();
+              if (!res.ok) {
+                setTestState({
+                  status: "error",
+                  message: `HTTP ${res.status}: ${text.slice(0, 200)}`,
+                });
+                return;
+              }
+              setTestState({
+                status: "ok",
+                message: `Ответ за ${elapsed} мс. ${text.slice(0, 200)}`,
+              });
+            } catch (e) {
+              setTestState({
+                status: "error",
+                message:
+                  e instanceof Error ? e.message : "Unknown test error",
+              });
+            }
+          }}
+          disabled={testState.status === "testing"}
+          className="w-full"
+          variant={testState.status === "ok" ? "default" : "outline"}
+        >
+          {testState.status === "testing"
+            ? "Тестирую…"
+            : "🧪 Тест модели (проверить запрос)"}
+        </Button>
+        {testState.status === "ok" && (
+          <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1 break-words">
+            ✓ {testState.message}
+          </p>
+        )}
+        {testState.status === "error" && (
+          <p className="text-xs text-red-500 mt-1 break-words">
+            ✗ {testState.message}
+          </p>
+        )}
       </div>
     </div>
   );

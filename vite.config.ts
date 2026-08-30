@@ -17,6 +17,30 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  build: {
+    rollupOptions: {
+      output: {
+        // Split heavy editor/markdown deps out of the startup bundle:
+        // katex, mermaid, cytoscape, highlight are only needed inside
+        // rendered AI answers / dashboard pages, not the main bar.
+        manualChunks(id) {
+          if (id.includes("node_modules")) {
+            if (id.includes("katex")) return "vendor-katex";
+            if (id.includes("mermaid")) return "vendor-mermaid";
+            if (id.includes("cytoscape")) return "vendor-cytoscape";
+            if (
+              id.includes("highlight.js") ||
+              id.includes("lowlight") ||
+              id.includes("shiki")
+            ) {
+              return "vendor-highlight";
+            }
+            if (id.includes("onnxruntime")) return "vendor-onnx";
+          }
+        },
+      },
+    },
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

@@ -52,18 +52,13 @@ const AutoSpeechVADInternal = ({
           return;
         }
 
-        const providerConfig = allSttProviders.find(
+        let providerConfig = allSttProviders.find(
           (p) => p.id === selectedSttProvider.provider
         );
 
         if (!providerConfig && !usePluelyAPI) {
-          console.warn("Selected speech provider configuration not found");
-          setState((prev: any) => ({
-            ...prev,
-            error:
-              "Speech provider configuration not found. Please check your settings.",
-          }));
-          return;
+          // Automatic seamless fallback to default local Nemotron GPU provider
+          providerConfig = allSttProviders[0];
         }
 
         setIsTranscribing(true);

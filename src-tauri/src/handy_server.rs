@@ -6,13 +6,49 @@ use std::time::Duration;
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+use windows::Win32::System::JobObjects::{CreateJobObjectW, SetInformationJobObject, AssignProcessToJobObject, JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
+#[cfg(target_os = "windows")]
+struct SendHandle(#[allow(dead_code)] HANDLE);
+#[cfg(target_os = "windows")]
+unsafe impl Send for SendHandle {}
+#[cfg(target_os = "windows")]
+unsafe impl Sync for SendHandle {}
+
+#[cfg(target_os = "windows")]
+static JOB_OBJECT: Mutex<Option<SendHandle>> = Mutex::new(None);
 
 pub static STT_SERVER: Mutex<Option<Child>> = Mutex::new(None);
 
 const PORT: &str = "127.0.0.1:8000";
+const ASR_PORT: &str = "127.0.0.1:9877";
 
 fn is_running() -> bool {
     TcpStream::connect_timeout(&PORT.parse().unwrap(), Duration::from_millis(400)).is_ok()
+        || TcpStream::connect_timeout(&ASR_PORT.parse().unwrap(), Duration::from_millis(400)).is_ok()
+}
+
+/// Locate a usable pluely-asr binary.
+fn find_pluely_asr() -> Option<String> {
+    let mut candidates = vec![
+        r"D:\WORK\Pluely fork\pluely-asr\target\release\pluely-asr.exe".to_string(),
+        r"D:\WORK\Pluely\src-tauri\resources\pluely-asr.exe".to_string(),
+        r"D:\WORK\Pluely\resources\pluely-asr.exe".to_string(),
+    ];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(format!("{}/resources/pluely-asr.exe", dir.display()));
+            candidates.push(format!("{}/pluely-asr.exe", dir.display()));
+        }
+    }
+    candidates
+        .into_iter()
+        .find(|p| std::path::Path::new(p).is_file())
 }
 
 /// Locate a usable python interpreter.
@@ -56,9 +92,194 @@ fn find_script() -> Option<String> {
         .find(|p| std::path::Path::new(p).is_file())
 }
 
+/// Locate the Nemotron GGUF model file.
+fn find_model_path() -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(format!("{}/resources/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf", dir.display()));
+            candidates.push(format!("{}/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf", dir.display()));
+            candidates.push(format!("{}/models/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf", dir.display()));
+        }
+    }
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    candidates.push(format!("{}/resources/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf", manifest));
+    candidates.push(r"D:\WORK\Pluely fork\models\nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf".to_string());
+    if let Ok(user_profile) = std::env::var("USERPROFILE") {
+        candidates.push(format!(
+            r"{}\.cache\huggingface\hub\models--handy-computer--nemotron-3.5-asr-streaming-0.6b-gguf\snapshots\6d44e540bc31b0de1dbe174a3cea87f53a7f22fb\nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf",
+            user_profile
+        ));
+    }
+    if let Some(found) = candidates.into_iter().find(|p| std::path::Path::new(p).is_file()) {
+        return Some(found);
+    }
+    // Fallback: any GGUF next to the app (lets the user swap models freely).
+    let mut scan_dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            scan_dirs.push(dir.to_path_buf());
+            scan_dirs.push(dir.join("resources"));
+            scan_dirs.push(dir.join("models"));
+        }
+    }
+    for dir in scan_dirs {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension()
+                    .map_or(false, |e| e.eq_ignore_ascii_case("gguf"))
+                {
+                    return Some(p.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn assign_job_object(child: &Child) {
+    unsafe {
+        let child_handle = match OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, child.id()) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("[tauri] failed to OpenProcess for job object: {:?}", e);
+                return;
+            }
+        };
+
+        let job_handle = match CreateJobObjectW(None, None) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("[tauri] failed to CreateJobObjectW: {:?}", e);
+                let _ = CloseHandle(child_handle);
+                return;
+            }
+        };
+
+        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+        if let Err(e) = SetInformationJobObject(
+            job_handle,
+            JobObjectExtendedLimitInformation,
+            &info as *const _ as *const _,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        ) {
+            eprintln!("[tauri] failed to SetInformationJobObject: {:?}", e);
+            let _ = CloseHandle(job_handle);
+            let _ = CloseHandle(child_handle);
+            return;
+        }
+
+        if let Err(e) = AssignProcessToJobObject(job_handle, child_handle) {
+            eprintln!("[tauri] failed to AssignProcessToJobObject: {:?}", e);
+            let _ = CloseHandle(job_handle);
+            let _ = CloseHandle(child_handle);
+            return;
+        }
+
+        let _ = CloseHandle(child_handle);
+
+        if let Ok(mut guard) = JOB_OBJECT.lock() {
+            *guard = Some(SendHandle(job_handle));
+        }
+        eprintln!("[tauri] pluely-asr assigned to Windows Job Object (kill on close enabled)");
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn assign_job_object(_child: &Child) {}
+
+/// Spawn the native pluely-asr sidecar. Returns true on success.
+fn spawn_pluely_asr() -> bool {
+    let Some(asr_bin) = find_pluely_asr() else {
+        return false;
+    };
+    let model_path = find_model_path().unwrap_or_else(|| {
+        r"D:\WORK\Pluely fork\models\nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf".to_string()
+    });
+
+    #[cfg(target_os = "windows")]
+    let spawn = {
+        let mut cmd = Command::new(&asr_bin);
+        cmd.arg("--model")
+            .arg(&model_path)
+            .arg("--port")
+            .arg("9877")
+            .arg("--bind")
+            .arg("127.0.0.1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x08000000); // CREATE_NO_WINDOW
+        cmd.spawn()
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    let spawn = Command::new(&asr_bin)
+        .arg("--model")
+        .arg(&model_path)
+        .arg("--port")
+        .arg("9877")
+        .arg("--bind")
+        .arg("127.0.0.1")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+
+    match spawn {
+        Ok(child) => {
+            eprintln!(
+                "[tauri] Pluely ASR native GPU server started (pid {})",
+                child.id()
+            );
+            assign_job_object(&child);
+            if let Ok(mut guard) = STT_SERVER.lock() {
+                *guard = Some(child);
+            }
+            true
+        }
+        Err(e) => {
+            eprintln!("[tauri] failed to spawn pluely-asr: {}", e);
+            false
+        }
+    }
+}
+
+static WATCHDOG_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Background watchdog: if the sidecar dies (crash, OOM, driver reset),
+/// bring it back automatically so recognition never silently disappears.
+fn start_sidecar_watchdog() {
+    if WATCHDOG_STARTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    std::thread::spawn(|| {
+        loop {
+            std::thread::sleep(Duration::from_secs(25));
+            if !is_running() {
+                eprintln!("[tauri] watchdog: ASR service is down, restarting...");
+                if spawn_pluely_asr() {
+                    // Give the model a moment to load before next check.
+                    std::thread::sleep(Duration::from_secs(8));
+                }
+            }
+        }
+    });
+}
+
 /// Start the local Handy STT server if it isn't already running.
 pub fn ensure_server_running() {
     if is_running() {
+        start_sidecar_watchdog();
+        return;
+    }
+
+    // Try starting the native pluely-asr GPU microservice first if available
+    if spawn_pluely_asr() {
+        start_sidecar_watchdog();
         return;
     }
 
@@ -144,6 +365,33 @@ pub fn handy_server_status_detailed() -> serde_json::Value {
 pub fn start_handy_server() -> bool {
     ensure_server_running();
     is_running()
+}
+
+/// Read the port the sidecar actually bound to (written next to its binary).
+/// Returns None if the file is missing or the sidecar never started.
+#[tauri::command]
+pub fn read_asr_port_file() -> Option<String> {
+    let mut paths = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            paths.push(dir.join("asr-port"));
+        }
+    }
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    paths.push(
+        std::path::Path::new(&manifest)
+            .join("../../pluely-asr/target/release/asr-port")
+            .to_path_buf(),
+    );
+    for p in paths {
+        if let Ok(content) = std::fs::read_to_string(&p) {
+            let trimmed = content.trim().to_string();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+    None
 }
 
 /// Speak text aloud using Windows SAPI (fallback for WebView2 which may not

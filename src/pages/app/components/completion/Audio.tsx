@@ -1,5 +1,6 @@
 import { InfoIcon, MicIcon } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger, Button } from "@/components";
+import { cn } from "@/lib/utils";
 import { AutoSpeechVAD } from "./AutoSpeechVad";
 import { UseCompletionReturn } from "@/types";
 import { useApp } from "@/contexts";
@@ -11,7 +12,8 @@ export const Audio = ({
   setEnableVAD,
   submit,
   setState,
-}: UseCompletionReturn) => {
+  suppressAutoVAD,
+}: UseCompletionReturn & { suppressAutoVAD?: boolean }) => {
   const { selectedSttProvider, pluelyApiEnabled, selectedAudioDevices } =
     useApp();
 
@@ -20,7 +22,9 @@ export const Audio = ({
   return (
     <Popover open={micOpen} onOpenChange={setMicOpen}>
       <PopoverTrigger asChild>
-        {(pluelyApiEnabled || speechProviderStatus) && enableVAD ? (
+        {(pluelyApiEnabled || speechProviderStatus) &&
+        enableVAD &&
+        !suppressAutoVAD ? (
           <AutoSpeechVAD
             key={selectedAudioDevices.input.id}
             submit={submit}
@@ -34,7 +38,10 @@ export const Audio = ({
             onClick={() => {
               setEnableVAD(!enableVAD);
             }}
-            className="cursor-pointer"
+            className={cn(
+              "cursor-pointer",
+              suppressAutoVAD && "hidden"
+            )}
             title="Toggle voice input"
           >
             <MicIcon className="h-4 w-4" />

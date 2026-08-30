@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { MicVAD } from "@ricky0123/vad-web";
 import { floatArrayToWav } from "@/lib/utils";
+import { StreamingLinearResampler, float32ToLittleEndian } from "@/lib/realtime-audio";
 
 export interface UseMicCaptureOptions {
   microphoneDeviceId?: string;
@@ -9,6 +10,13 @@ export interface UseMicCaptureOptions {
   onMicSegment: (audio: Blob) => void;
   onMicSpeechStart?: () => void;
   onInterimTranscript?: (text: string) => void;
+  onMicPartial?: (audio: Blob) => void;
+  /**
+   * Raw 16 kHz mono f32-LE frame (matches pluely-asr /v1/asr/stream
+   * binary protocol) emitted while speech is ongoing. Used for WS
+   * streaming; the 1s WAV batch path stays as the fallback.
+   */
+  onMicFrame?: (pcm: ArrayBuffer) => void;
 }
 
 interface MicVADBridgeProps {
@@ -23,6 +31,8 @@ interface MicVADBridgeProps {
   onMicSegment: (audio: Blob) => void;
   onMicSpeechStart?: () => void;
   onInterimTranscript?: (text: string) => void;
+  onMicPartial?: (audio: Blob) => void;
+  onMicFrame?: (pcm: ArrayBuffer) => void;
 }
 
 // Bridge component that owns the VAD instance. It is mounted only once the
@@ -36,12 +46,16 @@ function MicVADBridge({
   onMicSegment,
   onMicSpeechStart,
   onInterimTranscript,
+  onMicPartial,
+  onMicFrame,
 }: MicVADBridgeProps) {
   const onMicSegmentRef = useRef(onMicSegment);
   const onMicSpeechStartRef = useRef(onMicSpeechStart);
   const onStateChangeRef = useRef(onStateChange);
   const onApiReadyRef = useRef(onApiReady);
   const onInterimTranscriptRef = useRef(onInterimTranscript);
+  const onMicPartialRef = useRef(onMicPartial);
+  const onMicFrameRef = useRef(onMicFrame);
 
   useEffect(() => {
     onMicSegmentRef.current = onMicSegment;
@@ -49,16 +63,28 @@ function MicVADBridge({
     onStateChangeRef.current = onStateChange;
     onApiReadyRef.current = onApiReady;
     onInterimTranscriptRef.current = onInterimTranscript;
-  }, [onMicSegment, onMicSpeechStart, onStateChange, onApiReady, onInterimTranscript]);
+    onMicPartialRef.current = onMicPartial;
+    onMicFrameRef.current = onMicFrame;
+  }, [onMicSegment, onMicSpeechStart, onStateChange, onApiReady, onInterimTranscript, onMicPartial, onMicFrame]);
 
-  const vadRef = useRef<MicVAD | null>(null);
-  const listeningRef = useRef(false);
-  const lastSpeakingRef = useRef(false);
+    const vadRef = useRef<MicVAD | null>(null);
+    const listeningRef = useRef(false);
+    const lastSpeakingRef = useRef(false);
+
+    // Live mic partials: tap the raw stream (independent of VAD) and emit a
+    // ~1s WAV while speech is ongoing, so the user's own words appear in the
+    // feed in real time instead of only after the segment completes.
+    let tapCtx: AudioContext | null = null;
+    let speakingNow = false;
+    let partialBuf: Float32Array[] = [];
+    let partialSamples = 0;
+    const cleanupTap: (() => void)[] = [];
 
   useEffect(() => {
     let cancelled = false;
     let vad: MicVAD | null = null;
     let recognition: any = null;
+    let tapResampler: StreamingLinearResampler | null = null;
 
     // Web Speech API for real-time live word-by-word streaming
     const SpeechRecognition =
@@ -114,6 +140,7 @@ function MicVADBridge({
         // Only push React state when the speaking flag actually flips -
         // avoids a full re-render on every audio frame (~30-100 fps).
         const speaking = probs.isSpeech > 0.6;
+        speakingNow = speaking;
         if (speaking !== lastSpeakingRef.current) {
           lastSpeakingRef.current = speaking;
           onStateChangeRef.current({
@@ -147,6 +174,9 @@ function MicVADBridge({
         vadRef.current = v;
         onApiReadyRef.current({
           start: () => {
+            tapResampler?.reset();
+            partialBuf = [];
+            partialSamples = 0;
             v.start();
             listeningRef.current = true;
             onStateChangeRef.current({
@@ -158,6 +188,9 @@ function MicVADBridge({
           },
           stop: () => {
             v.pause();
+            tapResampler?.reset();
+            partialBuf = [];
+            partialSamples = 0;
             listeningRef.current = false;
             onStateChangeRef.current({
               listening: false,
@@ -184,11 +217,89 @@ function MicVADBridge({
         });
       });
 
+    // Raw audio tap for live partials (runs alongside the VAD).
+    try {
+      const AudioCtx =
+        (window as any).AudioContext || (window as any).webkitAudioContext;
+      const ctx: AudioContext = new AudioCtx();
+      tapCtx = ctx;
+      const source = ctx.createMediaStreamSource(stream);
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      const sourceRate = ctx.sampleRate;
+      const resampler = new StreamingLinearResampler(sourceRate);
+      tapResampler = resampler;
+
+      processor.onaudioprocess = (e: any) => {
+        const input: Float32Array = e.inputBuffer.getChannelData(0);
+        const out = resampler.process(input);
+        if (out.length === 0) return;
+
+        if (!speakingNow) {
+          if (partialBuf.length) {
+            partialBuf = [];
+            partialSamples = 0;
+          }
+          return;
+        }
+
+        partialBuf.push(out);
+        partialSamples += out.length;
+
+        if (onMicFrameRef.current) {
+          // WS STREAMING PATH: forward raw PCM as f32-LE 16kHz (sidecar
+          // binary protocol). Accumulate 1s locally as before but also feed
+          // every chunk so the server streams partials in real time.
+          const bytes = float32ToLittleEndian(out);
+          try {
+            onMicFrameRef.current(bytes);
+          } catch {}
+        }
+
+        // ~1s of accumulated speech → emit a live partial WAV (batch
+        // fallback path when the mic WS is not open).
+        if (partialSamples >= 16000) {
+          const merged = new Float32Array(partialSamples);
+          let off = 0;
+          for (const chunk of partialBuf) {
+            merged.set(chunk, off);
+            off += chunk.length;
+          }
+          partialBuf = [];
+          partialSamples = 0;
+          try {
+            onMicPartialRef.current?.(floatArrayToWav(merged, 16000, "wav"));
+          } catch {}
+        }
+      };
+
+      source.connect(processor);
+      // ScriptProcessor only runs when connected to a destination; mute node.
+      const mute = ctx.createGain();
+      mute.gain.value = 0;
+      processor.connect(mute);
+      mute.connect(ctx.destination);
+
+      cleanupTap.push(() => {
+        resampler.reset();
+        tapResampler = null;
+        try {
+          processor.disconnect();
+          source.disconnect();
+          mute.disconnect();
+        } catch {}
+      });
+    } catch {}
+
     return () => {
       cancelled = true;
       vad?.destroy();
       vadRef.current = null;
       listeningRef.current = false;
+      cleanupTap.forEach((fn) => fn());
+      if (tapCtx) {
+        tapCtx.close().catch(() => {});
+        tapCtx = null;
+      }
     };
   }, [stream]);
 
@@ -201,6 +312,8 @@ export function useMicCapture({
   onMicSegment,
   onMicSpeechStart,
   onInterimTranscript,
+  onMicPartial,
+  onMicFrame,
 }: UseMicCaptureOptions) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [streamKey, setStreamKey] = useState(0);
@@ -328,6 +441,8 @@ export function useMicCapture({
       onMicSegment={onMicSegment}
       onMicSpeechStart={onMicSpeechStart}
       onInterimTranscript={onInterimTranscript}
+      onMicPartial={onMicPartial}
+      onMicFrame={onMicFrame}
     />
   ) : null;
 

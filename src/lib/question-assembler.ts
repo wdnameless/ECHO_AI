@@ -43,8 +43,12 @@ interface PendingState {
   lastTs: number;
 }
 
+/** How long after an emitted question a short tail can still be its continuation. */
+const FOLLOWUP_MERGE_MS = 20_000;
+
 export class QuestionAssembler {
   private pending: PendingState | null = null;
+  private lastEmitted: { text: string; ts: number } | null = null;
   private readonly gapMs: number;
   private readonly maxWindowMs: number;
   private readonly immediateOnQuestionMark: boolean;
@@ -52,7 +56,7 @@ export class QuestionAssembler {
 
   constructor(opts: QuestionAssemblerOptions = {}) {
     this.gapMs = opts.gapMs ?? 1500;
-    this.maxWindowMs = opts.maxWindowMs ?? 4000;
+    this.maxWindowMs = opts.maxWindowMs ?? 12000;
     this.immediateOnQuestionMark = opts.immediateOnQuestionMark ?? true;
     this.similarityThreshold = opts.duplicateSimilarityThreshold ?? 0.8;
   }
@@ -60,6 +64,37 @@ export class QuestionAssembler {
   get current(): { source: string; text: string } | null {
     if (!this.pending) return null;
     return { source: this.pending.source, text: this.pending.segments.join(" ") };
+  }
+
+  /**
+   * A fragment is a self-contained question when it clearly stands on its
+   * own: ends with "?", opens with a question word, or is long. Anything
+   * else ("то есть", "а подробнее", "и про командную работу") that arrives
+   * shortly after an answered question is treated as its continuation and
+   * merged with the parent question so the AI never answers a meaningless
+   * tail without context.
+   */
+  private isFollowUpTail(text: string): boolean {
+    if (!this.lastEmitted) return false;
+    if (Date.now() - this.lastEmitted.ts > FOLLOWUP_MERGE_MS) return false;
+    if (text.endsWith("?")) return false;
+    if (text.length >= 90) return false;
+    return !/^(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|расскажи|объясни|опиши|расскажи|what|how|why|where|when|who|which|can|could|would|tell|describe|explain|do|does|did|have|has)\b/i.test(
+      text
+    );
+  }
+
+  private startPending(
+    segment: QuestionFragment,
+    seedText?: string
+  ): PendingState {
+    this.pending = {
+      source: segment.source,
+      segments: seedText ? [seedText, segment.text.trim()] : [segment.text.trim()],
+      firstTs: segment.timestamp,
+      lastTs: segment.timestamp,
+    };
+    return this.pending;
   }
 
   /** Feeds a new (final) segment and decides what to do with it. */
@@ -71,33 +106,30 @@ export class QuestionAssembler {
 
     const p = this.pending;
     if (!p || p.source !== segment.source) {
-      // New utterance (or new speaker): start fresh.
-      this.pending = {
-        source: segment.source,
-        segments: [text],
-        firstTs: segment.timestamp,
-        lastTs: segment.timestamp,
-      };
+      // New utterance (or new speaker). A short non-question tail shortly
+      // after an answered question is merged with its parent question.
+      const seed =
+        !p && this.isFollowUpTail(text) ? this.lastEmitted!.text : undefined;
+      this.startPending(segment, seed);
+      const question = this.pending!.segments.join(" ");
       if (this.immediateOnQuestionMark && text.endsWith("?")) {
         return this.emit();
       }
-      return { kind: "pending", question: text };
+      return { kind: "pending", question };
     }
 
     // Same source, continuing the same utterance?
     const gap = segment.timestamp - p.lastTs;
     if (gap > this.gapMs) {
-      // Too long a pause - the previous question was answered already.
-      this.pending = {
-        source: segment.source,
-        segments: [text],
-        firstTs: segment.timestamp,
-        lastTs: segment.timestamp,
-      };
+      // Long pause. If the pending text was already emitted and answered,
+      // this fragment may be a follow-up tail - merge it with the parent.
+      const seed = this.isFollowUpTail(text) ? this.lastEmitted!.text : undefined;
+      this.startPending(segment, seed);
+      const question = this.pending!.segments.join(" ");
       if (this.immediateOnQuestionMark && text.endsWith("?")) {
         return this.emit();
       }
-      return { kind: "pending", question: text };
+      return { kind: "pending", question };
     }
 
     // Check for STT duplicates (same fragment recognized twice).
@@ -132,6 +164,7 @@ export class QuestionAssembler {
 
   reset(): void {
     this.pending = null;
+    this.lastEmitted = null;
   }
 
   private emit(): PushResult {
@@ -142,6 +175,7 @@ export class QuestionAssembler {
     if (!question) {
       return { kind: "discarded", reason: "empty" };
     }
+    this.lastEmitted = { text: question, ts: Date.now() };
     return { kind: "emitted", question, segments };
   }
 }

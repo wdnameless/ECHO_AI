@@ -169,7 +169,7 @@ export const LANGUAGES: LanguageOption[] = [
     id: "romanian",
     name: "Romanian",
     flag: "🇷🇴",
-    prompt: "Respond in Romanian (Română).",
+    prompt: "Respond in Romanian.",
   },
   {
     id: "ukrainian",
