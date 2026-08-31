@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { MicVAD } from "@ricky0123/vad-web";
+import * as ort from "onnxruntime-web";
+
+// onnxruntime resolves its .wasm binaries relative to the bundler chunk
+// (/assets/), where they are not copied - the fetch returns index.html and
+// WebAssembly.instantiate() dies with 'expected magic word ... 3c 21'.
+// Serve them from the app root (public/ -> dist/) and pin to one thread:
+// WebView2 may lack cross-origin isolation for SharedArrayBuffer.
+ort.env.wasm.wasmPaths = "/";
+ort.env.wasm.numThreads = 1;
 import { floatArrayToWav } from "@/lib/utils";
 import { StreamingLinearResampler, float32ToLittleEndian } from "@/lib/realtime-audio";
 
