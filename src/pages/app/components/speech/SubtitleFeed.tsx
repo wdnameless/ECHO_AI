@@ -71,6 +71,36 @@ const overlapRatio = (a: string[], b: string[]): number => {
   return hits / a.length;
 };
 
+// Hybrid answer helper: extracts starter phrase (up to 120 chars, cut at .!? or newline)
+// and returns { starter, body }. If sentence is incomplete (e.g. streaming before first terminator),
+// starter is null and full text is returned as body.
+function splitHybridAnswer(text: string): { starter: string | null; body: string } {
+  if (!text) return { starter: null, body: "" };
+  const trimmed = text.trim();
+  if (!trimmed) return { starter: null, body: "" };
+
+  // Search for the first sentence terminator: ., !, ?, or newline
+  const match = trimmed.match(/[\r\n]|[.!?](?=\s|$)/);
+  if (!match || match.index === undefined) {
+    // No complete sentence yet
+    return { starter: null, body: trimmed };
+  }
+
+  const endIdx = match[0] === "\n" || match[0] === "\r" ? match.index : match.index + match[0].length;
+  const potentialStarter = trimmed.slice(0, endIdx).trim();
+
+  // Check length constraint (up to 120 chars) and non-empty
+  if (potentialStarter.length > 0 && potentialStarter.length <= 120) {
+    const remainingBody = trimmed.slice(endIdx).trim();
+    return {
+      starter: potentialStarter,
+      body: remainingBody,
+    };
+  }
+
+  return { starter: null, body: trimmed };
+}
+
 interface SubtitleFeedProps {
   conversation: ChatConversation;
   liveSegments: LiveSegment[];
@@ -843,47 +873,76 @@ export const SubtitleFeed = ({
                   </div>
                 </div>
 
-                <div
-                  className={cn(
-                    "grid gap-x-2",
-                    translationsOn ? "grid-cols-[1fr_1fr]" : "grid-cols-1"
-                  )}
-                >
-                  <div
-                    className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
-                    style={{
-                      wordBreak: "break-word",
-                      overflowWrap: "anywhere",
-                      whiteSpace: "pre-wrap",
-                    }}
-                  >
-                    {formatSpokenAnswer(e.text).map((p, i) => (
-                      <p key={i} className="leading-relaxed">
-                        {e.streaming ? p : <HoverTranslate text={p} />}
-                      </p>
-                    ))}
-                  </div>
-                  {translationsOn && (
-                    <div className="min-w-0 flex items-start border-l border-border/30 pl-2">
-                      {e.streaming ? (
-                        <Loader2 className="w-3 h-3 animate-spin text-violet-400/70 mt-1" />
-                      ) : translation === undefined ? (
-                        <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/50 mt-1" />
-                      ) : (
-                        <p
-                          className="text-[0.8em] leading-relaxed text-violet-700/90 dark:text-violet-300/90"
+                {(() => {
+                  const { starter, body } = splitHybridAnswer(e.text);
+                  return (
+                    <div className="space-y-2">
+                      {starter && (
+                        <div className="rounded-md bg-violet-500/10 border border-violet-500/30 px-2.5 py-1.5 shadow-sm">
+                          <div className="text-[0.62em] font-semibold text-violet-400 uppercase tracking-wider mb-0.5">
+                            Главная мысль
+                          </div>
+                          <div
+                            className="text-[0.98em] font-medium leading-snug text-foreground"
+                            style={{
+                              wordBreak: "break-word",
+                              overflowWrap: "anywhere",
+                            }}
+                          >
+                            {e.streaming ? starter : <HoverTranslate text={starter} />}
+                          </div>
+                        </div>
+                      )}
+                      <div
+                        className={cn(
+                          "grid gap-x-2",
+                          translationsOn ? "grid-cols-[1fr_1fr]" : "grid-cols-1"
+                        )}
+                      >
+                        <div
+                          className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
                           style={{
                             wordBreak: "break-word",
                             overflowWrap: "anywhere",
                             whiteSpace: "pre-wrap",
                           }}
                         >
-                          {translation}
-                        </p>
-                      )}
+                          {body
+                            ? formatSpokenAnswer(body).map((p, i) => (
+                                <p key={i} className="leading-relaxed">
+                                  {e.streaming ? p : <HoverTranslate text={p} />}
+                                </p>
+                              ))
+                            : !starter && (
+                                <p className="leading-relaxed">
+                                  {e.streaming ? e.text : <HoverTranslate text={e.text} />}
+                                </p>
+                              )}
+                        </div>
+                        {translationsOn && (
+                          <div className="min-w-0 flex items-start border-l border-border/30 pl-2">
+                            {e.streaming ? (
+                              <Loader2 className="w-3 h-3 animate-spin text-violet-400/70 mt-1" />
+                            ) : translation === undefined ? (
+                              <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/50 mt-1" />
+                            ) : (
+                              <p
+                                className="text-[0.8em] leading-relaxed text-violet-700/90 dark:text-violet-300/90"
+                                style={{
+                                  wordBreak: "break-word",
+                                  overflowWrap: "anywhere",
+                                  whiteSpace: "pre-wrap",
+                                }}
+                              >
+                                {translation}
+                              </p>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  )}
-                </div>
+                  );
+                })()}
               </div>
             );
           }

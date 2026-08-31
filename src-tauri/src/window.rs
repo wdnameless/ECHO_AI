@@ -2,6 +2,33 @@
 use tauri::LogicalPosition;
 use tauri::{App, AppHandle, Emitter, Manager, Runtime, WebviewWindow, WebviewWindowBuilder};
 
+#[cfg(target_os = "windows")]
+pub fn apply_stealth_to_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), Box<dyn std::error::Error>> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE,
+        WDA_EXCLUDEFROMCAPTURE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    };
+
+    if let Ok(hwnd_ptr) = window.hwnd() {
+        let hwnd = HWND(hwnd_ptr.0 as *mut _);
+        unsafe {
+            // (1) WS_EX_TOOLWINDOW (hide from Alt-Tab) & (2) WS_EX_NOACTIVATE (never steal focus on click)
+            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let new_ex_style = ex_style | (WS_EX_TOOLWINDOW.0 as isize) | (WS_EX_NOACTIVATE.0 as isize);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex_style);
+
+            // (3) SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)
+            let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn apply_stealth_to_window<R: Runtime>(_window: &WebviewWindow<R>) -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
 // The offset from the top of the screen to the window
 const TOP_OFFSET: i32 = 54;
 
@@ -19,11 +46,10 @@ pub fn setup_main_window(app: &mut App) -> Result<(), Box<dyn std::error::Error>
 
     position_window_top_center(&window, TOP_OFFSET)?;
 
-    // Set window as non-focusable on Windows
-    // #[cfg(target_os = "windows")]
-    // {
-    //     let _ = window.set_focusable(false);
-    // }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = apply_stealth_to_window(&window);
+    }
 
     Ok(())
 }
@@ -262,6 +288,10 @@ pub fn create_dashboard_window<R: Runtime>(
     // Set up close event handler - hide window instead of destroying it
     setup_dashboard_close_handler(&window);
 
+    #[cfg(target_os = "windows")]
+    {
+        let _ = apply_stealth_to_window(&window);
+    }
     Ok(window)
 }
 
@@ -279,6 +309,7 @@ fn setup_dashboard_close_handler<R: Runtime>(window: &WebviewWindow<R>) {
         }
     });
 }
+
 
 /// Shows the dashboard window and brings it to focus
 pub fn show_dashboard_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {

@@ -27,6 +27,14 @@ import {
   savePromptProfiles,
   setActiveProfileId,
 } from "@/lib/storage/prompt-profiles";
+import {
+  applyJobProfileToStorage,
+  getActiveJobProfileId,
+  getJobProfiles,
+  JobProfile,
+  saveJobProfiles,
+  setActiveJobProfileId,
+} from "@/lib/storage/job-profiles";
 import curl2Json from "@bany/curl-to-json";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -157,6 +165,79 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
     }
   }, []);
+
+  // Job profiles (Resume / Vacancy / Context presets)
+  const [jobProfiles, setJobProfiles] = useState<JobProfile[]>(() =>
+    getJobProfiles()
+  );
+  const [activeJobProfileId, setActiveJobProfileIdState] = useState<string>(() =>
+    getActiveJobProfileId()
+  );
+
+  const applyJobProfile = useCallback((profileId: string) => {
+    const profiles = getJobProfiles();
+    const profile = profiles.find((p) => p.id === profileId);
+    if (!profile) return;
+    setActiveJobProfileIdState(profileId);
+    setActiveJobProfileId(profileId);
+    applyJobProfileToStorage(profile);
+    setJobProfiles(getJobProfiles());
+  }, []);
+
+  const selectJobProfile = useCallback(
+    (profileId: string) => {
+      applyJobProfile(profileId);
+    },
+    [applyJobProfile]
+  );
+
+  const updateJobProfile = useCallback(
+    (profileId: string, updates: Partial<JobProfile>) => {
+      const profiles = getJobProfiles();
+      const idx = profiles.findIndex((p) => p.id === profileId);
+      if (idx === -1) return;
+      const updated = { ...profiles[idx], ...updates };
+      profiles[idx] = updated;
+      saveJobProfiles(profiles);
+      setJobProfiles(profiles);
+      if (profileId === getActiveJobProfileId()) {
+        applyJobProfileToStorage(updated);
+      }
+    },
+    []
+  );
+
+  const createJobProfile = useCallback(
+    (profile: Omit<JobProfile, "id">): JobProfile => {
+      const newProfile: JobProfile = {
+        ...profile,
+        id: `job-profile-${Date.now().toString(36)}`,
+      };
+      const profiles = [...getJobProfiles(), newProfile];
+      saveJobProfiles(profiles);
+      setJobProfiles(profiles);
+      return newProfile;
+    },
+    []
+  );
+
+  const deleteJobProfile = useCallback((profileId: string) => {
+    const profiles = getJobProfiles().filter(
+      (p) => p.id !== profileId && !p.isBuiltin
+    );
+    saveJobProfiles(profiles);
+    setJobProfiles(profiles);
+    if (profileId === getActiveJobProfileId()) {
+      const fallback = profiles.find((p) => p.isBuiltin) || profiles[0];
+      if (fallback) {
+        setActiveJobProfileIdState(fallback.id);
+        setActiveJobProfileId(fallback.id);
+        applyJobProfileToStorage(fallback);
+      }
+    }
+  }, []);
+
+  const activeJobProfile = jobProfiles.find((p) => p.id === activeJobProfileId) || null;
 
   const [selectedAudioDevices, setSelectedAudioDevices] = useState<{
     input: { id: string; name: string };
@@ -808,6 +889,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     updatePromptProfile,
     createPromptProfile,
     deletePromptProfile,
+    jobProfiles,
+    activeJobProfileId,
+    activeJobProfile,
+    selectJobProfile,
+    updateJobProfile,
+    createJobProfile,
+    deleteJobProfile,
+    applyJobProfile,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

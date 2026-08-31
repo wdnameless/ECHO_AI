@@ -2,6 +2,7 @@ import { Dispatch, SetStateAction } from "react";
 import { ScreenshotConfig, TYPE_PROVIDER } from "@/types";
 import { CursorType, CustomizableState } from "@/lib/storage";
 import { PromptProfile } from "@/lib/storage/prompt-profiles";
+import { JobProfile } from "@/lib/storage/job-profiles";
 
 export type IContextType = {
   systemPrompt: string;
@@ -65,4 +66,12 @@ export type IContextType = {
   updatePromptProfile: (profileId: string, updates: Partial<PromptProfile>) => void;
   createPromptProfile: (profile: Omit<PromptProfile, "id">) => PromptProfile;
   deletePromptProfile: (profileId: string) => void;
+  jobProfiles: JobProfile[];
+  activeJobProfileId: string;
+  activeJobProfile: JobProfile | null;
+  selectJobProfile: (profileId: string) => void;
+  updateJobProfile: (profileId: string, updates: Partial<JobProfile>) => void;
+  createJobProfile: (profile: Omit<JobProfile, "id">) => JobProfile;
+  deleteJobProfile: (profileId: string) => void;
+  applyJobProfile: (profileId: string) => void;
 };

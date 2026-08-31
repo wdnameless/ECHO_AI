@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { QuestionAssembler, similarity } from "../question-assembler";
+import {
+  QuestionAssembler,
+  similarity,
+  ASR_TIMING_PRESETS,
+  ACTIVE_ASR_MODE,
+} from "../question-assembler";
 
 const T = 1_000_000;
 
@@ -114,5 +119,49 @@ describe("QuestionAssembler", () => {
     a.reset();
     expect(a.current).toBeNull();
     expect(a.flush("them")).toBeNull();
+  });
+
+  describe("ASR timing modes (fast vs accurate)", () => {
+    it("exposes ASR_TIMING_PRESETS with expected fast and accurate configurations", () => {
+      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBe(800);
+      expect(ASR_TIMING_PRESETS.fast.earlyEmitPauseMs).toBe(900);
+      expect(ASR_TIMING_PRESETS.accurate.flushGapMs).toBe(1500);
+      expect(ASR_TIMING_PRESETS.accurate.earlyEmitPauseMs).toBeUndefined();
+      expect(ACTIVE_ASR_MODE).toBe("fast");
+    });
+
+    it("operates in accurate mode without early pause emission", () => {
+      const a = new QuestionAssembler({ mode: "accurate" });
+      a.push(seg("Tell me about yourself", T));
+      // In accurate mode, a 950ms gap is well within flushGapMs (1500ms) and has no earlyEmitPauseMs
+      const r = a.push(seg("and your previous roles", T + 950));
+      expect(r.kind).toBe("pending");
+      expect(a.current?.text).toBe(
+        "Tell me about yourself and your previous roles"
+      );
+    });
+
+    it("emits early in fast mode when inter-segment pause >= 900ms", () => {
+      const a = new QuestionAssembler({ mode: "fast" });
+      a.push(seg("Tell me about how you handle merge conflicts", T));
+      // In fast mode, earlyEmitPauseMs is 900ms. Pause of 950ms triggers early emission of previous pending
+      const r = a.push(seg("What tools do you use for CI/CD", T + 950));
+      expect(r.kind).toBe("emitted");
+      if (r.kind === "emitted") {
+        expect(r.question).toBe("Tell me about how you handle merge conflicts");
+      }
+      // And the new segment starts a new pending question
+      expect(a.current?.text).toBe("What tools do you use for CI/CD");
+    });
+
+    it("does not emit early in fast mode when inter-segment pause < 900ms", () => {
+      const a = new QuestionAssembler({ mode: "fast" });
+      a.push(seg("What is your salary expectation", T));
+      const r = a.push(seg("for this senior role", T + 500));
+      expect(r.kind).toBe("pending");
+      expect(a.current?.text).toBe(
+        "What is your salary expectation for this senior role"
+      );
+    });
   });
 });

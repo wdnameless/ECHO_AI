@@ -5,7 +5,11 @@ import { listen } from "@tauri-apps/api/event";
 import { useApp } from "@/contexts";
 import { fetchAIResponse, transcribeWithFallback } from "@/lib/functions";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
-import { QuestionAssembler } from "@/lib/question-assembler";
+import {
+  QuestionAssembler,
+  ACTIVE_ASR_MODE,
+  ASR_TIMING_PRESETS,
+} from "@/lib/question-assembler";
 import {
   selectRussianFiller,
   isExplicitAskEligible,
@@ -347,12 +351,10 @@ export function useSystemAudio() {
   // re-registering listeners.
   const questionAssemblerRef = useRef<QuestionAssembler | null>(null);
   const questionFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const asrTimingConfig = ASR_TIMING_PRESETS[ACTIVE_ASR_MODE];
   if (!questionAssemblerRef.current) {
     questionAssemblerRef.current = new QuestionAssembler({
-      gapMs: 1500,
-      maxWindowMs: 6000,
-      immediateOnQuestionMark: true,
-      duplicateSimilarityThreshold: 0.75,
+      mode: ACTIVE_ASR_MODE,
     });
   }
 
@@ -690,7 +692,7 @@ export function useSystemAudio() {
             if (emitted?.kind === "emitted") {
               void triggerAIForQuestion(emitted.question, "them");
             }
-          }, 1500);
+          }, asrTimingConfig.flushGapMs);
 
           if (result.kind === "emitted") {
             if (questionFlushTimerRef.current) {

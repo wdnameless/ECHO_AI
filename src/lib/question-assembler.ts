@@ -15,20 +15,81 @@
 // Duplicate STT fragments (the same words recognized twice) are discarded so
 // the final question is not polluted.
 // ---------------------------------------------------------------------------
+// ASR Timing Modes Configuration
+//
+// README:
+// Two timing presets govern how the interviewer's speech stream is assembled
+// into questions and emitted to the AI pipeline:
+//
+// - "fast" (answer-first mode):
+//     Optimized for minimum latency during real-time interviews.
+//     Lowers the question-flush gap timer from 1500ms down to 800ms so that
+//     when an interviewer stops speaking, AI inference triggers almost instantly.
+//     Additionally enables early emission if the gap between incoming speech
+//     segments exceeds 900ms (`earlyEmitPauseMs = 900`).
+//
+// - "accurate" (default conversational mode):
+//     Preserves standard conversational pacing.
+//     Uses a 1500ms gap timer before flushing and a longer accumulation window
+//     (6000ms - 12000ms) with no aggressive early-pause emission.
+//
+// Both presets preserve full duplicate-fragment suppression (similarity >= 0.75-0.8)
+// and FOLLOWUP_MERGE_MS context continuation.
+// ---------------------------------------------------------------------------
+
+export type AsrTimingMode = "accurate" | "fast";
+
+export interface AsrTimingConfig {
+  /** Gap timer (ms) to flush pending question when speaker goes silent */
+  flushGapMs: number;
+  /** Maximum accumulation window (ms) before force-emitting */
+  maxWindowMs: number;
+  /** If set, inter-segment pause >= earlyEmitPauseMs triggers early emission */
+  earlyEmitPauseMs?: number;
+  /** Immediately emit when fragment ends with a question mark "?" */
+  immediateOnQuestionMark: boolean;
+  /** Duplicate token similarity threshold (0..1) above which fragment is dropped */
+  duplicateSimilarityThreshold: number;
+}
+
+export const ASR_TIMING_PRESETS: Record<AsrTimingMode, AsrTimingConfig> = {
+  accurate: {
+    flushGapMs: 1500,
+    maxWindowMs: 6000,
+    immediateOnQuestionMark: true,
+    duplicateSimilarityThreshold: 0.75,
+  },
+  fast: {
+    flushGapMs: 800,
+    maxWindowMs: 4000,
+    earlyEmitPauseMs: 900,
+    immediateOnQuestionMark: true,
+    duplicateSimilarityThreshold: 0.75,
+  },
+};
+
+/** Active default ASR timing mode. Controlled by a single constant block (no UI yet). */
+export const ACTIVE_ASR_MODE: AsrTimingMode = "fast";
 
 export interface QuestionFragment {
   source: string;
   text: string;
   timestamp: number;
-}export interface QuestionAssemblerOptions {
-  /** Max gap between fragments to treat them as ONE question. */
+}
+
+export interface QuestionAssemblerOptions {
+  /** Max gap between fragments to treat them as ONE question. Defaults to preset flushGapMs. */
   gapMs?: number;
-  /** Hard cap from the first fragment - emit what we have after that. */
+  /** Hard cap from the first fragment - emit what we have after that. Defaults to preset maxWindowMs. */
   maxWindowMs?: number;
   /** A fragment ending with "?" emits immediately (no waiting). */
   immediateOnQuestionMark?: boolean;
   /** Duplicate similarity threshold (0..1) - above = drop the fragment. */
   duplicateSimilarityThreshold?: number;
+  /** If set, pause between consecutive segments >= earlyEmitPauseMs emits what we have early. */
+  earlyEmitPauseMs?: number;
+  /** Timing mode preset name to initialize defaults from. */
+  mode?: AsrTimingMode;
 }
 
 export type PushResult =
@@ -53,12 +114,17 @@ export class QuestionAssembler {
   private readonly maxWindowMs: number;
   private readonly immediateOnQuestionMark: boolean;
   private readonly similarityThreshold: number;
+  private readonly earlyEmitPauseMs?: number;
 
   constructor(opts: QuestionAssemblerOptions = {}) {
-    this.gapMs = opts.gapMs ?? 1500;
-    this.maxWindowMs = opts.maxWindowMs ?? 12000;
-    this.immediateOnQuestionMark = opts.immediateOnQuestionMark ?? true;
-    this.similarityThreshold = opts.duplicateSimilarityThreshold ?? 0.8;
+    const preset = opts.mode ? ASR_TIMING_PRESETS[opts.mode] : undefined;
+    this.gapMs = opts.gapMs ?? preset?.flushGapMs ?? 1500;
+    this.maxWindowMs = opts.maxWindowMs ?? preset?.maxWindowMs ?? 12000;
+    this.immediateOnQuestionMark =
+      opts.immediateOnQuestionMark ?? preset?.immediateOnQuestionMark ?? true;
+    this.similarityThreshold =
+      opts.duplicateSimilarityThreshold ?? preset?.duplicateSimilarityThreshold ?? 0.8;
+    this.earlyEmitPauseMs = opts.earlyEmitPauseMs ?? preset?.earlyEmitPauseMs;
   }
 
   get current(): { source: string; text: string } | null {
@@ -120,6 +186,19 @@ export class QuestionAssembler {
 
     // Same source, continuing the same utterance?
     const gap = segment.timestamp - p.lastTs;
+
+    // Early emission on pause >= earlyEmitPauseMs (e.g. 900ms in fast mode)
+    if (this.earlyEmitPauseMs !== undefined && gap >= this.earlyEmitPauseMs) {
+      // Emit current pending question accumulated before this segment,
+      // and start a new pending utterance with the current segment.
+      const prevEmitted = this.emit();
+      const seed = this.isFollowUpTail(text) ? this.lastEmitted!.text : undefined;
+      this.startPending(segment, seed);
+      if (prevEmitted.kind === "emitted") {
+        return prevEmitted;
+      }
+    }
+
     if (gap > this.gapMs) {
       // Long pause. If the pending text was already emitted and answered,
       // this fragment may be a follow-up tail - merge it with the parent.

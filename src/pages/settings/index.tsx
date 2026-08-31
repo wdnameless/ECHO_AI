@@ -7,6 +7,7 @@ import {
   PromptProfilesSettings,
   ToolsSettings,
   AiContextSettings,
+  JobProfilesSettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
 
@@ -15,6 +16,9 @@ const Settings = () => {
     <PageLayout title="Settings" description="Manage your settings">
       {/* Prompt Profiles: Interview / General / Self-Evolution / custom */}
       <PromptProfilesSettings />
+
+      {/* Job Profiles: Presets for vacancy & resume context */}
+      <JobProfilesSettings />
 
       {/* Web Search & Skills (Live Research) */}
       <ToolsSettings />
