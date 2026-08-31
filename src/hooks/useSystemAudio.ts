@@ -200,6 +200,17 @@ export function useSystemAudio() {
     onMicFrame: (pcm) => {
       micFeedFrame(pcm);
     },
+    // WS is per-utterance: open on speech start (VAD), close on speech end
+    // (micWsFinalizeAndClose). The native batch engine rejects run() while
+    // a stream session lives - a permanent WS would break the interviewer
+    // transcription with 'model busy'.
+    onMicSpeechStart: () => {
+      micWsWantRef.current = true;
+      micWsConnect();
+    },
+    onMicSpeechStop: () => {
+      micWsFinalizeAndClose();
+    },
     onInterimTranscript: (text) => {
       // Live word-by-word streaming from the mic (Web Speech API interim
       // results) - shows the candidate's speech in the ticker in real time,
@@ -213,8 +224,6 @@ export function useSystemAudio() {
   useEffect(() => {
     micStartRef.current = () => {
       micCapture.start();
-      micWsWantRef.current = true;
-      micWsConnect();
     };
     micStopRef.current = () => {
       micWsWantRef.current = false;
@@ -731,7 +740,34 @@ export function useSystemAudio() {
     }
   }, []);
 
+
+  // Deliberate close after speech end: no auto-reconnect (the WS is
+  // per-utterance; the next speech start reopens it). Server-initiated
+  // closes during capture still reconnect via scheduleMicWsReconnect.
+  const micWsStoppedByUsRef = useRef(false);
+
+  const micWsFinalizeAndClose = useCallback(() => {
+    const ws = micWsRef.current;
+    micWsStoppedByUsRef.current = true;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ type: "finalize" }));
+      } catch {
+        // connection already dying - fall through to close
+      }
+      // Give the server a moment to flush the 'final' event, then close.
+      setTimeout(() => micWsClose(), 400);
+    } else {
+      micWsClose();
+    }
+  }, [micWsClose]);
+
   const scheduleMicWsReconnect = useCallback(() => {
+    // Do not reconnect after a deliberate per-utterance close.
+    if (micWsStoppedByUsRef.current) {
+      micWsStoppedByUsRef.current = false;
+      return;
+    }
     if (!micWsWantRef.current || !capturingRef.current) return;
     if (micWsReconnectTimerRef.current) return;
     micWsReconnectTimerRef.current = setTimeout(() => {
@@ -771,6 +807,7 @@ export function useSystemAudio() {
           const lang = responseSettings.language === "russian" ? "ru" : "en";
           ws.send(JSON.stringify({ type: "config", language: lang }));
           micWsRef.current = ws;
+          micWsStoppedByUsRef.current = false;
         };
         ws.onmessage = (ev) => {
           if (typeof ev.data !== "string") return;

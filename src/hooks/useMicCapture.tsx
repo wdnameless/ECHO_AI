@@ -9,6 +9,7 @@ export interface UseMicCaptureOptions {
   microphoneDeviceName?: string;
   onMicSegment: (audio: Blob) => void;
   onMicSpeechStart?: () => void;
+  onMicSpeechStop?: () => void;
   onInterimTranscript?: (text: string) => void;
   onMicPartial?: (audio: Blob) => void;
   /**
@@ -30,6 +31,7 @@ interface MicVADBridgeProps {
   onApiReady: (api: { start: () => void; stop: () => void }) => void;
   onMicSegment: (audio: Blob) => void;
   onMicSpeechStart?: () => void;
+  onMicSpeechStop?: () => void;
   onInterimTranscript?: (text: string) => void;
   onMicPartial?: (audio: Blob) => void;
   onMicFrame?: (pcm: ArrayBuffer) => void;
@@ -38,19 +40,20 @@ interface MicVADBridgeProps {
 // Bridge component that owns the VAD instance. It is mounted only once the
 // MediaStream is available, so the VAD is always created with the correct
 // device (the `stream` option is passed through unfiltered by vad-web, unlike
-// `additionalAudioConstraints` which is dropped by vad-react's useOptions).
 function MicVADBridge({
   stream,
   onStateChange,
   onApiReady,
   onMicSegment,
   onMicSpeechStart,
+  onMicSpeechStop,
   onInterimTranscript,
   onMicPartial,
   onMicFrame,
 }: MicVADBridgeProps) {
   const onMicSegmentRef = useRef(onMicSegment);
   const onMicSpeechStartRef = useRef(onMicSpeechStart);
+  const onMicSpeechStopRef = useRef(onMicSpeechStop);
   const onStateChangeRef = useRef(onStateChange);
   const onApiReadyRef = useRef(onApiReady);
   const onInterimTranscriptRef = useRef(onInterimTranscript);
@@ -60,12 +63,13 @@ function MicVADBridge({
   useEffect(() => {
     onMicSegmentRef.current = onMicSegment;
     onMicSpeechStartRef.current = onMicSpeechStart;
+    onMicSpeechStopRef.current = onMicSpeechStop;
     onStateChangeRef.current = onStateChange;
     onApiReadyRef.current = onApiReady;
     onInterimTranscriptRef.current = onInterimTranscript;
     onMicPartialRef.current = onMicPartial;
     onMicFrameRef.current = onMicFrame;
-  }, [onMicSegment, onMicSpeechStart, onStateChange, onApiReady, onInterimTranscript, onMicPartial, onMicFrame]);
+  }, [onMicSegment, onMicSpeechStart, onMicSpeechStop, onStateChange, onApiReady, onInterimTranscript, onMicPartial, onMicFrame]);
 
     const vadRef = useRef<MicVAD | null>(null);
     const listeningRef = useRef(false);
@@ -164,6 +168,7 @@ function MicVADBridge({
         } catch {}
       },
       onSpeechEnd: (audio: Float32Array) => {
+        onMicSpeechStopRef.current?.();
         const audioBlob = floatArrayToWav(audio, 16000, "wav");
         onMicSegmentRef.current(audioBlob);
         try {
@@ -317,6 +322,7 @@ export function useMicCapture({
   microphoneDeviceName,
   onMicSegment,
   onMicSpeechStart,
+  onMicSpeechStop,
   onInterimTranscript,
   onMicPartial,
   onMicFrame,
@@ -446,6 +452,7 @@ export function useMicCapture({
       onApiReady={handleApiReady}
       onMicSegment={onMicSegment}
       onMicSpeechStart={onMicSpeechStart}
+      onMicSpeechStop={onMicSpeechStop}
       onInterimTranscript={onInterimTranscript}
       onMicPartial={onMicPartial}
       onMicFrame={onMicFrame}
