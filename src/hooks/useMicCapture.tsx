@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { MicVAD } from "@ricky0123/vad-web";
 import { floatArrayToWav } from "@/lib/utils";
@@ -121,6 +121,12 @@ function MicVADBridge({
     MicVAD.new({
       stream,
       model: "legacy",
+      // Explicit asset paths: the library derives them from
+      // document.currentScript, which in the packaged Tauri build points at
+      // /assets/ where the onnx/worklet files are NOT copied -> silent 404
+      // -> the mic VAD never starts and transcription never fires.
+      baseAssetPath: import.meta.env.BASE_URL,
+      onnxWASMBasePath: import.meta.env.BASE_URL,
       onFrameProcessed: (probs) => {
         const w = window as unknown as {
           __micVadDiag?: { frames: number; maxProb: number; speechFrames: number };

@@ -261,7 +261,43 @@ fn assign_job_object(child: &Child) {
 #[cfg(not(target_os = "windows"))]
 fn assign_job_object(_child: &Child) {}
 
+/// Open (create/append) the diagnostic log file for the sidecar.
+/// Location: exe-dir first (portable + installed), then app data dir.
+fn open_sidecar_log_file() -> std::fs::File {
+    use std::fs::OpenOptions;
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            paths.push(dir.join("asr-sidecar.log"));
+            paths.push(dir.join("resources").join("asr-sidecar.log"));
+        }
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dir = std::path::Path::new(&appdata)
+            .join("com.srikanthnani.pluely");
+        paths.push(dir.join("asr-sidecar.log"));
+    }
+    for p in &paths {
+        if let Ok(f) =
+            OpenOptions::new().create(true).append(true).open(p)
+        {
+            return f;
+        }
+    }
+    // Unreachable in practice; fall back to null so spawn never fails.
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("pluely-asr-sidecar.log"))
+        .expect("sidecar fallback log")
+}
+
+
 /// Spawn the native pluely-asr sidecar. Returns true on success.
+///
+/// stdout/stderr go to a rotating-ish log file (asr-sidecar.log) next to the
+/// log dir instead of /dev/null: transcription 500s were invisible because
+/// the engine's native error never reached any surface.
 fn spawn_pluely_asr() -> bool {
     let Some(asr_bin) = find_pluely_asr() else {
         return false;
@@ -269,6 +305,8 @@ fn spawn_pluely_asr() -> bool {
     let model_path = find_model_path().unwrap_or_else(|| {
         r"D:\WORK\Pluely fork\models\nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf".to_string()
     });
+
+    let log_file = open_sidecar_log_file();
 
     #[cfg(target_os = "windows")]
     let spawn = {
@@ -279,8 +317,8 @@ fn spawn_pluely_asr() -> bool {
             .arg("9877")
             .arg("--bind")
             .arg("127.0.0.1")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdout(Stdio::from(log_file.try_clone().expect("sidecar log clone")))
+            .stderr(Stdio::from(log_file))
             .creation_flags(0x08000000); // CREATE_NO_WINDOW
         cmd.spawn()
     };
@@ -293,8 +331,8 @@ fn spawn_pluely_asr() -> bool {
         .arg("9877")
         .arg("--bind")
         .arg("127.0.0.1")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(log_file.try_clone().expect("sidecar log clone")))
+        .stderr(log_file)
         .spawn();
 
     match spawn {
