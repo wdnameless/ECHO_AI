@@ -21,6 +21,13 @@ type Props = {
   lastTTFT?: number;
   pipelineError?: string;
   pendingQuestion?: string | null;
+  askAIForTranscript?: (
+    utteranceId: string,
+    text: string,
+    source: "me" | "them"
+  ) => Promise<void>;
+  activeFiller?: string | null;
+  pendingUtteranceId?: string | null;
 };
 
 /**
@@ -42,6 +49,9 @@ export const ResultsSection = ({
   lastTTFT,
   pipelineError,
   pendingQuestion,
+  askAIForTranscript,
+  activeFiller,
+  pendingUtteranceId,
 }: Props) => {
   const handy = useHandyStatus();
   const handyModelShort = handy.model
@@ -71,6 +81,9 @@ export const ResultsSection = ({
         lastTTFT={lastTTFT}
         pipelineError={pipelineError}
         pendingQuestion={pendingQuestion}
+        onAskAI={askAIForTranscript}
+        activeFiller={activeFiller}
+        pendingUtteranceId={pendingUtteranceId}
       />
     </div>
   );

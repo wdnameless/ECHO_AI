@@ -1,0 +1,30 @@
+# Set default behavior to automatically normalize line endings to LF on commit,
+# while preserving LF on checkout across all platforms.
+* text=auto eol=lf
+
+# Explicitly ensure all SQL files and migration definitions always use LF line endings
+*.sql text eol=lf
+*.rs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+
+# Model files and binary assets
+*.onnx binary
+*.gguf binary
+*.bin binary
+*.tar.gz binary
+*.tgz binary
+*.wav binary
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary

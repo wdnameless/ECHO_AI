@@ -5,6 +5,7 @@ import {
 } from "./common.function";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
+import { getAsrBaseUrl } from "@/lib/asr-discovery";
 
 import { TYPE_PROVIDER } from "@/types";
 import curl2Json from "@bany/curl-to-json";
@@ -169,11 +170,17 @@ export async function fetchSTT(params: STTParams): Promise<string> {
 
     let finalHeaders = { ...headers };
     let body: FormData | string | Blob;
-
+    const asrBase = await getAsrBaseUrl();
+    if (/127\.0\.0\.1|localhost|0\.0\.0\.0/.test(curlJson.url || "")) {
+      url = url.replace(
+        /^http:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0):\d+/,
+        asrBase
+      );
+    }
     // Local Handy server: pass priority so final segments jump the queue,
     // and the fixed language (ru|en) so the model never auto-detects or
     // transcribes other languages.
-    const isLocalHandy = url.includes("127.0.0.1:8000");
+    const isLocalHandy = url.includes(asrBase);
     if (isLocalHandy) {
       finalHeaders["X-Priority"] = priority;
       finalHeaders["X-Language"] = defaultLanguage;

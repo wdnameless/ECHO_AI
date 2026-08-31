@@ -6,21 +6,26 @@ import { useApp } from "@/contexts";
 import { fetchAIResponse, transcribeWithFallback } from "@/lib/functions";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
 import { QuestionAssembler } from "@/lib/question-assembler";
-import { GENERAL_PROFILE_ID, getActiveProfileId } from "@/lib/storage/prompt-profiles";
 import {
-  DEFAULT_QUICK_ACTIONS,
-  DEFAULT_SYSTEM_PROMPT,
-  STORAGE_KEYS,
-} from "@/config";
+  selectRussianFiller,
+  isExplicitAskEligible,
+} from "@/lib/transcript-stabilizer";
+import { getAsrBaseUrl } from "@/lib/asr-discovery";
 import {
   safeLocalStorage,
   shouldUsePluelyAPI,
+  getResponseSettings,
   generateConversationTitle,
   saveConversation,
   CONVERSATION_SAVE_DEBOUNCE_MS,
   generateConversationId,
   generateMessageId,
 } from "@/lib";
+import {
+  DEFAULT_QUICK_ACTIONS,
+  DEFAULT_SYSTEM_PROMPT,
+  STORAGE_KEYS,
+} from "@/config";
 import { Message } from "@/types/completion";
 import { useMicCapture } from "./useMicCapture";
 
@@ -95,6 +100,10 @@ export function useSystemAudio() {
     useState<string>("");
   const [lastAIResponse, setLastAIResponse] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [activeFiller, setActiveFiller] = useState<string | null>(null);
+  const [pendingUtteranceId, setPendingUtteranceId] = useState<string | null>(
+    null
+  );
   const [setupRequired, setSetupRequired] = useState<boolean>(false);
   const [quickActions, setQuickActions] = useState<string[]>([]);
   const [isManagingQuickActions, setIsManagingQuickActions] =
@@ -155,15 +164,20 @@ export function useSystemAudio() {
   const lastAIResponseAtRef = useRef<number>(0);
   const AI_RESPONSE_COOLDOWN_MS = 2000;
   const respondToMicRef = useRef<boolean>(respondToMic);
+  const activeAskUtteranceIdRef = useRef<string | null>(null);
+  // Live mic WebSocket: streams raw 16 kHz f32-LE PCM frames from the mic
+  // tap directly to the sidecar (/v1/asr/stream) so partial words appear
+  // with no 1s batch delay. Owned here because segment state lives here.
+  const micWsRef = useRef<WebSocket | null>(null);
+  const micWsWantRef = useRef(false);
+  const micWsReconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     respondToMicRef.current = respondToMic;
   }, [respondToMic]);
-
   useEffect(() => {
     capturingRef.current = capturing;
   }, [capturing]);
-
   useEffect(() => {
     pendingScreenshotRef.current = pendingScreenshot;
   }, [pendingScreenshot]);
@@ -181,6 +195,11 @@ export function useSystemAudio() {
     onMicSegment: (audioBlob) => {
       void transcribeSegment(audioBlob, "me");
     },
+    // Raw PCM frames: forwarded into the mic WebSocket for zero-batch
+    // partials. The 1s WAV batch stays as a fallback when the WS is down.
+    onMicFrame: (pcm) => {
+      micFeedFrame(pcm);
+    },
     onInterimTranscript: (text) => {
       // Live word-by-word streaming from the mic (Web Speech API interim
       // results) - shows the candidate's speech in the ticker in real time,
@@ -192,8 +211,20 @@ export function useSystemAudio() {
   const micStartRef = useRef<() => void>(() => {});
   const micStopRef = useRef<() => void>(() => {});
   useEffect(() => {
-    micStartRef.current = micCapture.start;
-    micStopRef.current = micCapture.stop;
+    micStartRef.current = () => {
+      micCapture.start();
+      micWsWantRef.current = true;
+      micWsConnect();
+    };
+    micStopRef.current = () => {
+      micWsWantRef.current = false;
+      if (micWsReconnectTimerRef.current) {
+        clearTimeout(micWsReconnectTimerRef.current);
+        micWsReconnectTimerRef.current = null;
+      }
+      micWsClose();
+      micCapture.stop();
+    };
   });
 
   // Load context settings and VAD config from localStorage on mount
@@ -368,6 +399,7 @@ export function useSystemAudio() {
         }
 
         try {
+          let isFirstChunk = true;
           for await (const chunk of fetchAIResponse({
             provider: usePluelyAPI ? undefined : provider,
             selectedProvider: selectedAIProvider,
@@ -377,6 +409,12 @@ export function useSystemAudio() {
             imagesBase64,
             signal: abortControllerRef.current.signal,
           })) {
+            if (isFirstChunk) {
+              isFirstChunk = false;
+              setActiveFiller(null);
+              setPendingUtteranceId(null);
+              activeAskUtteranceIdRef.current = null;
+            }
             fullResponse += chunk;
             // Throttled flush: buffer chunks, update React state at most
             // every 80ms to keep the UI smooth on long answers.
@@ -402,9 +440,11 @@ export function useSystemAudio() {
             streamBufferRef.current = "";
           }
         } catch (aiError: any) {
+          setActiveFiller(null);
+          setPendingUtteranceId(null);
+          activeAskUtteranceIdRef.current = null;
           setError(aiError.message || "Failed to get AI response");
         }
-
         if (fullResponse) {
           lastAIResponseAtRef.current = Date.now();
           const timestamp = Date.now();
@@ -431,9 +471,15 @@ export function useSystemAudio() {
           }));
         }
       } catch (err) {
+        setActiveFiller(null);
+        setPendingUtteranceId(null);
+        activeAskUtteranceIdRef.current = null;
         setError("Failed to get AI response");
       } finally {
         setIsAIProcessing(false);
+        setActiveFiller(null);
+        setPendingUtteranceId(null);
+        activeAskUtteranceIdRef.current = null;
         // No auto-restart - user manually controls when to start next recording
       }
     },
@@ -570,26 +616,14 @@ export function useSystemAudio() {
       source === "me" ? setIsMicProcessing : setIsSystemProcessing;
 
     try {
-      const usePluelyAPI = await shouldUsePluelyAPI();
-      if (!selectedSttProvider.provider && !usePluelyAPI) {
-        setError("No speech provider selected.");
-        return;
-      }
-
-      const providerConfig = allSttProviders.find(
-        (p) => p.id === selectedSttProvider.provider
-      );
-
-      if (!providerConfig && !usePluelyAPI) {
-        setError("Speech provider config not found.");
-        return;
-      }
-
+      // NOTE: no provider-config gate and no provider id passed. The STT
+      // pipeline is 100% local (stt-fallback.ts routes every request to the
+      // pluely-asr sidecar), so a stale/unknown provider id in localStorage
+      // must not block transcription with a false error.
       setSegmentProcessing(true);
 
       // Add timeout wrapper for STT request (30 seconds)
       const sttPromise = transcribeWithFallback({
-        provider: providerConfig,
         selectedProvider: selectedSttProvider,
         audio: audioBlob,
         priority: "high",
@@ -613,18 +647,8 @@ export function useSystemAudio() {
         appendLiveSegment(source, transcription);
         setError("");
 
-        // If the segment came from the user's own microphone:
-        // In General Chat profile or when respondToMic is on, mic triggers AI responses!
-        // In Interview mode (solo meeting listening), it only triggers if respondToMic is on.
-        const activeProfile = getActiveProfileId();
-        const isGeneralOrRespondToMic =
-          activeProfile === GENERAL_PROFILE_ID ||
-          respondToMicRef.current;
-
-        if (source === "me" && !isGeneralOrRespondToMic) {
-          console.log(
-            `[Pluely] Mic segment recorded (AI response disabled for solo interview mic): "${transcription}"`
-          );
+        // Microphone speech updates transcript/context only and NEVER auto-triggers AI.
+        if (source === "me") {
           return;
         }
 
@@ -668,9 +692,6 @@ export function useSystemAudio() {
           }
           return;
         }
-
-        // Microphone source: trigger AI directly (question is complete).
-        await triggerAIForQuestion(transcription, "me");
       } else {
         setError("Received empty transcription");
       }
@@ -682,6 +703,111 @@ export function useSystemAudio() {
       setSegmentProcessing(false);
     }
   };
+  // --- Live mic WebSocket (real-time partials, no 1s batch delay) ----------
+  // The mic tap forwards raw f32-LE 16 kHz frames here; the sidecar streams
+  // back `text` partials. On VAD speech end the final segment is produced by
+  // the normal batch pipeline, so the WS is a latency booster, not the
+  // transcript source of truth. Reconnects with backoff while capturing.
+
+  const MIC_WS_RECONNECT_MS = 2000;
+
+
+  const micWsConnectRef = useRef<() => void>(() => {});
+  const micWsClose = useCallback(() => {
+    const ws = micWsRef.current;
+    micWsRef.current = null;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close();
+    }
+  }, []);
+
+  const micFeedFrame = useCallback((pcm: ArrayBuffer) => {
+    const ws = micWsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(pcm);
+    }
+  }, []);
+
+  const scheduleMicWsReconnect = useCallback(() => {
+    if (!micWsWantRef.current || !capturingRef.current) return;
+    if (micWsReconnectTimerRef.current) return;
+    micWsReconnectTimerRef.current = setTimeout(() => {
+      micWsReconnectTimerRef.current = null;
+      micWsConnectRef.current();
+    }, MIC_WS_RECONNECT_MS);
+  }, []);
+
+  const micWsConnect = useCallback(() => {
+    micWsConnectRef.current = () => {
+      void (async () => {
+        if (!capturingRef.current) return;
+        micWsClose();
+        let base: string;
+        try {
+          base = await getAsrBaseUrl();
+        } catch {
+          base = "";
+        }
+        if (!base) {
+          scheduleMicWsReconnect();
+          return;
+        }
+        const wsUrl = `${base.replace(/^http/, "ws")}/v1/asr/stream`;
+        let ws: WebSocket;
+        try {
+          ws = new WebSocket(wsUrl);
+        } catch {
+          scheduleMicWsReconnect();
+          return;
+        }
+        ws.binaryType = "arraybuffer";
+        ws.onopen = () => {
+          // Pin the language exactly like the batch path does so the
+          // streaming model never auto-detects outside ru/en.
+          const responseSettings = getResponseSettings();
+          const lang = responseSettings.language === "russian" ? "ru" : "en";
+          ws.send(JSON.stringify({ type: "config", language: lang }));
+          micWsRef.current = ws;
+        };
+        ws.onmessage = (ev) => {
+          if (typeof ev.data !== "string") return;
+          try {
+            const msg = JSON.parse(ev.data);
+            if (
+              msg.type === "text" &&
+              typeof msg.text === "string" &&
+              msg.text.trim()
+            ) {
+              // Streaming partial from the sidecar: show immediately.
+              appendLiveSegment("me", msg.text.trim(), true);
+            } else if (msg.type === "error") {
+              console.warn("[mic-ws] server error:", msg.message);
+            }
+          } catch {
+            // ignore malformed frames
+          }
+        };
+        ws.onclose = () => {
+          if (micWsRef.current === ws) {
+            micWsRef.current = null;
+          }
+          scheduleMicWsReconnect();
+        };
+        ws.onerror = () => {
+          try {
+            ws.close();
+          } catch {
+            // already closing
+          }
+        };
+      })();
+    };
+    micWsConnectRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [micWsClose, scheduleMicWsReconnect, appendLiveSegment]);
 
   // Latest-closure ref so the "speech-detected" listener can be registered
   // once with fixed deps and never go stale.
@@ -910,6 +1036,33 @@ export function useSystemAudio() {
       pendingScreenshotRef.current ? [pendingScreenshotRef.current] : []
     );
   };
+  const askAIForTranscript = useCallback(
+    async (utteranceId: string, text: string, source: "me" | "them") => {
+      if (!isExplicitAskEligible(text)) {
+        return;
+      }
+
+      // Guard against duplicate calls or overlapping requests
+      if (isAIProcessing || activeAskUtteranceIdRef.current === utteranceId) {
+        return;
+      }
+
+      const filler = selectRussianFiller(utteranceId);
+      setActiveFiller(filler);
+      setPendingUtteranceId(utteranceId);
+      activeAskUtteranceIdRef.current = utteranceId;
+
+      try {
+        await triggerAIForQuestion(text, source);
+      } catch (err) {
+        setActiveFiller(null);
+        setPendingUtteranceId(null);
+        activeAskUtteranceIdRef.current = null;
+      }
+    },
+    [isAIProcessing, triggerAIForQuestion]
+  );
+
 
   // Start continuous recording manually
   const startContinuousRecording = useCallback(async () => {
@@ -1069,6 +1222,9 @@ export function useSystemAudio() {
       setLastAIResponse("");
       pendingScreenshotRef.current = null;
       setPendingScreenshot(null);
+      setActiveFiller(null);
+      setPendingUtteranceId(null);
+      activeAskUtteranceIdRef.current = null;
       setError("");
       setIsPopoverOpen(false);
     } catch (err) {
@@ -1241,6 +1397,9 @@ export function useSystemAudio() {
     setIsMicProcessing(false);
     setIsSystemProcessing(false);
     setIsAIProcessing(false);
+    setActiveFiller(null);
+    setPendingUtteranceId(null);
+    activeAskUtteranceIdRef.current = null;
     setIsPopoverOpen(false);
     setUseSystemPrompt(true);
   }, []);
@@ -1353,6 +1512,9 @@ export function useSystemAudio() {
     theirLastTranscription,
     liveSegments,
     lastAIResponse,
+    activeFiller,
+    pendingUtteranceId,
+    askAIForTranscript,
     error,
     setupRequired,
     startCapture,

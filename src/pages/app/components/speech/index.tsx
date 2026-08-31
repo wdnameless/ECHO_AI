@@ -30,6 +30,9 @@ import { useApp } from "@/contexts";
 
 export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const {
+    askAIForTranscript,
+    activeFiller,
+    pendingUtteranceId,
     capturing,
     error,
     isProcessing,
@@ -416,6 +419,9 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       micListening={props.micListening}
                       scrollAreaRef={scrollAreaRef}
                       pipelineError={props.error}
+                      askAIForTranscript={askAIForTranscript}
+                      activeFiller={activeFiller}
+                      pendingUtteranceId={pendingUtteranceId}
                     />
                   </>
                 )}

@@ -75,6 +75,26 @@ describe("transcript-stabilizer", () => {
     expect(isExplicitAskEligible("")).toBe(false);
     expect(isExplicitAskEligible("  ")).toBe(false);
     expect(isExplicitAskEligible("hi")).toBe(false);
+    expect(isExplicitAskEligible("yes")).toBe(true);
     expect(isExplicitAskEligible("Explain React hooks")).toBe(true);
+    expect(isExplicitAskEligible("Как работает event loop?")).toBe(true);
+  });
+
+  it("selects deterministic Russian interview filler based on seed", () => {
+    const fillerA = selectRussianFiller("utterance-123");
+    const fillerB = selectRussianFiller("utterance-123");
+    expect(fillerA).toBe(fillerB);
+    expect(RUSSIAN_INTERVIEW_FILLERS).toContain(fillerA);
+  });
+
+  it("finalizes nonexistent activeId gracefully without crashing", () => {
+    let list: TranscriptUtterance[] = [];
+    const res = upsertUtterance(list, {
+      source: "them",
+      text: "Testing",
+      partial: true,
+    });
+    const finalized = finalizeUtterance(res.list, "non-existent-id");
+    expect(finalized).toEqual(res.list);
   });
 });

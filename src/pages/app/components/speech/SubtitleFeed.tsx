@@ -86,6 +86,13 @@ interface SubtitleFeedProps {
   lastTTFT?: number;
   pipelineError?: string;
   pendingQuestion?: string | null;
+  onAskAI?: (
+    utteranceId: string,
+    text: string,
+    source: "me" | "them"
+  ) => Promise<void>;
+  activeFiller?: string | null;
+  pendingUtteranceId?: string | null;
 }
 
 const DISLIKE_REASONS = [
@@ -133,6 +140,9 @@ export const SubtitleFeed = ({
   lastTTFT,
   pipelineError,
   pendingQuestion,
+  onAskAI,
+  activeFiller,
+  pendingUtteranceId,
 }: SubtitleFeedProps) => {
   const { promptProfiles, activeProfileId, selectPromptProfile, selectedAIProvider, allAiProviders } = useApp();
   const activeProfile =
@@ -713,7 +723,7 @@ export const SubtitleFeed = ({
                 className={cn(
                   "relative rounded-lg border p-2 space-y-1 transition-shadow",
                   "border-violet-500/40 bg-violet-500/5 shadow-[0_0_0_1px_rgba(139,92,246,0.08)]",
-                  e.streaming && "animate-pulse-[--tw-animate-opacity]"
+                  e.streaming && "opacity-90"
                 )}
               >
                 <div className="flex items-center justify-between text-[0.6em]">
@@ -879,80 +889,113 @@ export const SubtitleFeed = ({
           }
 
           /* Compact speech rows (me / them) */
+          const isPending = pendingUtteranceId === e.id;
+          const showAskAI = e.kind === "me" && !e.streaming && Boolean(onAskAI);
+          const isAskDisabled = !e.text.trim() || isPending || isAIProcessing;
+          const showFillerBelow = isPending && Boolean(activeFiller);
+
           return (
-            <div
-              key={rowId}
-              className={cn(
-                "group grid gap-x-2 py-0.5 border-b border-border/20 hover:bg-muted/30 rounded transition-colors",
-                translationsOn ? "grid-cols-[1fr_1fr]" : "grid-cols-1"
-              )}
-            >
-              <div className="min-w-0 flex items-start gap-1.5">
-                <span
-                  className={cn(
-                    "shrink-0 mt-px inline-flex items-center gap-0.5 text-[0.56em] font-semibold px-1 py-px rounded border uppercase tracking-wide",
-                    badge.cls
-                  )}
-                >
-                  {e.kind === "me" ? (
-                    <MicIcon className="w-2.5 h-2.5" />
-                  ) : (
-                    <HeadphonesIcon className="w-2.5 h-2.5" />
-                  )}
-                  {badge.label}
-                </span>
-                <p
-                  className={cn(
-                    "flex-1 min-w-0 text-[0.76em] leading-snug break-words",
-                    e.kind === "me"
-                      ? "text-foreground/80"
-                      : "text-foreground/95 font-medium",
-                    e.streaming && "italic text-muted-foreground"
-                  )}
-                  style={{
-                    wordBreak: "break-word",
-                    overflowWrap: "anywhere",
-                    whiteSpace: "pre-wrap",
-                  }}
-                >
-                  {e.streaming ? (
-                    e.text
-                  ) : (
-                    <HoverTranslate text={e.text} />
-                  )}
-                </p>
-                <button
-                  onClick={() => handleCopy(rowId, e.text)}
-                  className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-muted-foreground hover:text-foreground mt-0.5"
-                  title="Скопировать"
-                >
-                  {copiedId === rowId ? (
-                    <CheckIcon className="w-3 h-3 text-emerald-500" />
-                  ) : (
-                    <CopyIcon className="w-3 h-3" />
-                  )}
-                </button>
-              </div>
-              {translationsOn && (
-                <div className="min-w-0 flex items-start">
-                  {e.streaming ? (
-                    <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
-                  ) : e.kind === "me" ? (
-                    <span className="text-muted-foreground/30 text-[0.7em] mt-0.5">—</span>
-                  ) : translation === undefined ? (
-                    <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
-                  ) : (
-                    <p
-                      className="flex-1 min-w-0 text-[0.72em] leading-snug text-primary/75 break-words"
-                      style={{
-                        wordBreak: "break-word",
-                        overflowWrap: "anywhere",
-                        whiteSpace: "pre-wrap",
-                      }}
+            <div key={rowId} className="space-y-0.5">
+              <div
+                className={cn(
+                  "group grid gap-x-2 py-0.5 border-b border-border/20 hover:bg-muted/30 rounded transition-colors",
+                  translationsOn ? "grid-cols-[1fr_1fr]" : "grid-cols-1"
+                )}
+              >
+                <div className="min-w-0 flex items-start gap-1.5">
+                  <span
+                    className={cn(
+                      "shrink-0 mt-px inline-flex items-center gap-0.5 text-[0.56em] font-semibold px-1 py-px rounded border uppercase tracking-wide",
+                      badge.cls
+                    )}
+                  >
+                    {e.kind === "me" ? (
+                      <MicIcon className="w-2.5 h-2.5" />
+                    ) : (
+                      <HeadphonesIcon className="w-2.5 h-2.5" />
+                    )}
+                    {badge.label}
+                  </span>
+                  <p
+                    className={cn(
+                      "flex-1 min-w-0 text-[0.76em] leading-snug break-words",
+                      e.kind === "me"
+                        ? "text-foreground/80"
+                        : "text-foreground/95 font-medium",
+                      e.streaming && "italic text-muted-foreground"
+                    )}
+                    style={{
+                      wordBreak: "break-word",
+                      overflowWrap: "anywhere",
+                      whiteSpace: "pre-wrap",
+                    }}
+                  >
+                    {e.streaming ? (
+                      e.text
+                    ) : (
+                      <HoverTranslate text={e.text} />
+                    )}
+                  </p>
+                  {showAskAI && (
+                    <button
+                      type="button"
+                      onClick={() => onAskAI?.(e.id, e.text, "me")}
+                      disabled={isAskDisabled}
+                      className={cn(
+                        "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.62em] font-medium transition-colors border",
+                        "text-violet-600 dark:text-violet-300 border-violet-500/30 hover:bg-violet-500/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-500",
+                        "disabled:opacity-40 disabled:pointer-events-none"
+                      )}
+                      aria-label="Спросить ИИ"
+                      title="Спросить ИИ"
                     >
-                      {translation}
-                    </p>
+                      <SparklesIcon className="w-2.5 h-2.5" />
+                      Спросить ИИ
+                    </button>
                   )}
+                  <button
+                    onClick={() => handleCopy(rowId, e.text)}
+                    className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted-foreground hover:text-foreground mt-0.5"
+                    title="Скопировать"
+                  >
+                    {copiedId === rowId ? (
+                      <CheckIcon className="w-3 h-3 text-emerald-500" />
+                    ) : (
+                      <CopyIcon className="w-3 h-3" />
+                    )}
+                  </button>
+                </div>
+                {translationsOn && (
+                  <div className="min-w-0 flex items-start">
+                    {e.streaming ? (
+                      <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
+                    ) : e.kind === "me" ? (
+                      <span className="text-muted-foreground/30 text-[0.7em] mt-0.5">—</span>
+                    ) : translation === undefined ? (
+                      <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
+                    ) : (
+                      <p
+                        className="flex-1 min-w-0 text-[0.72em] leading-snug text-primary/75 break-words"
+                        style={{
+                          wordBreak: "break-word",
+                          overflowWrap: "anywhere",
+                          whiteSpace: "pre-wrap",
+                        }}
+                      >
+                        {translation}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+              {showFillerBelow && (
+                <div
+                  className="flex items-center gap-1.5 py-1 px-2 rounded border border-violet-500/20 bg-violet-500/5 text-violet-600 dark:text-violet-300 text-[0.72em]"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+                  <span className="truncate">{activeFiller}</span>
                 </div>
               )}
             </div>

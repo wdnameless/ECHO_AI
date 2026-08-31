@@ -208,20 +208,11 @@ const MockInterview = () => {
       if (phaseRef.current !== "answering") return;
       setIsTranscribing(true);
       try {
-        const usePluelyAPI = await shouldUsePluelyAPI();
-        if (!selectedSttProvider.provider && !usePluelyAPI) {
-          setError("No speech provider selected.");
-          return;
-        }
-        const provider = allSttProviders.find(
-          (p) => p.id === selectedSttProvider.provider
-        );
-        if (!provider && !usePluelyAPI) {
-          setError("Speech provider config not found.");
-          return;
-        }
+        // Local-only STT pipeline: transcribeWithFallback routes to the
+        // pluely-asr sidecar regardless of the selected provider id, so an
+        // unknown provider id must not abort transcription with false error.
         const text = await transcribeWithFallback({
-          provider: usePluelyAPI ? undefined : provider,
+          provider: undefined,
           selectedProvider: selectedSttProvider,
           audio,
         });

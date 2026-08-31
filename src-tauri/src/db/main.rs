@@ -33,3 +33,33 @@ pub fn migrations() -> Vec<Migration> {
         },
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_migration_4_lf_bytes_and_exact_content() {
+        let all_migrations = migrations();
+        let migration_4 = all_migrations
+            .iter()
+            .find(|m| m.version == 4)
+            .expect("Migration 4 must exist");
+
+        let raw_sql = migration_4.sql;
+
+        // Ensure line endings are LF only (\n without \r)
+        assert!(
+            !raw_sql.contains('\r'),
+            "Migration 4 SQL contains CRLF carriage return bytes. Must use LF only."
+        );
+
+        // Verify exact historical SQL content
+        let expected_sql = "-- Migration 4: Self-Evolution persistence (survives WebView storage clears)\n\nCREATE TABLE IF NOT EXISTS se_style (\n    id INTEGER PRIMARY KEY CHECK (id = 1),\n    tone TEXT NOT NULL,\n    preferred_length TEXT NOT NULL DEFAULT 'concise',\n    favorite_patterns TEXT NOT NULL DEFAULT '[]',\n    avoid_patterns TEXT NOT NULL DEFAULT '[]',\n    custom_rules TEXT NOT NULL DEFAULT '[]',\n    updated_at INTEGER NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS se_feedback_log (\n    id TEXT PRIMARY KEY,\n    question TEXT NOT NULL,\n    response TEXT NOT NULL,\n    rating TEXT NOT NULL CHECK (rating IN ('like', 'dislike')),\n    reason TEXT,\n    topic TEXT,\n    timestamp INTEGER NOT NULL\n);\n\nCREATE INDEX IF NOT EXISTS idx_se_feedback_ts ON se_feedback_log (timestamp DESC);\n\nINSERT OR IGNORE INTO se_style (id, tone, preferred_length, updated_at)\nVALUES (1, 'живой, естественный', 'concise', strftime('%s','now') * 1000);";
+
+        assert_eq!(
+            raw_sql, expected_sql,
+            "Migration 4 SQL does not match the immutable historical published migration definition."
+        );
+    }
+}

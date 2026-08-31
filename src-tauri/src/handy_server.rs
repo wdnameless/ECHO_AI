@@ -29,22 +29,91 @@ const PORT: &str = "127.0.0.1:8000";
 const ASR_PORT: &str = "127.0.0.1:9877";
 
 fn is_running() -> bool {
-    TcpStream::connect_timeout(&PORT.parse().unwrap(), Duration::from_millis(400)).is_ok()
-        || TcpStream::connect_timeout(&ASR_PORT.parse().unwrap(), Duration::from_millis(400)).is_ok()
+    // The sidecar rebounds upward (9877..9882) when the default port is busy,
+    // so a fixed-port probe would report a healthy instance as dead. Ask the
+    // port file first (written next to the sidecar binary), then probe the
+    // known range. The legacy python server on :8000 stays as a candidate.
+    if let Some(port) = read_bound_asr_port() {
+        if TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(300),
+        )
+        .is_ok()
+        {
+            return true;
+        }
+    }
+    for port in 9877..=9882 {
+        if TcpStream::connect_timeout(
+            &format!("127.0.0.1:{port}").parse().unwrap(),
+            Duration::from_millis(150),
+        )
+        .is_ok()
+        {
+            return true;
+        }
+    }
+    TcpStream::connect_timeout(&PORT.parse().unwrap(), Duration::from_millis(150)).is_ok()
+}
+
+/// Read the port recorded in the asr-port file next to any known sidecar
+/// location. Prefer the freshest mtime when several exist.
+fn read_bound_asr_port() -> Option<u16> {
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            paths.push(dir.join("asr-port"));
+            paths.push(dir.join("resources").join("asr-port"));
+        }
+    }
+    let manifest = env!("CARGO_MANIFEST_DIR");
+    paths.push(
+        std::path::Path::new(&manifest)
+            .join("../../pluely-asr/target/release/asr-port")
+            .to_path_buf(),
+    );
+    let mut freshest: Option<(std::time::SystemTime, u16)> = None;
+    for p in paths {
+        let Ok(content) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        let Ok(port) = content.trim().parse::<u16>() else {
+            continue;
+        };
+        let ts = p
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        if freshest.as_ref().map_or(true, |(cur, _)| ts > *cur) {
+            freshest = Some((ts, port));
+        }
+    }
+    freshest.map(|(_, port)| port)
 }
 
 /// Locate a usable pluely-asr binary.
+///
+/// Only portable, install-relative locations are probed. A previously
+/// hardcoded developer-machine path won over the bundled copy and made the
+/// installed app run whatever binary happened to sit in the dev tree - a
+/// different build than the one the installer shipped, which is how stale
+/// watchdog logic kept returning.
 fn find_pluely_asr() -> Option<String> {
-    let mut candidates = vec![
-        r"D:\WORK\Pluely fork\pluely-asr\target\release\pluely-asr.exe".to_string(),
-        r"D:\WORK\Pluely\src-tauri\resources\pluely-asr.exe".to_string(),
-        r"D:\WORK\Pluely\resources\pluely-asr.exe".to_string(),
-    ];
+    let mut candidates: Vec<String> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
+            // Bundled resource dir first, then exe dir (dev builds run
+            // target/release -> target/release/pluely-asr.exe does not
+            // exist, so bundle layouts remain authoritative).
             candidates.push(format!("{}/resources/pluely-asr.exe", dir.display()));
             candidates.push(format!("{}/pluely-asr.exe", dir.display()));
         }
+    }
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        // Dev build (cargo tauri dev): source-tree resources and the
+        // workspace sidecar crate next to the repo.
+        candidates.push(format!("{}/resources/pluely-asr.exe", manifest));
+        candidates.push(format!("{}/../../pluely-asr/target/release/pluely-asr.exe", manifest));
     }
     candidates
         .into_iter()
@@ -371,27 +440,9 @@ pub fn start_handy_server() -> bool {
 /// Returns None if the file is missing or the sidecar never started.
 #[tauri::command]
 pub fn read_asr_port_file() -> Option<String> {
-    let mut paths = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            paths.push(dir.join("asr-port"));
-        }
-    }
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    paths.push(
-        std::path::Path::new(&manifest)
-            .join("../../pluely-asr/target/release/asr-port")
-            .to_path_buf(),
-    );
-    for p in paths {
-        if let Ok(content) = std::fs::read_to_string(&p) {
-            let trimmed = content.trim().to_string();
-            if !trimmed.is_empty() {
-                return Some(trimmed);
-            }
-        }
-    }
-    None
+    // Shared lookup also validates that the file parses to a real port and
+    // picks the freshest file when several sidecar copies exist.
+    read_bound_asr_port().map(|port| port.to_string())
 }
 
 /// Speak text aloud using Windows SAPI (fallback for WebView2 which may not

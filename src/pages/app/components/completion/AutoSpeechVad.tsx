@@ -57,8 +57,9 @@ const AutoSpeechVADInternal = ({
         );
 
         if (!providerConfig && !usePluelyAPI) {
-          // Automatic seamless fallback to default local Nemotron GPU provider
-          providerConfig = allSttProviders[0];
+          // No matching provider (stale id or empty list): the transcribe
+          // pipeline is local-only, so proceed without a curl provider.
+          providerConfig = undefined;
         }
 
         setIsTranscribing(true);
