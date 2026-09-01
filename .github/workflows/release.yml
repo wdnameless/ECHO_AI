@@ -43,11 +43,13 @@ jobs:
             New-Item -ItemType Directory -Path $resourceDir -Force | Out-Null
           }
           
-          # Download sidecar bundle
+          # Download sidecar bundle. The repo is PRIVATE, so anonymous
+          # requests get 404 - authenticate with the job token.
           $sidecarUrl = "https://github.com/wdnameless/pluely/releases/download/resources-v0.1.0/pluely-asr-windows-x64-v0.1.0.zip"
           $sidecarZip = "pluely-asr-windows-x64-v0.1.0.zip"
           Write-Host "Downloading sidecar bundle from $sidecarUrl..."
-          Invoke-WebRequest -Uri $sidecarUrl -OutFile $sidecarZip -UseBasicParsing
+          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/octet-stream" }
+          Invoke-WebRequest -Uri $sidecarUrl -OutFile $sidecarZip -Headers $headers -UseBasicParsing
           Expand-Archive -Path $sidecarZip -DestinationPath $resourceDir -Force
           Remove-Item -Path $sidecarZip -Force
           
