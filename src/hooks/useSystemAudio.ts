@@ -609,7 +609,7 @@ export function useSystemAudio() {
       // Filler for the interviewer-question pause: anchored to the last
       // 'them' segment so the card renders under the question that triggered
       // the answer (auto path never goes through askAIForTranscript).
-      const filler = selectRussianFiller(question);
+      const filler = selectRussianFiller();
       const anchor =
         [...liveSegments].reverse().find((s) => s.source === "them") || null;
       setActiveFiller(filler);
@@ -1116,7 +1116,7 @@ export function useSystemAudio() {
         return;
       }
 
-      const filler = selectRussianFiller(utteranceId);
+      const filler = selectRussianFiller();
       setActiveFiller(filler);
       setPendingUtteranceId(utteranceId);
       activeAskUtteranceIdRef.current = utteranceId;
