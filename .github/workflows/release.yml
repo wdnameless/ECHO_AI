@@ -53,7 +53,7 @@ jobs:
           $asset = $release.assets | Where-Object { $_.name -eq "pluely-asr-windows-x64-v0.1.0.zip" }
           if (-not $asset) { Write-Error "Sidecar asset not found in resources-v0.1.0 release" }
           Write-Host "Downloading sidecar asset id=$($asset.id)..."
-          gh api "repos/wdnameless/pluely/releases/assets/$($asset.id)" -H "Accept: application/octet-stream" -H "X-GitHub-Api-Version: 2022-11-28" -o pluely-asr-windows-x64-v0.1.0.zip
+          curl.exe -sS -L -o pluely-asr-windows-x64-v0.1.0.zip -H "Authorization: token $env:GH_TOKEN" -H "Accept: application/octet-stream" "https://api.github.com/repos/wdnameless/pluely/releases/assets/$($asset.id)"
           Expand-Archive -Path pluely-asr-windows-x64-v0.1.0.zip -DestinationPath $resourceDir -Force
           Remove-Item -Path pluely-asr-windows-x64-v0.1.0.zip -Force
           
