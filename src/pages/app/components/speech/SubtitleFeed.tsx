@@ -71,31 +71,41 @@ const overlapRatio = (a: string[], b: string[]): number => {
   return hits / a.length;
 };
 
-// Hybrid answer helper: extracts starter phrase (up to 120 chars, cut at .!? or newline)
-// and returns { starter, body }. If sentence is incomplete (e.g. streaming before first terminator),
-// starter is null and full text is returned as body.
+// Hybrid answer helper: extracts starter phrase (up to 120 chars, cut at
+// .!? or newline) and returns { starter, body }.
+//
+// Rules that keep the card meaningful on real model output:
+// - Markdown list markers ("1. ", "-", "*") END the starter instead of
+//   being cut mid-marker ("1." alone as a card looks like a glitch).
+// - While streaming, a provisional starter appears once >=40 chars cut at
+//   a word boundary, so the gist is visible before the first full stop.
 function splitHybridAnswer(text: string): { starter: string | null; body: string } {
   if (!text) return { starter: null, body: "" };
   const trimmed = text.trim();
   if (!trimmed) return { starter: null, body: "" };
 
-  // Search for the first sentence terminator: ., !, ?, or newline
-  const match = trimmed.match(/[\r\n]|[.!?](?=\s|$)/);
-  if (!match || match.index === undefined) {
-    // No complete sentence yet
-    return { starter: null, body: trimmed };
+  // Sentence terminator NOT followed by a list marker start.
+  const terminatorRe = /[.!?](?=\s|$)(?!\s*(?:\d+[.)]\s|[-*•]\s))|[\r\n]+/;
+  const match = trimmed.match(terminatorRe);
+  if (match && match.index !== undefined) {
+    const endIdx =
+      match[0] === "\n" || match[0] === "\r"
+        ? match.index
+        : match.index + match[0].length;
+    const potentialStarter = trimmed.slice(0, endIdx).trim();
+    if (potentialStarter.length > 0 && potentialStarter.length <= 120) {
+      const body = trimmed.slice(endIdx).trim();
+      return { starter: potentialStarter, body };
+    }
   }
 
-  const endIdx = match[0] === "\n" || match[0] === "\r" ? match.index : match.index + match[0].length;
-  const potentialStarter = trimmed.slice(0, endIdx).trim();
-
-  // Check length constraint (up to 120 chars) and non-empty
-  if (potentialStarter.length > 0 && potentialStarter.length <= 120) {
-    const remainingBody = trimmed.slice(endIdx).trim();
-    return {
-      starter: potentialStarter,
-      body: remainingBody,
-    };
+  // No clean terminator yet: provisional starter while streaming.
+  if (trimmed.length >= 40) {
+    const window = trimmed.slice(0, 120);
+    const cut = window.lastIndexOf(" ");
+    if (cut >= 40) {
+      return { starter: window.slice(0, cut).trim(), body: trimmed.slice(cut).trim() };
+    }
   }
 
   return { starter: null, body: trimmed };
