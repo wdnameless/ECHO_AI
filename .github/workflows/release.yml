@@ -98,8 +98,20 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Install frontend deps
-        run: npm ci
+      - name: Ensure release exists (PAT)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo wdnameless/pluely >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists."
+          else
+            gh release create "$GITHUB_REF_NAME" --repo wdnameless/pluely \
+              --title "Pluely $GITHUB_REF_NAME" \
+              --notes "Auto-generated release." \
+              --verify-tag
+            echo "Release $GITHUB_REF_NAME created with PAT."
+          fi
 
       - name: Build & Publish release
         uses: tauri-apps/tauri-action@v0
