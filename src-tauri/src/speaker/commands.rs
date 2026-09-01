@@ -52,16 +52,18 @@ pub async fn start_system_audio_capture(
 ) -> Result<(), String> {
     let state = app.state::<crate::AudioState>();
 
-    // Check if already capturing (atomic check)
+    // Idempotency guard: a fast double-toggle (UI + shortcut) or a stream
+    // task that never yielded (idle loopback) leaves stream_task=Some and
+    // every later start fails with 'Capture already running'. Abort any
+    // previous task here and reset the slot before proceeding.
     {
-        let guard = state
+        let mut guard = state
             .stream_task
             .lock()
             .map_err(|e| format!("Failed to acquire lock: {}", e))?;
-
-        if guard.is_some() {
-            warn!("Capture already running");
-            return Err("Capture already running".to_string());
+        if let Some(prev) = guard.take() {
+            warn!("Capture already running - aborting previous task");
+            prev.abort();
         }
     }
 
@@ -121,6 +123,12 @@ pub async fn start_system_audio_capture(
                 *guard = None;
             };
         }
+        // When this task is aborted (superseded by a fresh start), the new
+        // task owns the is_capturing flag; nothing to reset here. Detect via
+        // a dropped token: tokio abort cancels at the NEXT await, and our
+        // loop helpers poll stream.next() — on abort this code never runs,
+        // so resetting the flag here would race with the superseding task.
+        // Leave the flag untouched; the new start already set it true.
     });
 
     *state_clone
