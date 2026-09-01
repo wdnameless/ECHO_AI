@@ -43,15 +43,17 @@ jobs:
             New-Item -ItemType Directory -Path $resourceDir -Force | Out-Null
           }
           
-          # Download sidecar bundle. The repo is PRIVATE, so anonymous
-          # requests get 404 - authenticate with the job token.
-          $sidecarUrl = "https://github.com/wdnameless/pluely/releases/download/resources-v0.1.0/pluely-asr-windows-x64-v0.1.0.zip"
-          $sidecarZip = "pluely-asr-windows-x64-v0.1.0.zip"
-          Write-Host "Downloading sidecar bundle from $sidecarUrl..."
-          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/octet-stream" }
-          Invoke-WebRequest -Uri $sidecarUrl -OutFile $sidecarZip -Headers $headers -UseBasicParsing
-          Expand-Archive -Path $sidecarZip -DestinationPath $resourceDir -Force
-          Remove-Item -Path $sidecarZip -Force
+          # Download sidecar bundle. The repo is PRIVATE: releases/download
+          # anonymous links 404, and Invoke-WebRequest with a Bearer header
+          # breaks on the S3 redirect. Use the gh CLI asset endpoint instead
+          # (gh is preinstalled on GitHub runners; GITHUB_TOKEN has contents
+          # read access).
+          $assetId = gh api repos/wdnameless/pluely/releases/tags/resources-v0.1.0 --jq '.assets[] | select(.name == "pluely-asr-windows-x64-v0.1.0.zip") | .id'
+          if (-not $assetId) { Write-Error "Sidecar asset not found in resources-v0.1.0 release" }
+          Write-Host "Downloading sidecar asset id=$assetId..."
+          gh api "repos/wdnameless/pluely/releases/assets/$assetId" -H "Accept: application/octet-stream" > pluely-asr-windows-x64-v0.1.0.zip
+          Expand-Archive -Path pluely-asr-windows-x64-v0.1.0.zip -DestinationPath $resourceDir -Force
+          Remove-Item -Path pluely-asr-windows-x64-v0.1.0.zip -Force
           
           # Download Nemotron model from immutable HuggingFace snapshot
           $modelUrl = "https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/6d44e540bc31b0de1dbe174a3cea87f53a7f22fb/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf"
