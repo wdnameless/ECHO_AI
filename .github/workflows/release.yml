@@ -50,7 +50,7 @@ jobs:
           # breaks on the S3 redirect. Use the gh CLI asset endpoint instead
           # (gh is preinstalled on GitHub runners; GITHUB_TOKEN has contents
           # read access).
-          $assetId = gh api repos/wdnameless/pluely/releases/tags/resources-v0.1.0 --jq '.assets[] | select(.name == "pluely-asr-windows-x64-v0.1.0.zip") | .id'
+          $assetId = (gh api repos/wdnameless/pluely/releases/tags/resources-v0.1.0 --jq '.assets[] | "\(.id) \(.name)"') -split "`n" | Where-Object { $_ -like "*.zip" } | ForEach-Object { ($_ -split " ")[0] }
           if (-not $assetId) { Write-Error "Sidecar asset not found in resources-v0.1.0 release" }
           Write-Host "Downloading sidecar asset id=$assetId..."
           gh api "repos/wdnameless/pluely/releases/assets/$assetId" -H "Accept: application/octet-stream" > pluely-asr-windows-x64-v0.1.0.zip
