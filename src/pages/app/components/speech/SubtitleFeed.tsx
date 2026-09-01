@@ -1144,9 +1144,13 @@ export const SubtitleFeed = ({
                     </div>
                   ) : (
                     <p
-                      onDoubleClick={() => {
-                        if (!e.streaming) {
-                          startInlineEdit(rowId, e.text);
+                      onMouseUp={() => {
+                        // Selection-based correction: allowed during
+                        // streaming. Selected text (up to 4 words) pre-fills
+                        // the popover field; a plain click does nothing.
+                        const sel = window.getSelection()?.toString().trim();
+                        if (sel && sel.split(/\s+/).length <= 4) {
+                          startInlineEdit(rowId, e.text, sel);
                         }
                       }}
                       className={cn(
@@ -1154,24 +1158,20 @@ export const SubtitleFeed = ({
                         e.kind === "me"
                           ? "text-foreground/80"
                           : "text-foreground/95 font-medium",
-                        e.streaming && "italic text-muted-foreground cursor-default"
+                        e.streaming && "italic text-muted-foreground"
                       )}
                       style={{
                         wordBreak: "break-word",
                         overflowWrap: "anywhere",
                         whiteSpace: "pre-wrap",
                       }}
-                      title={!e.streaming ? "Двойной клик для исправления слова" : undefined}
+                      title="Выделите слово для исправления"
                     >
-                      {e.streaming ? (
-                        e.text
-                      ) : (
-                        <HoverTranslate text={e.text} />
-                       )}
+                      {e.streaming ? e.text : <HoverTranslate text={e.text} />}
                     </p>
                   )}
 
-                  {!e.streaming && !isEditing && (
+                  {!isEditing && (
                     <button
                       type="button"
                       onClick={() => startInlineEdit(rowId, e.text)}

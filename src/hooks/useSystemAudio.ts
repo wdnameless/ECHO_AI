@@ -605,19 +605,36 @@ export function useSystemAudio() {
         return;
       }
 
+
+      // Filler for the interviewer-question pause: anchored to the last
+      // 'them' segment so the card renders under the question that triggered
+      // the answer (auto path never goes through askAIForTranscript).
+      const filler = selectRussianFiller(question);
+      const anchor =
+        [...liveSegments].reverse().find((s) => s.source === "them") || null;
+      setActiveFiller(filler);
+      setPendingUtteranceId(anchor ? anchor.id : null);
+      activeAskUtteranceIdRef.current = anchor ? anchor.id : "auto";
+
       const effectiveSystemPrompt = useSystemPrompt
         ? systemPrompt || DEFAULT_SYSTEM_PROMPT
         : contextContent || DEFAULT_SYSTEM_PROMPT;
 
       const previousMessages = buildHistory(conversation.messages);
 
-      await processWithAI(
-        question,
-        effectiveSystemPrompt,
-        previousMessages,
-        pendingScreenshotRef.current ? [pendingScreenshotRef.current] : [],
-        source
-      );
+      try {
+        await processWithAI(
+          question,
+          effectiveSystemPrompt,
+          previousMessages,
+          pendingScreenshotRef.current ? [pendingScreenshotRef.current] : [],
+          source
+        );
+      } finally {
+        setActiveFiller(null);
+        setPendingUtteranceId(null);
+        activeAskUtteranceIdRef.current = null;
+      }
     },
     [
       processWithAI,
@@ -626,6 +643,7 @@ export function useSystemAudio() {
       contextContent,
       conversation,
       buildHistory,
+      liveSegments,
     ]
   );
 
