@@ -46,14 +46,14 @@ jobs:
           }
           
           # Download sidecar bundle. The repo is PRIVATE: releases/download
-          # anonymous links 404, and Invoke-WebRequest with a Bearer header
-          # breaks on the S3 redirect. Use the gh CLI asset endpoint instead
-          # (gh is preinstalled on GitHub runners; GITHUB_TOKEN has contents
-          # read access).
-          $assetId = (gh api repos/wdnameless/pluely/releases/tags/resources-v0.1.0 --jq '.assets[] | "\(.id) \(.name)"') -split "`n" | Where-Object { $_ -like "*.zip" } | ForEach-Object { ($_ -split " ")[0] }
-          if (-not $assetId) { Write-Error "Sidecar asset not found in resources-v0.1.0 release" }
-          Write-Host "Downloading sidecar asset id=$assetId..."
-          gh api "repos/wdnameless/pluely/releases/assets/$assetId" -H "Accept: application/octet-stream" > pluely-asr-windows-x64-v0.1.0.zip
+          # anonymous links 404. Also: spaces inside a --jq expression make
+          # PowerShell split it into two argv entries (gh: accepts 1 arg),
+          # so parse JSON with ConvertFrom-Json instead of jq filtering.
+          $release = gh api repos/wdnameless/pluely/releases/tags/resources-v0.1.0 | ConvertFrom-Json
+          $asset = $release.assets | Where-Object { $_.name -eq "pluely-asr-windows-x64-v0.1.0.zip" }
+          if (-not $asset) { Write-Error "Sidecar asset not found in resources-v0.1.0 release" }
+          Write-Host "Downloading sidecar asset id=$($asset.id)..."
+          gh api "repos/wdnameless/pluely/releases/assets/$($asset.id)" -H "Accept: application/octet-stream" -H "X-GitHub-Api-Version: 2022-11-28" -o pluely-asr-windows-x64-v0.1.0.zip
           Expand-Archive -Path pluely-asr-windows-x64-v0.1.0.zip -DestinationPath $resourceDir -Force
           Remove-Item -Path pluely-asr-windows-x64-v0.1.0.zip -Force
           
