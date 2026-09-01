@@ -26,6 +26,11 @@ import {
   generateMessageId,
 } from "@/lib";
 import {
+  applyCorrections,
+  buildInitialPrompt,
+  loadCorrections,
+} from "@/lib/vocab";
+import {
   DEFAULT_QUICK_ACTIONS,
   DEFAULT_SYSTEM_PROMPT,
   STORAGE_KEYS,
@@ -182,6 +187,9 @@ export function useSystemAudio() {
   useEffect(() => {
     capturingRef.current = capturing;
   }, [capturing]);
+  useEffect(() => {
+    void loadCorrections();
+  }, []);
   useEffect(() => {
     pendingScreenshotRef.current = pendingScreenshot;
   }, [pendingScreenshot]);
@@ -531,6 +539,7 @@ export function useSystemAudio() {
     text: string,
     partial = false
   ) => {
+    const correctedText = applyCorrections(text);
     const timestamp = Date.now();
     setLiveSegments((prev) => {
       // For partial streaming (live speech), replace the LAST segment of the
@@ -543,7 +552,7 @@ export function useSystemAudio() {
           const updated = [...prev];
           updated[idx] = {
             ...updated[idx],
-            text,
+            text: correctedText,
             timestamp,
             partial: true,
           };
@@ -556,7 +565,7 @@ export function useSystemAudio() {
         {
           id: `seg_${timestamp}_${source}_${Math.random().toString(36).slice(2)}`,
           source,
-          text,
+          text: correctedText,
           timestamp,
           partial,
         },
@@ -638,6 +647,7 @@ export function useSystemAudio() {
         selectedProvider: selectedSttProvider,
         audio: audioBlob,
         priority: "high",
+        prompt: buildInitialPrompt(),
       });
 
       const timeoutPromise = new Promise<string>((_, reject) => {
@@ -915,8 +925,9 @@ export function useSystemAudio() {
             bytes[i] = binaryString.charCodeAt(i);
           }
           const blob = new Blob([bytes], { type: "audio/wav" });
+          const usePluelyAPI = await shouldUsePluelyAPI();
           try {
-            const usePluelyAPI = await shouldUsePluelyAPI();
+            const prompt = buildInitialPrompt();
             const text = await transcribeWithFallback({
               provider: usePluelyAPI
                 ? undefined
@@ -930,6 +941,7 @@ export function useSystemAudio() {
               allowCloudFallback: false,
               // Partials are low priority: final segments jump the queue.
               priority: "low",
+              prompt,
             });
             if (text && !text.toLowerCase().startsWith("pluely stt error")) {
               appendLiveSegment("them", text.trim(), true);

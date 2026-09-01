@@ -8,6 +8,7 @@ import {
   ToolsSettings,
   AiContextSettings,
   JobProfilesSettings,
+  ASRDictionarySettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
 
@@ -20,6 +21,9 @@ const Settings = () => {
       {/* Job Profiles: Presets for vacancy & resume context */}
       <JobProfilesSettings />
 
+
+      {/* ASR Vocabulary & Pronunciation Dictionary */}
+      <ASRDictionarySettings />
       {/* Web Search & Skills (Live Research) */}
       <ToolsSettings />
 

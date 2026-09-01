@@ -6,6 +6,7 @@ mod db;
 mod handy_server;
 mod shortcuts;
 mod tray;
+mod vocab;
 mod window;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, WebviewWindow};
@@ -123,6 +124,9 @@ pub fn run() {
             speaker::get_audio_sample_rate,
             speaker::get_input_devices,
             speaker::get_output_devices,
+            vocab::get_corrections,
+            vocab::add_correction,
+            vocab::delete_correction,
         ])
         .setup(|app| {
             // Setup main window positioning

@@ -64,6 +64,8 @@ export interface STTParams {
   audio: File | Blob;
   /** "high" = final segment (processed first), "low" = live partial. */
   priority?: "high" | "low";
+  /** Optional initial prompt / vocabulary hints passed to ASR (e.g. sidecar). */
+  prompt?: string;
 }
 
 /**
@@ -171,11 +173,17 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     let finalHeaders = { ...headers };
     let body: FormData | string | Blob;
     const asrBase = await getAsrBaseUrl();
-    if (/127\.0\.0\.1|localhost|0\.0\.0\.0/.test(curlJson.url || "")) {
+    const isLocalAsr = /127\.0\.0\.1|localhost|0\.0\.0\.0/.test(curlJson.url || "");
+    if (isLocalAsr) {
       url = url.replace(
         /^http:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0):\d+/,
         asrBase
       );
+      if (params.prompt) {
+        const trimmedPrompt = params.prompt.slice(0, 500);
+        const sep = url.includes("?") ? "&" : "?";
+        url += `${sep}prompt=${encodeURIComponent(trimmedPrompt)}`;
+      }
     }
     // Local Handy server: pass priority so final segments jump the queue,
     // and the fixed language (ru|en) so the model never auto-detects or

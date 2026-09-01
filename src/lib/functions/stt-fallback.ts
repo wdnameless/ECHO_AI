@@ -35,6 +35,8 @@ export interface TranscribeWithFallbackParams {
   allowCloudFallback?: boolean;
   /** "high" = final segment (processed first), "low" = live partial. */
   priority?: "high" | "low";
+  /** Optional initial prompt / vocabulary hints. */
+  prompt?: string;
 }
 
 export async function transcribeWithFallback({
@@ -42,11 +44,12 @@ export async function transcribeWithFallback({
   provider: _provider,
   selectedProvider,
   priority = "high",
+  prompt,
 }: TranscribeWithFallbackParams): Promise<string> {
   // If the cloud Pluely API is enabled, use it directly (explicit user choice).
   const usePluelyAPI = await shouldUsePluelyAPI();
   if (usePluelyAPI) {
-    return fetchSTT({ provider: undefined, selectedProvider, audio, priority });
+    return fetchSTT({ provider: undefined, selectedProvider, audio, priority, prompt });
   }
 
   // LOCAL ONLY: the local Handy server handles every request. The selected
@@ -74,6 +77,7 @@ export async function transcribeWithFallback({
     },
     audio,
     priority,
+    prompt,
   });
 
   if (

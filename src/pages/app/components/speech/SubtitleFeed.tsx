@@ -8,10 +8,12 @@ import {
   Loader2,
   MicIcon,
   PauseIcon,
+  PencilIcon,
   PlayIcon,
   SparklesIcon,
   ThumbsDownIcon,
   ThumbsUpIcon,
+  XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fastTranslate } from "@/lib/fast-translator";
@@ -23,6 +25,7 @@ import {
 import { formatSpokenAnswer } from "@/lib/spoken-format";
 import { HoverTranslate } from "@/lib/hover-translate";
 import { resolveProviderModel } from "@/lib/functions/ai-response.function";
+import { addCorrection, applyCorrections } from "@/lib/vocab";
 import { Switch, Button } from "@/components";
 import {
   DropdownMenu,
@@ -133,6 +136,7 @@ interface SubtitleFeedProps {
   ) => Promise<void>;
   activeFiller?: string | null;
   pendingUtteranceId?: string | null;
+  onCorrectWord?: (id: string, newText: string) => void;
 }
 
 const DISLIKE_REASONS = [
@@ -183,6 +187,7 @@ export const SubtitleFeed = ({
   onAskAI,
   activeFiller,
   pendingUtteranceId,
+  onCorrectWord,
 }: SubtitleFeedProps) => {
   const { promptProfiles, activeProfileId, selectPromptProfile, selectedAIProvider, allAiProviders } = useApp();
   const activeProfile =
@@ -220,6 +225,78 @@ export const SubtitleFeed = ({
     getSelfEvolutionStats()
   );
   const [appVersion, setAppVersion] = useState<string>("");
+
+  const [overrides, setOverrides] = useState<Record<string, string>>({});
+  const [editingRowId, setEditingRowId] = useState<string | null>(null);
+  const [editOriginalText, setEditOriginalText] = useState("");
+  const [editWrongWord, setEditWrongWord] = useState("");
+  const [editRightWord, setEditRightWord] = useState("");
+  const [isSavingCorrection, setIsSavingCorrection] = useState(false);
+  const editInputRef = useRef<HTMLInputElement>(null);
+
+  const startInlineEdit = useCallback((rowId: string, currentText: string, initialWord?: string) => {
+    setEditingRowId(rowId);
+    setEditOriginalText(currentText);
+    const selWord = initialWord || (window.getSelection()?.toString().trim() || "");
+    if (selWord && currentText.includes(selWord)) {
+      setEditWrongWord(selWord);
+      setEditRightWord(selWord);
+    } else {
+      // Default to empty or whole text if single word
+      const words = currentText.trim().split(/\s+/);
+      if (words.length === 1 && words[0]) {
+        setEditWrongWord(words[0]);
+        setEditRightWord(words[0]);
+      } else {
+        setEditWrongWord("");
+        setEditRightWord("");
+      }
+    }
+  }, []);
+
+  const cancelInlineEdit = useCallback(() => {
+    setEditingRowId(null);
+    setEditOriginalText("");
+    setEditWrongWord("");
+    setEditRightWord("");
+    setIsSavingCorrection(false);
+  }, []);
+
+  const saveInlineEdit = useCallback(async (rowId: string, originalText: string, wrongWord: string, rightWord: string) => {
+    const cleanWrong = wrongWord.trim();
+    const cleanRight = rightWord.trim();
+    if (!cleanWrong || !cleanRight) {
+      cancelInlineEdit();
+      return;
+    }
+
+    setIsSavingCorrection(true);
+    try {
+      const correction = await addCorrection(cleanWrong, cleanRight);
+      const updatedText = applyCorrections(originalText, [correction]);
+      setOverrides((prev) => ({ ...prev, [rowId]: updatedText }));
+      onCorrectWord?.(rowId, updatedText);
+      cancelInlineEdit();
+    } catch (e) {
+      console.error("Failed to add ASR correction:", e);
+      // Fallback local update even if DB fails
+      const escaped = cleanWrong.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(`(?<=^|[^\\p{L}\\p{N}_])${escaped}(?=[^\\p{L}\\p{N}_]|$)`, "gui");
+      const updatedText = originalText.replace(regex, cleanRight);
+      setOverrides((prev) => ({ ...prev, [rowId]: updatedText }));
+      onCorrectWord?.(rowId, updatedText);
+      cancelInlineEdit();
+    } finally {
+      setIsSavingCorrection(false);
+    }
+  }, [cancelInlineEdit, onCorrectWord]);
+
+  useEffect(() => {
+    if (editingRowId && editInputRef.current) {
+      editInputRef.current.focus();
+      editInputRef.current.select();
+    }
+  }, [editingRowId]);
 
   useEffect(() => {
     getVersion()
@@ -347,10 +424,15 @@ export const SubtitleFeed = ({
   }, [conversation.messages, liveSegments, lastAIResponse, isAIProcessing]);
 
   // What is actually on screen: live feed, or the frozen snapshot while paused.
+  // Apply any in-place user overrides (e.g. from corrections).
   const visible = useMemo<FeedEntry[]>(() => {
-    if (!paused) return entries;
-    return frozenRef.current ?? entries;
-  }, [paused, entries]);
+    const base = !paused ? entries : (frozenRef.current ?? entries);
+    if (Object.keys(overrides).length === 0) return base;
+    return base.map((e) => {
+      const override = overrides[e.id];
+      return override !== undefined ? { ...e, text: override } : e;
+    });
+  }, [paused, entries, overrides]);
 
   // Snapshot the feed at the moment the freeze starts.
   useEffect(() => {
@@ -959,7 +1041,8 @@ export const SubtitleFeed = ({
 
           /* Compact speech rows (me / them) */
           const isPending = pendingUtteranceId === e.id;
-          const showAskAI = e.kind === "me" && !e.streaming && Boolean(onAskAI);
+          const isEditing = editingRowId === rowId;
+          const showAskAI = e.kind === "me" && !e.streaming && Boolean(onAskAI) && !isEditing;
           const isAskDisabled = !e.text.trim() || isPending || isAIProcessing;
           const showFillerBelow = isPending && Boolean(activeFiller);
 
@@ -968,7 +1051,8 @@ export const SubtitleFeed = ({
               <div
                 className={cn(
                   "group grid gap-x-2 py-0.5 border-b border-border/20 hover:bg-muted/30 rounded transition-colors",
-                  translationsOn ? "grid-cols-[1fr_1fr]" : "grid-cols-1"
+                  translationsOn ? "grid-cols-[1fr_1fr]" : "grid-cols-1",
+                  isEditing && "bg-muted/40 border-primary/30"
                 )}
               >
                 <div className="min-w-0 flex items-start gap-1.5">
@@ -985,26 +1069,125 @@ export const SubtitleFeed = ({
                     )}
                     {badge.label}
                   </span>
-                  <p
-                    className={cn(
-                      "flex-1 min-w-0 text-[0.76em] leading-snug break-words",
-                      e.kind === "me"
-                        ? "text-foreground/80"
-                        : "text-foreground/95 font-medium",
-                      e.streaming && "italic text-muted-foreground"
-                    )}
-                    style={{
-                      wordBreak: "break-word",
-                      overflowWrap: "anywhere",
-                      whiteSpace: "pre-wrap",
-                    }}
-                  >
-                    {e.streaming ? (
-                      e.text
-                    ) : (
-                      <HoverTranslate text={e.text} />
-                    )}
-                  </p>
+
+                  {isEditing ? (
+                    <div className="flex-1 min-w-0 flex flex-col gap-1 py-0.5">
+                      <div className="flex items-center gap-1">
+                        <input
+                          ref={editInputRef}
+                          type="text"
+                          value={editWrongWord}
+                          onChange={(e) => setEditWrongWord(e.target.value)}
+                          placeholder="Было (ошибка)"
+                          className="w-1/2 h-6 px-1.5 py-0.5 text-[0.74em] font-medium bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
+                          onKeyDown={(evt) => {
+                            if (evt.key === "Escape") {
+                              evt.preventDefault();
+                              cancelInlineEdit();
+                            } else if (evt.key === "Enter") {
+                              evt.preventDefault();
+                              if (editWrongWord && editRightWord) {
+                                void saveInlineEdit(rowId, editOriginalText, editWrongWord, editRightWord);
+                              }
+                            }
+                          }}
+                        />
+                        <span className="text-[0.7em] text-muted-foreground">→</span>
+                        <input
+                          type="text"
+                          value={editRightWord}
+                          onChange={(e) => setEditRightWord(e.target.value)}
+                          placeholder="Стало (как надо)"
+                          className="w-1/2 h-6 px-1.5 py-0.5 text-[0.74em] font-medium bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
+                          onKeyDown={(evt) => {
+                            if (evt.key === "Escape") {
+                              evt.preventDefault();
+                              cancelInlineEdit();
+                            } else if (evt.key === "Enter") {
+                              evt.preventDefault();
+                              if (editWrongWord && editRightWord) {
+                                void saveInlineEdit(rowId, editOriginalText, editWrongWord, editRightWord);
+                              }
+                            }
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (editWrongWord && editRightWord) {
+                              void saveInlineEdit(rowId, editOriginalText, editWrongWord, editRightWord);
+                            }
+                          }}
+                          disabled={isSavingCorrection || !editWrongWord.trim() || !editRightWord.trim()}
+                          className="shrink-0 h-6 px-1.5 inline-flex items-center gap-1 rounded text-[0.68em] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                          title="Сохранить в словарь"
+                        >
+                          {isSavingCorrection ? (
+                            <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                          ) : (
+                            <CheckIcon className="w-2.5 h-2.5" />
+                          )}
+                          Сохранить
+                        </button>
+                        <button
+                          type="button"
+                          onClick={cancelInlineEdit}
+                          className="shrink-0 h-6 px-1 inline-flex items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                          title="Отмена (Esc)"
+                        >
+                          <XIcon className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <span className="text-[0.62em] text-muted-foreground">
+                        Нажмите Enter для сохранения в словарь ASR или Esc для отмены
+                      </span>
+                    </div>
+                  ) : (
+                    <p
+                      onDoubleClick={() => {
+                        if (!e.streaming) {
+                          startInlineEdit(rowId, e.text);
+                        }
+                      }}
+                      className={cn(
+                        "flex-1 min-w-0 text-[0.76em] leading-snug break-words cursor-text",
+                        e.kind === "me"
+                          ? "text-foreground/80"
+                          : "text-foreground/95 font-medium",
+                        e.streaming && "italic text-muted-foreground cursor-default"
+                      )}
+                      style={{
+                        wordBreak: "break-word",
+                        overflowWrap: "anywhere",
+                        whiteSpace: "pre-wrap",
+                      }}
+                      title={!e.streaming ? "Двойной клик для исправления слова" : undefined}
+                    >
+                      {e.streaming ? (
+                        e.text
+                      ) : (
+                        <HoverTranslate text={e.text} />
+                       )}
+                    </p>
+                  )}
+
+                  {!e.streaming && !isEditing && (
+                    <button
+                      type="button"
+                      onClick={() => startInlineEdit(rowId, e.text)}
+                      className={cn(
+                        "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.62em] font-medium transition-colors border",
+                        "text-muted-foreground hover:text-foreground border-border/40 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
+                        "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                      )}
+                      aria-label="Исправить"
+                      title="Исправить слово в словаре"
+                    >
+                      <PencilIcon className="w-2.5 h-2.5" />
+                      Исправить
+                    </button>
+                  )}
+
                   {showAskAI && (
                     <button
                       type="button"
@@ -1022,17 +1205,19 @@ export const SubtitleFeed = ({
                       Спросить ИИ
                     </button>
                   )}
-                  <button
-                    onClick={() => handleCopy(rowId, e.text)}
-                    className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted-foreground hover:text-foreground mt-0.5"
-                    title="Скопировать"
-                  >
-                    {copiedId === rowId ? (
-                      <CheckIcon className="w-3 h-3 text-emerald-500" />
-                    ) : (
-                      <CopyIcon className="w-3 h-3" />
-                    )}
-                  </button>
+                  {!isEditing && (
+                    <button
+                      onClick={() => handleCopy(rowId, e.text)}
+                      className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted-foreground hover:text-foreground mt-0.5"
+                      title="Скопировать"
+                    >
+                      {copiedId === rowId ? (
+                        <CheckIcon className="w-3 h-3 text-emerald-500" />
+                      ) : (
+                        <CopyIcon className="w-3 h-3" />
+                      )}
+                    </button>
+                  )}
                 </div>
                 {translationsOn && (
                   <div className="min-w-0 flex items-start">

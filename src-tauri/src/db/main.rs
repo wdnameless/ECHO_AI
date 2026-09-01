@@ -31,6 +31,13 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("migrations/self-evolution.sql"),
             kind: MigrationKind::Up,
         },
+        // Migration 5: User vocabulary ASR corrections
+        Migration {
+            version: 5,
+            description: "create_asr_corrections_table",
+            sql: include_str!("migrations/asr-corrections.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
