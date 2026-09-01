@@ -36,6 +36,8 @@ jobs:
 
       - name: Prepare Windows runtime resources
         shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
           $resourceDir = "src-tauri/resources"
@@ -43,15 +45,17 @@ jobs:
             New-Item -ItemType Directory -Path $resourceDir -Force | Out-Null
           }
           
-          # Download sidecar bundle. The repo is PRIVATE, so anonymous
-          # requests get 404 - authenticate with the job token.
-          $sidecarUrl = "https://github.com/wdnameless/pluely/releases/download/resources-v0.1.0/pluely-asr-windows-x64-v0.1.0.zip"
-          $sidecarZip = "pluely-asr-windows-x64-v0.1.0.zip"
-          Write-Host "Downloading sidecar bundle from $sidecarUrl..."
-          $headers = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/octet-stream" }
-          Invoke-WebRequest -Uri $sidecarUrl -OutFile $sidecarZip -Headers $headers -UseBasicParsing
-          Expand-Archive -Path $sidecarZip -DestinationPath $resourceDir -Force
-          Remove-Item -Path $sidecarZip -Force
+          # Download sidecar bundle. The repo is PRIVATE: releases/download
+          # anonymous links 404. Also: spaces inside a --jq expression make
+          # PowerShell split it into two argv entries (gh: accepts 1 arg),
+          # so parse JSON with ConvertFrom-Json instead of jq filtering.
+          $release = gh api repos/wdnameless/pluely/releases/tags/resources-v0.1.0 | ConvertFrom-Json
+          $asset = $release.assets | Where-Object { $_.name -eq "pluely-asr-windows-x64-v0.1.0.zip" }
+          if (-not $asset) { Write-Error "Sidecar asset not found in resources-v0.1.0 release" }
+          Write-Host "Downloading sidecar asset id=$($asset.id)..."
+          curl.exe -sS -L -o pluely-asr-windows-x64-v0.1.0.zip -H "Authorization: token $env:GH_TOKEN" -H "Accept: application/octet-stream" "https://api.github.com/repos/wdnameless/pluely/releases/assets/$($asset.id)"
+          Expand-Archive -Path pluely-asr-windows-x64-v0.1.0.zip -DestinationPath $resourceDir -Force
+          Remove-Item -Path pluely-asr-windows-x64-v0.1.0.zip -Force
           
           # Download Nemotron model from immutable HuggingFace snapshot
           $modelUrl = "https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/6d44e540bc31b0de1dbe174a3cea87f53a7f22fb/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf"
@@ -97,6 +101,21 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
+      - name: Ensure release exists (PAT)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo wdnameless/pluely >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists - publishing if draft."
+            gh release edit "$GITHUB_REF_NAME" --repo wdnameless/pluely --draft=false >/dev/null 2>&1 || true
+          else
+            gh release create "$GITHUB_REF_NAME" --repo wdnameless/pluely \
+              --title "Pluely $GITHUB_REF_NAME" \
+              --notes "Auto-generated release." \
+              --verify-tag
+            echo "Release $GITHUB_REF_NAME created with PAT."
+          fi
       - name: Build & Publish release
         uses: tauri-apps/tauri-action@v0
         env:
