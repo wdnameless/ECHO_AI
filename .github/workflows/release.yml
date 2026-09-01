@@ -98,6 +98,9 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Install frontend deps
+        run: npm ci
+
       - name: Ensure release exists (PAT)
         shell: bash
         env:
