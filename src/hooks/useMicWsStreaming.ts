@@ -1,0 +1,176 @@
+/**
+ * Real-time WebSocket streaming of candidate mic PCM audio to the local ASR sidecar (`/v1/asr/stream`).
+ *
+ * Responsibility:
+ * - Streams raw f32-LE 16 kHz PCM frames from the mic tap directly to pluely-asr.
+ * - Manages per-utterance lifecycle (connects on VAD speech start, closes on speech stop).
+ * - Dispatches streaming partials for candidate speech with zero 1s batch delay.
+ * - Handles auto-reconnection with backoff when connection drops during capture.
+ */
+
+import { useCallback, useRef } from "react";
+import { getAsrBaseUrl } from "@/lib/asr-discovery";
+import { getResponseSettings } from "@/lib";
+
+const MIC_WS_RECONNECT_MS = 2000;
+
+export interface UseMicWsStreamingProps {
+  capturingRef: React.MutableRefObject<boolean>;
+  onPartialTranscript: (text: string) => void;
+}
+
+export function useMicWsStreaming({
+  capturingRef,
+  onPartialTranscript,
+}: UseMicWsStreamingProps) {
+  const micWsRef = useRef<WebSocket | null>(null);
+  const micWsWantRef = useRef(false);
+  const micWsReconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const micWsStoppedByUsRef = useRef(false);
+  const micWsConnectRef = useRef<() => void>(() => {});
+
+  const micWsClose = useCallback(() => {
+    const ws = micWsRef.current;
+    micWsRef.current = null;
+    if (
+      ws &&
+      (ws.readyState === WebSocket.OPEN ||
+        ws.readyState === WebSocket.CONNECTING)
+    ) {
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close();
+    }
+  }, []);
+
+  const micFeedFrame = useCallback((pcm: ArrayBuffer) => {
+    const ws = micWsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(pcm);
+    }
+  }, []);
+
+  const scheduleMicWsReconnect = useCallback(() => {
+    // Do not reconnect after a deliberate per-utterance close.
+    if (micWsStoppedByUsRef.current) {
+      micWsStoppedByUsRef.current = false;
+      return;
+    }
+    if (!micWsWantRef.current || !capturingRef.current) return;
+    if (micWsReconnectTimerRef.current) return;
+    micWsReconnectTimerRef.current = setTimeout(() => {
+      micWsReconnectTimerRef.current = null;
+      micWsConnectRef.current();
+    }, MIC_WS_RECONNECT_MS);
+  }, [capturingRef]);
+
+  const micWsConnect = useCallback(() => {
+    micWsConnectRef.current = () => {
+      void (async () => {
+        if (!capturingRef.current) return;
+        micWsClose();
+        let base: string;
+        try {
+          base = await getAsrBaseUrl();
+        } catch (err) {
+          console.warn("[mic-ws]", err);
+          base = "";
+        }
+        if (!base) {
+          scheduleMicWsReconnect();
+          return;
+        }
+        const wsUrl = `${base.replace(/^http/, "ws")}/v1/asr/stream`;
+        let ws: WebSocket;
+        try {
+          ws = new WebSocket(wsUrl);
+        } catch (err) {
+          console.warn("[mic-ws]", err);
+          scheduleMicWsReconnect();
+          return;
+        }
+        ws.binaryType = "arraybuffer";
+        ws.onopen = () => {
+          // Pin the language exactly like the batch path does so the
+          // streaming model never auto-detects outside ru/en.
+          const responseSettings = getResponseSettings();
+          const lang = responseSettings.language === "russian" ? "ru" : "en";
+          ws.send(JSON.stringify({ type: "config", language: lang }));
+          micWsRef.current = ws;
+          micWsStoppedByUsRef.current = false;
+        };
+        ws.onmessage = (ev) => {
+          if (typeof ev.data !== "string") return;
+          try {
+            const msg = JSON.parse(ev.data);
+            if (
+              msg.type === "text" &&
+              typeof msg.text === "string" &&
+              msg.text.trim()
+            ) {
+              // Streaming partial from the sidecar: show immediately.
+              onPartialTranscript(msg.text.trim());
+            } else if (msg.type === "error") {
+              console.warn("[mic-ws] server error:", msg.message);
+            }
+          } catch (err) {
+            console.warn("[mic-ws]", err);
+            // ignore malformed frames
+          }
+        };
+        ws.onclose = () => {
+          if (micWsRef.current === ws) {
+            micWsRef.current = null;
+          }
+          scheduleMicWsReconnect();
+        };
+        ws.onerror = () => {
+          try {
+            ws.close();
+          } catch (err) {
+            console.warn("[mic-ws]", err);
+            // already closing
+          }
+        };
+      })();
+    };
+    micWsConnectRef.current();
+  }, [capturingRef, micWsClose, scheduleMicWsReconnect, onPartialTranscript]);
+
+  const micWsFinalizeAndClose = useCallback(() => {
+    const ws = micWsRef.current;
+    micWsStoppedByUsRef.current = true;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ type: "finalize" }));
+      } catch (err) {
+        console.warn("[mic-ws]", err);
+        // connection already dying - fall through to close
+      }
+      // Give the server a moment to flush the 'final' event, then close.
+      setTimeout(() => micWsClose(), 400);
+    } else {
+      micWsClose();
+    }
+  }, [micWsClose]);
+
+  const cleanupMicWs = useCallback(() => {
+    micWsWantRef.current = false;
+    if (micWsReconnectTimerRef.current) {
+      clearTimeout(micWsReconnectTimerRef.current);
+      micWsReconnectTimerRef.current = null;
+    }
+    micWsClose();
+  }, [micWsClose]);
+
+  return {
+    micWsRef,
+    micWsWantRef,
+    micWsConnect,
+    micWsClose,
+    micWsFinalizeAndClose,
+    micFeedFrame,
+    cleanupMicWs,
+  };
+}
