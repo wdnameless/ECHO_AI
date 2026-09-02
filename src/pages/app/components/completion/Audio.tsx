@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { InfoIcon, MicIcon } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger, Button } from "@/components";
 import { cn } from "@/lib/utils";
 import { AutoSpeechVAD } from "./AutoSpeechVad";
 import { UseCompletionReturn } from "@/types";
 import { useApp } from "@/contexts";
+import { useMicState, micStateStore } from "@/stores/mic-state";
 
 export const Audio = ({
   micOpen,
@@ -14,6 +16,24 @@ export const Audio = ({
   setState,
   suppressAutoVAD,
 }: UseCompletionReturn & { suppressAutoVAD?: boolean }) => {
+  const micState = useMicState();
+  const isAssistantActive = micState.mode === "ASSISTANT";
+
+  // Keep enableVAD in sync with micStateStore ASSISTANT mode
+  useEffect(() => {
+    if (enableVAD && micState.mode !== "ASSISTANT") {
+      micStateStore.setMode("ASSISTANT");
+    } else if (!enableVAD && micState.mode === "ASSISTANT") {
+      micStateStore.setMode("IDLE");
+    }
+  }, [enableVAD, micState.mode]);
+
+  // When store transitions to non-ASSISTANT, ensure enableVAD is false
+  useEffect(() => {
+    if (micState.mode !== "ASSISTANT" && enableVAD) {
+      setEnableVAD(false);
+    }
+  }, [micState.mode, enableVAD, setEnableVAD]);
   const { selectedSttProvider, pluelyApiEnabled, selectedAudioDevices } =
     useApp();
 
@@ -36,15 +56,22 @@ export const Audio = ({
           <Button
             size="icon"
             onClick={() => {
-              setEnableVAD(!enableVAD);
+              if (isAssistantActive) {
+                micStateStore.setMode("IDLE");
+                setEnableVAD(false);
+              } else {
+                micStateStore.setMode("ASSISTANT");
+                setEnableVAD(true);
+              }
             }}
             className={cn(
-              "cursor-pointer",
+              "cursor-pointer transition-colors",
+              isAssistantActive && "bg-purple-600 hover:bg-purple-700 text-white shadow-sm",
               suppressAutoVAD && "hidden"
             )}
-            title="Toggle voice input"
+            title={isAssistantActive ? "Stop Voice for AI" : "Voice for AI (Ask AI)"}
           >
-            <MicIcon className="h-4 w-4" />
+            <MicIcon className={cn("h-4 w-4", isAssistantActive && "text-white animate-pulse")} />
           </Button>
         )}
       </PopoverTrigger>

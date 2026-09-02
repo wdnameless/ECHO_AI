@@ -62,6 +62,16 @@ export const DEFAULT_SHORTCUT_ACTIONS: ShortcutAction[] = [
     },
   },
   {
+    id: "assistant_voice",
+    name: "Voice for AI",
+    description: "Toggle AI Assistant voice input mode",
+    defaultKey: {
+      macos: "cmd+shift+j",
+      windows: "ctrl+shift+j",
+      linux: "ctrl+shift+j",
+    },
+  },
+  {
     id: "screenshot",
     name: "Screenshot",
     description: "Capture screenshot",

@@ -39,6 +39,7 @@ import {
 import { useContextQuickActions } from "./useContextQuickActions";
 import { useSystemAudioKeyboard } from "./useSystemAudioKeyboard";
 import { useAudioLifecycle } from "./useAudioLifecycle";
+import { micStateStore } from "@/stores/mic-state";
 
 export type { LiveSegment, ChatMessage, ChatConversation, VadConfig };
 export { DEFAULT_VAD_CONFIG };
@@ -210,7 +211,12 @@ export function useSystemAudio() {
     cleanupMicWs,
   } = useMicWsStreaming({
     capturingRef,
-    onPartialTranscript: (text) => appendLiveSegment("me", text, true),
+    onPartialTranscript: (text) => {
+      const currentMode = micStateStore.getState().mode;
+      if (currentMode === "DICTATION") {
+        appendLiveSegment("me", text, true);
+      }
+    },
   });
   // Auto-Ask manager for hands-free interviewer question dispatch
   const autoAskManagerRef = useRef<AutoAskManager | null>(null);
@@ -265,7 +271,10 @@ export function useSystemAudio() {
       micWsFinalizeAndClose();
     },
     onInterimTranscript: (text) => {
-      appendLiveSegment("me", text, true);
+      const currentMode = micStateStore.getState().mode;
+      if (currentMode === "DICTATION") {
+        appendLiveSegment("me", text, true);
+      }
     },
   });
 
@@ -285,11 +294,23 @@ export function useSystemAudio() {
   const { startCapture, stopCapture, handleSetup } = useAudioLifecycle({
     vadConfig,
     selectedAudioDevices,
-    setCapturing,
     resetConversation,
     setIsPopoverOpen,
-    setIsContinuousMode,
+    setCapturing: (val: boolean | ((prev: boolean) => boolean)) => {
+      setCapturing((prev) => {
+        const next = typeof val === "function" ? val(prev) : val;
+        if (next) {
+          if (micStateStore.getState().mode === "IDLE") {
+            micStateStore.setMode("DICTATION");
+          }
+        } else {
+          micStateStore.setMode("IDLE");
+        }
+        return next;
+      });
+    },
     setRecordingProgress,
+    setIsContinuousMode,
     setIsRecordingInContinuousMode,
     setSetupRequired,
     setError,
@@ -510,6 +531,7 @@ export function useSystemAudio() {
     vadConfig,
     updateVadConfiguration,
     isContinuousMode,
+    setIsContinuousMode,
     isRecordingInContinuousMode,
     recordingProgress,
     manualStopAndSend,
