@@ -13,3 +13,4 @@ export * from "./JobProfilesSettings";
 export * from "./ASRDictionarySettings";
 export * from "./RetentionSettings";
 export * from "./AutoAskSettings";
+export * from "./FillerFilterSettings";

@@ -11,6 +11,7 @@ import {
   ASRDictionarySettings,
   RetentionSettings,
   AutoAskSettings,
+  FillerFilterSettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
 
@@ -33,6 +34,9 @@ const Settings = () => {
       <RetentionSettings />
       {/* Auto-Ask Assistant (Hands-free AI Trigger) */}
       <AutoAskSettings />
+
+      {/* Filler Filter Settings (Filler Removal Engine) */}
+      <FillerFilterSettings />
 
       {/* Theme */}
       <Theme />
