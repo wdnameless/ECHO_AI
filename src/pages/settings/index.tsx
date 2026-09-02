@@ -10,6 +10,7 @@ import {
   JobProfilesSettings,
   ASRDictionarySettings,
   RetentionSettings,
+  AutoAskSettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
 
@@ -30,6 +31,8 @@ const Settings = () => {
 
       {/* Data Retention Settings */}
       <RetentionSettings />
+      {/* Auto-Ask Assistant (Hands-free AI Trigger) */}
+      <AutoAskSettings />
 
       {/* Theme */}
       <Theme />
