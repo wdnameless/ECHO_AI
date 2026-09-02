@@ -444,6 +444,23 @@ export const SubtitleFeed = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feedPaused]);
 
+  // Smooth auto-scroll: the feed is inverted (newest at top). When new
+  // content lands while the user is reading the top, snap-scrolling looks
+  // like a violent jump - animate toward the top instead.
+  const prevFeedKeyRef = useRef("");
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || paused) return;
+    const newest = visible[0];
+    const feedKey = newest ? `${newest.id}:${newest.text.length}` : "";
+    if (feedKey === prevFeedKeyRef.current) return;
+    prevFeedKeyRef.current = feedKey;
+    // Only auto-scroll when the user is already reading the top (hasn't
+    // scrolled away into history).
+    if (el.scrollTop > 40) return;
+    el.scrollTo({ top: 0, behavior: "smooth" });
+  }, [visible, paused]);
+
   // Count rows that arrived while the feed is frozen.
   useEffect(() => {
     if (!paused) {
