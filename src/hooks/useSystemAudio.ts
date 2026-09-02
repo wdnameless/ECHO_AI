@@ -17,6 +17,8 @@ import {
   generateConversationId,
   generateMessageId,
   generateConversationTitle,
+  getAutoAskConfig,
+  AutoAskManager,
 } from "@/lib";
 import { DEFAULT_SYSTEM_PROMPT } from "@/config";
 import { useMicCapture } from "./useMicCapture";
@@ -210,6 +212,36 @@ export function useSystemAudio() {
     capturingRef,
     onPartialTranscript: (text) => appendLiveSegment("me", text, true),
   });
+  // Auto-Ask manager for hands-free interviewer question dispatch
+  const autoAskManagerRef = useRef<AutoAskManager | null>(null);
+  if (!autoAskManagerRef.current) {
+    autoAskManagerRef.current = new AutoAskManager({
+      getConfig: getAutoAskConfig,
+      onDispatch: (question) => {
+        void handleTriggerAIRef.current(question, "them");
+      },
+      isAIProcessing: () => isAIProcessingRef.current,
+    });
+  }
+
+  const isAIProcessingRef = useRef(false);
+  useEffect(() => {
+    isAIProcessingRef.current = isAIProcessing;
+  }, [isAIProcessing]);
+
+  const prevSegmentsLengthRef = useRef(0);
+  useEffect(() => {
+    if (liveSegments.length > prevSegmentsLengthRef.current) {
+      const newSegments = liveSegments.slice(prevSegmentsLengthRef.current);
+      for (const segment of newSegments) {
+        if (segment.source === "them" && segment.text) {
+          autoAskManagerRef.current?.onFinalizedTranscript(segment.text);
+        }
+      }
+    }
+    prevSegmentsLengthRef.current = liveSegments.length;
+  }, [liveSegments]);
+
 
   const isProcessing = isMicProcessing || isSystemProcessing;
   const lastTranscription =
@@ -388,6 +420,7 @@ export function useSystemAudio() {
 
   const startNewConversation = useCallback(() => {
     resetQuestionAssembly();
+    autoAskManagerRef.current?.cancel();
     setConversation({
       id: generateConversationId("sysaudio"),
       title: "",

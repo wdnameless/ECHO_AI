@@ -9,6 +9,7 @@ import {
   AiContextSettings,
   JobProfilesSettings,
   ASRDictionarySettings,
+  AutoAskSettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
 
@@ -26,6 +27,9 @@ const Settings = () => {
       <ASRDictionarySettings />
       {/* Web Search & Skills (Live Research) */}
       <ToolsSettings />
+
+      {/* Auto-Ask Assistant (Hands-free AI Trigger) */}
+      <AutoAskSettings />
 
       {/* Theme */}
       <Theme />
