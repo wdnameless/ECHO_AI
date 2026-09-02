@@ -459,6 +459,7 @@ export function useSystemAudio() {
             streamBufferRef.current = "";
           }
         } catch (aiError: any) {
+          console.warn("[ai-stream]", aiError);
           setActiveFiller(null);
           setPendingUtteranceId(null);
           activeAskUtteranceIdRef.current = null;
@@ -490,6 +491,7 @@ export function useSystemAudio() {
           }));
         }
       } catch (err) {
+        console.warn("[ai-stream]", err);
         setActiveFiller(null);
         setPendingUtteranceId(null);
         activeAskUtteranceIdRef.current = null;
@@ -782,7 +784,8 @@ export function useSystemAudio() {
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {
         ws.send(JSON.stringify({ type: "finalize" }));
-      } catch {
+      } catch (err) {
+        console.warn("[mic-ws]", err);
         // connection already dying - fall through to close
       }
       // Give the server a moment to flush the 'final' event, then close.
@@ -814,7 +817,8 @@ export function useSystemAudio() {
         let base: string;
         try {
           base = await getAsrBaseUrl();
-        } catch {
+        } catch (err) {
+          console.warn("[mic-ws]", err);
           base = "";
         }
         if (!base) {
@@ -825,7 +829,8 @@ export function useSystemAudio() {
         let ws: WebSocket;
         try {
           ws = new WebSocket(wsUrl);
-        } catch {
+        } catch (err) {
+          console.warn("[mic-ws]", err);
           scheduleMicWsReconnect();
           return;
         }
@@ -853,7 +858,8 @@ export function useSystemAudio() {
             } else if (msg.type === "error") {
               console.warn("[mic-ws] server error:", msg.message);
             }
-          } catch {
+          } catch (err) {
+            console.warn("[mic-ws]", err);
             // ignore malformed frames
           }
         };
@@ -866,7 +872,8 @@ export function useSystemAudio() {
         ws.onerror = () => {
           try {
             ws.close();
-          } catch {
+          } catch (err) {
+            console.warn("[mic-ws]", err);
             // already closing
           }
         };
@@ -897,6 +904,7 @@ export function useSystemAudio() {
 
         await transcribeSegment(audioBlob, "them");
       } catch (err) {
+        console.warn("[system-audio]", err);
         setError("Failed to process speech");
       }
     };
@@ -917,7 +925,8 @@ export function useSystemAudio() {
           speechUnlisten = unlisten;
         }
       })
-      .catch(() => {
+      .catch((err) => {
+        console.warn("[system-audio]", err);
         setError("Failed to setup speech listener");
       });
 
@@ -964,7 +973,8 @@ export function useSystemAudio() {
             if (text && !text.toLowerCase().startsWith("pluely stt error")) {
               appendLiveSegment("them", text.trim(), true);
             }
-          } catch {
+          } catch (err) {
+            console.warn("[system-audio]", err);
             // ignore partial transcription errors
           }
         }
@@ -978,7 +988,9 @@ export function useSystemAudio() {
           partialUnlisten = unlisten;
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.warn("[system-audio]", err);
+      });
 
     return () => {
       cancelled = true;
@@ -1124,6 +1136,7 @@ export function useSystemAudio() {
       try {
         await triggerAIForQuestion(text, source);
       } catch (err) {
+        console.warn("[system-audio]", err);
         setActiveFiller(null);
         setPendingUtteranceId(null);
         activeAskUtteranceIdRef.current = null;
@@ -1253,6 +1266,7 @@ export function useSystemAudio() {
         );
       }
     } catch (err) {
+      console.warn("[audio-capture]", err);
       const errorMessage = err instanceof Error ? err.message : String(err);
       setError(errorMessage);
       setIsPopoverOpen(true);
@@ -1344,6 +1358,7 @@ export function useSystemAudio() {
         setError("Permission not granted. Please try the manual steps.");
       }
     } catch (err) {
+      console.warn("[system-audio]", err);
       setError("Failed to request access. Please try the manual steps below.");
       setSetupRequired(true);
     }
@@ -1396,7 +1411,9 @@ export function useSystemAudio() {
         micStreamRef.current.getTracks().forEach((track) => track.stop());
         micStreamRef.current = null;
       }
-      invoke("stop_system_audio_capture").catch(() => {});
+      invoke("stop_system_audio_capture").catch((err) => {
+        console.warn("[system-audio]", err);
+      });
     };
   }, []);
 

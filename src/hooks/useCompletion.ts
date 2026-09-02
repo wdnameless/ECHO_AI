@@ -236,6 +236,7 @@ export const useCompletion = () => {
             }));
           }
         } catch (e: any) {
+          console.warn("[completion]", e);
           // Only show error if this is still the current request and not aborted
           if (currentRequestIdRef.current === requestId && !signal.aborted) {
             setState((prev) => ({
@@ -274,6 +275,7 @@ export const useCompletion = () => {
           }));
         }
       } catch (error) {
+        console.warn("[completion]", error);
         // Only show error if not aborted
         if (!signal?.aborted && currentRequestIdRef.current === requestId) {
           setState((prev) => ({
@@ -658,6 +660,7 @@ export const useCompletion = () => {
               }));
             }
           } catch (e: any) {
+            console.warn("[completion]", e);
             // Only show error if this is still the current request and not aborted
             if (currentRequestIdRef.current === requestId && !signal.aborted) {
               setState((prev) => ({
@@ -903,6 +906,7 @@ export const useCompletion = () => {
         await invoke("start_screen_capture");
       }
     } catch (error) {
+      console.warn("[completion]", error);
       setState((prev) => ({
         ...prev,
         error: "Failed to capture screenshot. Please try again.",

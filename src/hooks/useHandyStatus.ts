@@ -39,7 +39,8 @@ export function useHandyStatus() {
           model: res?.model || "",
           checking: false,
         });
-      } catch {
+      } catch (err) {
+        console.warn("[handy-status]", err);
         if (!cancelled) {
           setStatus({ online: false, model: "", checking: false });
         }
@@ -74,7 +75,8 @@ export function useHandyStatus() {
         model: res?.model || "",
         checking: false,
       });
-    } catch {
+    } catch (err) {
+      console.warn("[handy-status]", err);
       setStatus({ online: false, model: "", checking: false });
     }
   }, []);

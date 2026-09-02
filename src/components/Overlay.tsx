@@ -33,8 +33,8 @@ const Overlay: React.FC<OverlayProps> = ({ monitorIndex }) => {
     setIsSelecting(false);
     try {
       await invoke("close_overlay_window", { reason: "User cancelled" });
-    } catch {
-      // Error ignored
+    } catch (err) {
+      console.warn("[overlay]", err);
     }
   };
 
@@ -58,8 +58,8 @@ const Overlay: React.FC<OverlayProps> = ({ monitorIndex }) => {
         coords,
         monitorIndex,
       });
-    } catch {
-      // Error ignored
+    } catch (err) {
+      console.warn("[overlay]", err);
       console.error("Error capturing selected area");
     }
   };

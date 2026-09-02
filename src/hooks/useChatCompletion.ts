@@ -281,6 +281,7 @@ export const useChatCompletion = (
             scrollToBottom();
           }
         } catch (e: any) {
+          console.warn("[chat-completion]", e);
           // Only show error if this is still the current request and not aborted
           if (currentRequestIdRef.current === requestId && !signal.aborted) {
             setState((prev) => ({
@@ -364,6 +365,7 @@ export const useChatCompletion = (
           }
         }
       } catch (error) {
+        console.warn("[chat-completion]", error);
         // Only show error if not aborted
         if (!signal?.aborted && currentRequestIdRef.current === requestId) {
           setState((prev) => ({
@@ -533,6 +535,7 @@ export const useChatCompletion = (
               scrollToBottom();
             }
           } catch (e: any) {
+            console.warn("[chat-completion]", e);
             if (currentRequestIdRef.current === requestId && !signal.aborted) {
               setState((prev) => ({
                 ...prev,
@@ -754,6 +757,7 @@ export const useChatCompletion = (
         await invoke("start_screen_capture");
       }
     } catch (error) {
+      console.warn("[chat-completion]", error);
       setState((prev) => ({
         ...prev,
         error: "Failed to capture screenshot. Please try again.",

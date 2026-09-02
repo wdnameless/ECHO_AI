@@ -121,7 +121,9 @@ function MicVADBridge({
           }
         };
         recognition.onerror = () => {};
-      } catch {}
+      } catch (err) {
+        console.warn("[mic-vad]", err);
+      }
     }
 
     onStateChangeRef.current({
@@ -174,7 +176,9 @@ function MicVADBridge({
         onMicSpeechStartRef.current?.();
         try {
           recognition?.start();
-        } catch {}
+        } catch (err) {
+          console.warn("[mic-vad]", err);
+        }
       },
       onSpeechEnd: (audio: Float32Array) => {
         onMicSpeechStopRef.current?.();
@@ -182,7 +186,9 @@ function MicVADBridge({
         onMicSegmentRef.current(audioBlob);
         try {
           recognition?.stop();
-        } catch {}
+        } catch (err) {
+          console.warn("[mic-vad]", err);
+        }
       },
     })
       .then((v) => {
@@ -228,6 +234,7 @@ function MicVADBridge({
         });
       })
       .catch((e) => {
+        console.warn("[mic-vad]", e);
         if (cancelled) return;
         onStateChangeRef.current({
           listening: false,
@@ -272,7 +279,9 @@ function MicVADBridge({
           const bytes = float32ToLittleEndian(out);
           try {
             onMicFrameRef.current(bytes);
-          } catch {}
+          } catch (err) {
+            console.warn("[mic-tap]", err);
+          }
         }
 
         // ~1s of accumulated speech → emit a live partial WAV (batch
@@ -288,7 +297,9 @@ function MicVADBridge({
           partialSamples = 0;
           try {
             onMicPartialRef.current?.(floatArrayToWav(merged, 16000, "wav"));
-          } catch {}
+          } catch (err) {
+            console.warn("[mic-tap]", err);
+          }
         }
       };
 
@@ -306,9 +317,13 @@ function MicVADBridge({
           processor.disconnect();
           source.disconnect();
           mute.disconnect();
-        } catch {}
+        } catch (err) {
+          console.warn("[mic-tap]", err);
+        }
       });
-    } catch {}
+    } catch (err) {
+      console.warn("[mic-tap]", err);
+    }
 
     return () => {
       cancelled = true;
@@ -317,7 +332,9 @@ function MicVADBridge({
       listeningRef.current = false;
       cleanupTap.forEach((fn) => fn());
       if (tapCtx) {
-        tapCtx.close().catch(() => {});
+        tapCtx.close().catch((err) => {
+          console.warn("[mic-tap]", err);
+        });
         tapCtx = null;
       }
     };
@@ -397,6 +414,7 @@ export function useMicCapture({
         setStreamKey((k) => k + 1);
         setLoading(false);
       } catch (e) {
+        console.warn("[mic-acquire]", e);
         if (cancelled) return;
         setLoading(false);
         setErrored(e instanceof Error ? e.message : String(e));
