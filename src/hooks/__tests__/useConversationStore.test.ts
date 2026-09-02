@@ -2,7 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useConversationStore } from "../useConversationStore";
 import { setCachedCorrections, AsrCorrection } from "@/lib/vocab";
-
+import {
+  saveFillerFilterConfig,
+  FILLER_FILTER_STORAGE_KEYS,
+} from "@/lib/filler-filter";
+import { safeLocalStorage } from "@/lib/storage/helper";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
 }));
@@ -16,6 +20,9 @@ describe("useConversationStore", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     setCachedCorrections([]);
+    safeLocalStorage.removeItem(FILLER_FILTER_STORAGE_KEYS.FILTER_AI_ENABLED);
+    safeLocalStorage.removeItem(FILLER_FILTER_STORAGE_KEYS.FILTER_FEED_ENABLED);
+    safeLocalStorage.removeItem(FILLER_FILTER_STORAGE_KEYS.CUSTOM_FILLERS);
   });
 
   afterEach(() => {
@@ -136,5 +143,40 @@ describe("useConversationStore", () => {
     expect(result.current.conversation.messages).toEqual([]);
     expect(result.current.myLastTranscription).toBe("");
     expect(result.current.theirLastTranscription).toBe("");
+  });
+
+  it("filters fillers in live segments only when filterFeedEnabled is true", () => {
+    const { result } = renderHook(() => useConversationStore());
+
+    // Default: feed filtering is disabled
+    act(() => {
+      result.current.appendLiveSegment("them", "Ну типа привет как бы мир", false);
+    });
+    expect(result.current.liveSegments[0].text).toBe("Ну типа привет как бы мир");
+
+    // Enable feed filtering
+    saveFillerFilterConfig({
+      filterAiEnabled: true,
+      filterFeedEnabled: true,
+      customFillers: "",
+    });
+
+    act(() => {
+      result.current.appendLiveSegment("me", "Ээ короче я готов", false);
+    });
+    expect(result.current.liveSegments[1].text).toBe("я готов");
+  });
+
+  it("filters fillers for AI interactions and history by default", () => {
+    const { result } = renderHook(() => useConversationStore());
+
+    act(() => {
+      result.current.addInteraction("Эм ну расскажи про Redux", "Redux это библиотека", "them");
+    });
+
+    expect(result.current.conversation.messages[0].content).toBe("расскажи про Redux");
+
+    const history = result.current.buildHistory(result.current.conversation.messages);
+    expect(history[0].content).toBe("[Interviewer (question)] расскажи про Redux");
   });
 });

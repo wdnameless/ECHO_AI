@@ -8,6 +8,7 @@
  */
 
 import { useEffect, RefObject } from "react";
+import { micStateStore } from "@/stores/mic-state";
 
 export interface UseSystemAudioKeyboardProps {
   isPopoverOpen: boolean;
@@ -24,6 +25,7 @@ export interface UseSystemAudioKeyboardProps {
   stopCapture: () => Promise<void>;
   globalShortcuts: {
     registerSystemAudioCallback: (cb: () => Promise<void>) => void;
+    registerAssistantAudioCallback?: (cb: () => Promise<void>) => void;
   };
 }
 
@@ -115,7 +117,7 @@ export function useSystemAudioKeyboard({
     ignoreContinuousRecording,
   ]);
 
-  // Global system audio shortcut
+  // Global system audio shortcut (Dictation / Interview toggle)
   useEffect(() => {
     globalShortcuts.registerSystemAudioCallback(async () => {
       if (capturing) {
@@ -125,4 +127,19 @@ export function useSystemAudioKeyboard({
       }
     });
   }, [capturing, startCapture, stopCapture, globalShortcuts]);
+
+  // Global assistant voice shortcut
+  useEffect(() => {
+    if (globalShortcuts.registerAssistantAudioCallback) {
+      globalShortcuts.registerAssistantAudioCallback(async () => {
+        // Toggle assistant mode
+        const current = micStateStore.getState().mode;
+        if (current === "ASSISTANT") {
+          micStateStore.setMode("IDLE");
+        } else {
+          micStateStore.setMode("ASSISTANT");
+        }
+      });
+    }
+  }, [globalShortcuts]);
 }

@@ -28,6 +28,7 @@ export const useGlobalShortcuts = () => {
   const audioCallbackRef = useRef<(() => void) | null>(null);
   const screenshotCallbackRef = useRef<(() => void) | null>(null);
   const systemAudioCallbackRef = useRef<(() => void) | null>(null);
+  const assistantAudioCallbackRef = useRef<(() => void) | null>(null);
   const customShortcutCallbacksRef = useRef<Map<string, () => void>>(new Map());
 
   const checkShortcutsRegistered = useCallback(async (): Promise<boolean> => {
@@ -91,6 +92,13 @@ export const useGlobalShortcuts = () => {
   const registerSystemAudioCallback = useCallback((callback: () => void) => {
     systemAudioCallbackRef.current = callback;
     globalSystemAudioCallback = callback;
+  }, []);
+
+  // Register assistant voice audio callback
+  const registerAssistantAudioCallback = useCallback((callback: () => void) => {
+    assistantAudioCallbackRef.current = callback;
+    customShortcutCallbacksRef.current.set("assistant_voice", callback);
+    globalCustomShortcutCallbacks.set("assistant_voice", callback);
   }, []);
 
   // Register custom shortcut callback
@@ -265,5 +273,6 @@ export const useGlobalShortcuts = () => {
     registerSystemAudioCallback,
     registerCustomShortcutCallback,
     unregisterCustomShortcutCallback,
+    registerAssistantAudioCallback,
   };
 };

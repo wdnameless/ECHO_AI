@@ -27,6 +27,7 @@ import { useSystemAudio } from "@/hooks";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { useApp } from "@/contexts";
+import { useMicState } from "@/stores/mic-state";
 
 export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const {
@@ -47,6 +48,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     contextContent,
     isPopoverOpen,
     isContinuousMode,
+    setIsContinuousMode,
     isRecordingInContinuousMode,
     setupRequired,
     quickActions,
@@ -69,18 +71,15 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     resizeWindow,
   } = props;
 
+  const micState = useMicState();
+  const isDictationActive = capturing || micState.mode === "DICTATION";
   const isVadMode = !isContinuousMode;
-  const handleModeChange = (vad: boolean) => {
-    if (vad) {
-      if (isContinuousMode) {
-        props.ignoreContinuousRecording();
-      }
-    } else {
-      if (!isContinuousMode) {
-        startContinuousRecording();
-      }
+  const handleModeChange = (vadEnabled: boolean) => {
+    if (setIsContinuousMode) {
+      setIsContinuousMode(!vadEnabled);
     }
   };
+
 
   const [conversationMode, setConversationMode] = useState(false);
   const { hasActiveLicense, supportsImages } = useApp();
@@ -145,10 +144,9 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const getButtonTitle = () => {
     if (setupRequired) return "Setup Required";
     if (error && !setupRequired) return `Error: ${error}`;
-    if (capturing) return "Stop live conversation copilot";
-    return "Start live conversation copilot";
+    if (isDictationActive) return "Stop live conversation copilot (Dictation)";
+    return "Start live conversation copilot (Dictation)";
   };
-
   const hasResponse =
     !!lastAIResponse ||
     isAIProcessing ||

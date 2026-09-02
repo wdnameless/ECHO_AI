@@ -5,6 +5,7 @@ import { safeLocalStorage, shouldUsePluelyAPI } from "@/lib";
 import { buildInitialPrompt } from "@/lib/vocab";
 import { transcribeWithFallback } from "@/lib/functions";
 import type { TYPE_PROVIDER } from "@/types";
+import { micStateStore } from "@/stores/mic-state";
 
 export interface VadConfig {
   enabled: boolean;
@@ -144,6 +145,18 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         const transcription = await Promise.race([sttPromise, timeoutPromise]);
 
         if (transcription.trim()) {
+          const currentMicMode = micStateStore.getState().mode;
+          if (source === "me" && currentMicMode === "ASSISTANT") {
+            micStateStore.emitTranscript(transcription);
+            setError("");
+            return;
+          }
+          if (source === "me" && currentMicMode === "IDLE") {
+            // Ignore transcript if mic is idle
+            setError("");
+            return;
+          }
+
           if (source === "me") {
             setMyLastTranscription(transcription);
           } else {
@@ -260,9 +273,10 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
             }
           } catch (err) {
             console.warn("[system-audio]", err);
+          } finally {
+            partialInFlight = false;
           }
         }
-        partialInFlight = false;
       })();
     })
       .then((unlisten) => {
