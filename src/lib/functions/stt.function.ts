@@ -75,7 +75,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
   let warnings: string[] = [];
 
   try {
-    const { provider, selectedProvider, audio, priority = "high" } = params;
+    const { provider, selectedProvider, audio } = params;
 
     // Check if we should use Pluely API instead
     const usePluelyAPI = await shouldUsePluelyAPI();
@@ -184,14 +184,6 @@ export async function fetchSTT(params: STTParams): Promise<string> {
         const sep = url.includes("?") ? "&" : "?";
         url += `${sep}prompt=${encodeURIComponent(trimmedPrompt)}`;
       }
-    }
-    // Local Handy server: pass priority so final segments jump the queue,
-    // and the fixed language (ru|en) so the model never auto-detects or
-    // transcribes other languages.
-    const isLocalHandy = url.includes(asrBase);
-    if (isLocalHandy) {
-      finalHeaders["X-Priority"] = priority;
-      finalHeaders["X-Language"] = defaultLanguage;
     }
 
     const isForm =
