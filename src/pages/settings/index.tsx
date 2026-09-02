@@ -9,6 +9,7 @@ import {
   AiContextSettings,
   JobProfilesSettings,
   ASRDictionarySettings,
+  RetentionSettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
 
@@ -27,9 +28,11 @@ const Settings = () => {
       {/* Web Search & Skills (Live Research) */}
       <ToolsSettings />
 
+      {/* Data Retention Settings */}
+      <RetentionSettings />
+
       {/* Theme */}
       <Theme />
-
       {/* Font Size */}
       <FontSizeSettings />
 

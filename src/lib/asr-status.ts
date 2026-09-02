@@ -1,3 +1,4 @@
+import { recordSttDuration } from "./metrics";
 /**
  * Live ASR-sidecar status store (pub/sub, no polling).
  *
@@ -70,8 +71,15 @@ export function pushFrame(v: unknown): void {
   const type = typeof frame.type === "string" ? frame.type : "";
   const hasCounts =
     typeof frame.sessions_in_use === "number" ||
-    typeof frame.sessions_total === "number";
+    typeof frame.sessions_total === "number" ||
+    typeof frame.inference_duration_ms === "number" ||
+    typeof frame.duration_ms === "number";
 
+  if (typeof frame.inference_duration_ms === "number") {
+    recordSttDuration(frame.inference_duration_ms);
+  } else if (typeof frame.duration_ms === "number" && (type === "text" || type === "final")) {
+    recordSttDuration(frame.duration_ms);
+  }
   if (type === "status") {
     status = {
       online: frame.online !== false,

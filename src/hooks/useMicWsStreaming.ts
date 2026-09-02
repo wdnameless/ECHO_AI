@@ -11,7 +11,7 @@
 import { useCallback, useRef } from "react";
 import { getAsrBaseUrl } from "@/lib/asr-discovery";
 import { getResponseSettings } from "@/lib";
-
+import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
 const MIC_WS_RECONNECT_MS = 2000;
 
 export interface UseMicWsStreamingProps {
@@ -48,8 +48,10 @@ export function useMicWsStreaming({
     const ws = micWsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(pcm);
+    } else if (capturingRef.current && micWsWantRef.current) {
+      recordLostSegment();
     }
-  }, []);
+  }, [capturingRef]);
 
   const scheduleMicWsReconnect = useCallback(() => {
     // Do not reconnect after a deliberate per-utterance close.
@@ -61,10 +63,10 @@ export function useMicWsStreaming({
     if (micWsReconnectTimerRef.current) return;
     micWsReconnectTimerRef.current = setTimeout(() => {
       micWsReconnectTimerRef.current = null;
+      recordWsReconnect();
       micWsConnectRef.current();
     }, MIC_WS_RECONNECT_MS);
   }, [capturingRef]);
-
   const micWsConnect = useCallback(() => {
     micWsConnectRef.current = () => {
       void (async () => {

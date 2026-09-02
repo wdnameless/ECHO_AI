@@ -11,3 +11,4 @@ export * from "./PromptProfilesSettings";
 export * from "./ToolsSettings";
 export * from "./JobProfilesSettings";
 export * from "./ASRDictionarySettings";
+export * from "./RetentionSettings";

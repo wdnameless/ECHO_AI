@@ -10,9 +10,9 @@
  */
 
 import { useState, useRef, useCallback } from "react";
-import { fetchAIResponse } from "@/lib/functions";
+import { fetchAIResponse, shouldUsePluelyAPI } from "@/lib/functions";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
-import { shouldUsePluelyAPI } from "@/lib";
+import { startQuestion, recordFirstToken } from "@/lib/metrics";
 import { DEFAULT_SYSTEM_PROMPT } from "@/config";
 import type { Message } from "@/types/completion";
 import type { TYPE_PROVIDER } from "@/types";
@@ -129,6 +129,7 @@ export function useAIStreaming({
           })) {
             if (isFirstChunk) {
               isFirstChunk = false;
+              recordFirstToken();
               clearFiller();
             }
             fullResponse += chunk;
@@ -217,8 +218,8 @@ export function useAIStreaming({
         return;
       }
 
+      startQuestion();
       setFillerForInterviewer();
-
       const effectiveSystemPrompt = useSystemPrompt
         ? systemPrompt || DEFAULT_SYSTEM_PROMPT
         : contextContent || DEFAULT_SYSTEM_PROMPT;

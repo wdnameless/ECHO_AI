@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { onStatus } from "@/lib/asr-status";
+import { onMetrics, getMetrics, type MetricsSnapshot } from "@/lib/metrics";
 
 export interface HandyStatus {
   online: boolean;
   model: string;
   checking: boolean;
+  metrics: MetricsSnapshot;
 }
 
 /**
@@ -20,8 +22,8 @@ export function useHandyStatus() {
     online: false,
     model: "",
     checking: true,
+    metrics: getMetrics(),
   });
-
   // One-shot cold check on mount (covers the "no stream open yet" case).
   useEffect(() => {
     let cancelled = false;
@@ -34,15 +36,21 @@ export function useHandyStatus() {
         if (cancelled) return;
         // The sidecar knows its real model name; prefer it over the generic
         // Tauri-side answer when the WS has reported one.
-        setStatus({
+        setStatus((prev) => ({
+          ...prev,
           online: !!res?.online,
           model: res?.model || "",
           checking: false,
-        });
+        }));
       } catch (err) {
         console.warn("[handy-status]", err);
         if (!cancelled) {
-          setStatus({ online: false, model: "", checking: false });
+          setStatus((prev) => ({
+            ...prev,
+            online: false,
+            model: "",
+            checking: false,
+          }));
         }
       }
     })();
@@ -52,10 +60,12 @@ export function useHandyStatus() {
   }, []);
 
   // WS-driven live updates.
+  // WS-driven live updates for ASR status.
   useEffect(
     () =>
       onStatus((s) => {
         setStatus((prev) => ({
+          ...prev,
           online: s.online,
           model: s.model || prev.model,
           checking: false,
@@ -64,20 +74,37 @@ export function useHandyStatus() {
     []
   );
 
+  // Metrics live updates.
+  useEffect(
+    () =>
+      onMetrics((m) => {
+        setStatus((prev) => ({
+          ...prev,
+          metrics: m,
+        }));
+      }),
+    []
+  );
   const refresh = useCallback(async () => {
     try {
       const res = (await invoke("handy_server_status_detailed")) as {
         online: boolean;
         model: string;
       };
-      setStatus({
+      setStatus((prev) => ({
+        ...prev,
         online: !!res?.online,
         model: res?.model || "",
         checking: false,
-      });
+      }));
     } catch (err) {
       console.warn("[handy-status]", err);
-      setStatus({ online: false, model: "", checking: false });
+      setStatus((prev) => ({
+        ...prev,
+        online: false,
+        model: "",
+        checking: false,
+      }));
     }
   }, []);
 

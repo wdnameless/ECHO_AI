@@ -10,3 +10,5 @@ export * from "./analytics";
 export * from "./response-settings.constants";
 export * from "./rag";
 export * from "./vocab";
+export * from "./metrics";
+export * from "./retention";

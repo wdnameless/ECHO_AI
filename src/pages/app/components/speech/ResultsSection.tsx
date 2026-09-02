@@ -75,10 +75,13 @@ export const ResultsSection = ({
         micSpeaking={micSpeaking}
         handyOnline={handy.online}
         handyModel={handyModelShort}
+        wsReconnects={handy.metrics.wsReconnectCount}
+        lostSegments={handy.metrics.lostSegmentsCount}
+        lastSttDurationMs={handy.metrics.lastSttDurationMs ?? undefined}
         onDeepen={onDeepen}
         feedPaused={feedPaused ?? false}
         onTogglePause={onTogglePause ?? (() => {})}
-        lastTTFT={lastTTFT}
+        lastTTFT={lastTTFT ?? handy.metrics.lastTtftMs ?? undefined}
         pipelineError={pipelineError}
         pendingQuestion={pendingQuestion}
         onAskAI={askAIForTranscript}

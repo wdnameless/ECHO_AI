@@ -3,15 +3,17 @@ import { renderHook, act } from "@testing-library/react";
 import { useAIStreaming, SelectedAIProviderConfig } from "../useAIStreaming";
 import type { ChatConversation } from "../useConversationStore";
 import { fetchAIResponse } from "@/lib/functions";
-import { shouldUsePluelyAPI } from "@/lib";
+import { shouldUsePluelyAPI } from "@/lib/functions";
 import type { TYPE_PROVIDER } from "@/types";
 
 vi.mock("@/lib/functions", () => ({
   fetchAIResponse: vi.fn(),
+  shouldUsePluelyAPI: vi.fn(),
 }));
 
-vi.mock("@/lib", () => ({
-  shouldUsePluelyAPI: vi.fn(),
+vi.mock("@/lib/metrics", () => ({
+  startQuestion: vi.fn(),
+  recordFirstToken: vi.fn(),
 }));
 
 describe("useAIStreaming", () => {

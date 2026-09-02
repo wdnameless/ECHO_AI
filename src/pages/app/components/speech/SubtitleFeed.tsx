@@ -123,6 +123,9 @@ interface SubtitleFeedProps {
   micSpeaking: boolean;
   handyOnline: boolean;
   handyModel: string;
+  wsReconnects?: number;
+  lostSegments?: number;
+  lastSttDurationMs?: number;
   onDeepen?: () => void;
   feedPaused: boolean;
   onTogglePause: () => void;
@@ -178,6 +181,9 @@ export const SubtitleFeed = ({
   micSpeaking,
   handyOnline,
   handyModel,
+  wsReconnects,
+  lostSegments,
+  lastSttDurationMs,
   onDeepen,
   feedPaused,
   onTogglePause,
@@ -1304,6 +1310,30 @@ export const SubtitleFeed = ({
                 {handyModel}
               </span>
             )}
+          </span>
+        )}
+        {lastSttDurationMs !== undefined && lastSttDurationMs > 0 && (
+          <span
+            className="font-mono text-cyan-600 dark:text-cyan-400"
+            title="Длительность инференса локального STT"
+          >
+            🎙 {Math.round(lastSttDurationMs)}мс
+          </span>
+        )}
+        {wsReconnects !== undefined && wsReconnects > 0 && (
+          <span
+            className="font-mono text-amber-600 dark:text-amber-400"
+            title="Количество реконнектов WebSocket микрофона"
+          >
+            🔄 {wsReconnects} rec
+          </span>
+        )}
+        {lostSegments !== undefined && lostSegments > 0 && (
+          <span
+            className="font-mono text-red-500"
+            title="Потерянные аудио сегменты при обрыве соединения"
+          >
+            ⚠ {lostSegments} lost
           </span>
         )}
         {lastTTFT !== undefined && lastTTFT > 0 && (

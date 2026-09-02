@@ -38,6 +38,13 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("migrations/asr-corrections.sql"),
             kind: MigrationKind::Up,
         },
+        // Migration 6: Retention settings and conversation retention
+        Migration {
+            version: 6,
+            description: "create_retention_settings_table",
+            sql: include_str!("migrations/retention.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
