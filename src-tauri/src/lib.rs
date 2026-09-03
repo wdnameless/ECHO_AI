@@ -34,6 +34,19 @@ fn get_app_version() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Early migration checksum patch: tauri-plugin-sql panics on startup if migration
+    // checksums in _sqlx_migrations differ (e.g. CRLF vs LF on Windows builds).
+    // Patch existing checksums to LF sha384 before the SQL plugin initializes.
+    let identifier = "com.srikanthnani.pluely";
+    if let Some(config_dir) = dirs::config_dir() {
+        let db_path = config_dir.join(identifier).join("pluely.db");
+        db::patch_migration_checksums(&db_path);
+    }
+    if let Some(data_dir) = dirs::data_dir() {
+        let db_path = data_dir.join(identifier).join("pluely.db");
+        db::patch_migration_checksums(&db_path);
+    }
+
     // Get PostHog API key
     let posthog_api_key = option_env!("POSTHOG_API_KEY").unwrap_or("").to_string();
     let mut builder = tauri::Builder::default()
