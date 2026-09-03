@@ -1,12 +1,14 @@
 import { Button, Header, Input, Selection, TextInput } from "@/components";
 import { UseSettingsReturn } from "@/types";
 import curl2Json, { ResultJSON } from "@bany/curl-to-json";
-import { KeyIcon, TrashIcon } from "lucide-react";
+import { KeyIcon, Loader2, RefreshCw, TrashIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   buildDynamicMessages,
   deepVariableReplacer,
 } from "@/lib/functions/common.function";
+import { fetchProviderModels } from "@/lib/functions/models.function";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 
 export const Providers = ({
   allAiProviders,
@@ -18,6 +20,13 @@ export const Providers = ({
     useState<ResultJSON | null>(null);
   const [testState, setTestState] = useState<
     | { status: "idle" | "testing" }
+    | { status: "ok" | "error"; message: string }
+  >({ status: "idle" });
+
+  // Cached fetched models per provider ID: { [providerId]: string[] }
+  const [cachedModels, setCachedModels] = useState<Record<string, string[]>>({});
+  const [fetchState, setFetchState] = useState<
+    | { status: "idle" | "fetching" }
     | { status: "ok" | "error"; message: string }
   >({ status: "idle" });
 
@@ -47,6 +56,48 @@ export const Providers = ({
     return !getApiKeyValue().trim();
   };
 
+  const currentProviderId = selectedAIProvider?.provider || "";
+  const providerModels = cachedModels[currentProviderId] || [];
+
+  const handleFetchModels = async () => {
+    const provider = allAiProviders?.find(
+      (p) => p?.id === selectedAIProvider?.provider
+    );
+    if (!provider || !provider.id || !provider.curl) {
+      setFetchState({
+        status: "error",
+        message: "Провайдер не выбран или отсутствует шаблон curl",
+      });
+      return;
+    }
+    const providerId = provider.id;
+
+    setFetchState({ status: "fetching" });
+    try {
+      const vars: Record<string, string> = {
+        ...(selectedAIProvider?.variables ?? {}),
+      };
+      const models = await fetchProviderModels(
+        providerId,
+        provider.curl,
+        vars
+      );
+      setCachedModels((prev) => ({
+        ...prev,
+        [providerId]: models,
+      }));
+      setFetchState({
+        status: "ok",
+        message: `Загружено моделей: ${models.length}`,
+      });
+    } catch (e) {
+      setFetchState({
+        status: "error",
+        message: e instanceof Error ? e.message : "Не удалось получить список моделей",
+      });
+    }
+  };
+
   return (
     <div className="space-y-3">
       <div className="space-y-2">
@@ -58,12 +109,14 @@ export const Providers = ({
           selected={selectedAIProvider?.provider}
           options={allAiProviders?.map((provider) => {
             const json = curl2Json(provider?.curl);
+            const providerRecord = provider as unknown as Record<string, unknown>;
+            const providerName = typeof providerRecord?.name === "string" ? providerRecord.name : undefined;
             return {
               label:
-                (provider as any)?.name ||
-                provider?.isCustom
+                providerName ||
+                (provider?.isCustom
                   ? json?.url || provider?.id || "Custom Provider"
-                  : provider?.id || "Custom Provider",
+                  : provider?.id || "Custom Provider"),
               value: provider?.id || "Custom Provider",
               isCustom: provider?.isCustom,
             };
@@ -74,6 +127,7 @@ export const Providers = ({
               provider: value,
               variables: {},
             });
+            setFetchState({ status: "idle" });
           }}
         />
       </div>
@@ -194,6 +248,8 @@ export const Providers = ({
               return selectedAIProvider.variables[variable.key] || "";
             };
 
+            const isModelVar = variable?.key?.toLowerCase() === "model";
+
             return (
               <div className="space-y-1" key={variable?.key}>
                 <Header
@@ -209,27 +265,87 @@ export const Providers = ({
                       : selectedAIProvider?.provider
                   }`}
                 />
-                <TextInput
-                  placeholder={`Enter ${
-                    allAiProviders?.find(
-                      (p) => p?.id === selectedAIProvider?.provider
-                    )?.isCustom
-                      ? "Custom Provider"
-                      : selectedAIProvider?.provider
-                  } ${variable?.key?.replace(/_/g, " ") || "value"}`}
-                  value={getVariableValue()}
-                  onChange={(value) => {
-                    if (!variable?.key || !selectedAIProvider) return;
+                <div className="space-y-2">
+                  <div className="flex gap-2 items-center">
+                    <TextInput
+                      placeholder={`Enter ${
+                        allAiProviders?.find(
+                          (p) => p?.id === selectedAIProvider?.provider
+                        )?.isCustom
+                          ? "Custom Provider"
+                          : selectedAIProvider?.provider
+                      } ${variable?.key?.replace(/_/g, " ") || "value"}`}
+                      value={getVariableValue()}
+                      onChange={(value) => {
+                        if (!variable?.key || !selectedAIProvider) return;
 
-                    onSetSelectedAIProvider({
-                      ...selectedAIProvider,
-                      variables: {
-                        ...selectedAIProvider.variables,
-                        [variable.key]: value,
-                      },
-                    });
-                  }}
-                />
+                        onSetSelectedAIProvider({
+                          ...selectedAIProvider,
+                          variables: {
+                            ...selectedAIProvider.variables,
+                            [variable.key]: value,
+                          },
+                        });
+                      }}
+                    />
+                    {isModelVar && (
+                      <Button
+                        type="button"
+                        onClick={handleFetchModels}
+                        disabled={fetchState.status === "fetching"}
+                        className="shrink-0 h-11 px-3 gap-2"
+                        variant="outline"
+                        title="Fetch models from provider"
+                      >
+                        {fetchState.status === "fetching" ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            <span className="hidden sm:inline">Fetching…</span>
+                          </>
+                        ) : (
+                          <>
+                            <RefreshCw className="h-4 w-4" />
+                            <span className="hidden sm:inline">Fetch models</span>
+                          </>
+                        )}
+                      </Button>
+                    )}
+                  </div>
+
+                  {isModelVar && fetchState.status === "ok" && (
+                    <p className="text-xs text-emerald-600 dark:text-emerald-400">
+                      ✓ {fetchState.message}
+                    </p>
+                  )}
+                  {isModelVar && fetchState.status === "error" && (
+                    <p className="text-xs text-red-500 break-words">
+                      ✗ {fetchState.message}
+                    </p>
+                  )}
+
+                  {isModelVar && providerModels.length > 0 && (
+                    <div className="space-y-1">
+                      <Selection
+                        selected={getVariableValue()}
+                        options={providerModels.map((m) => ({
+                          label: m,
+                          value: m,
+                        }))}
+                        placeholder="Select fetched model or keep custom input above"
+                        onChange={(value) => {
+                          if (!variable?.key || !selectedAIProvider) return;
+                          onSetSelectedAIProvider({
+                            ...selectedAIProvider,
+                            variables: {
+                              ...selectedAIProvider.variables,
+                              [variable.key]: value,
+                            },
+                          });
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
@@ -265,7 +381,7 @@ export const Providers = ({
               // messages ({{TEXT}}/{{IMAGE}} handled properly — empty image
               // parts are REMOVED, not left as empty strings) + variable
               // replacement for the rest.
-              let bodyObj: any = json?.data
+              let bodyObj: Record<string, unknown> = json?.data
                 ? JSON.parse(JSON.stringify(json.data))
                 : {};
               const messagesKey = Object.keys(bodyObj).find((key) =>
@@ -300,7 +416,7 @@ export const Providers = ({
               const finalBody = JSON.stringify(bodyObj);
 
               const started = Date.now();
-              const res = await fetch(url, {
+              const res = await tauriFetch(url, {
                 method: json?.method || "POST",
                 headers: {
                   "Content-Type": "application/json",
