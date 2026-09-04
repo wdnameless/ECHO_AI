@@ -856,13 +856,18 @@ export const SubtitleFeed = ({
           </div>
         )}
 
-        {/* Immediate "thinking" row so the answer surface appears instantly */}
+        {/* Immediate filler/thinking row in AI answer block so the bridge phrase appears instantly for user to speak aloud */}
         {isAIProcessing &&
           !lastAIResponse?.trim() &&
           !entries.some((e) => e.kind === "ai" && e.streaming) && (
-            <div className="flex items-center gap-2 py-2 px-2 text-violet-500 animate-pulse text-[0.78em]">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Думаю над ответом…
+            <div className="my-1.5 p-3 rounded-lg border border-violet-500/30 bg-violet-500/5 text-violet-600 dark:text-violet-300 shadow-sm transition-all animate-in fade-in">
+              <div className="flex items-center gap-1.5 mb-1 text-[0.72em] font-medium text-violet-500/90 tracking-wide uppercase">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Заполните паузу (зачитайте вслух):</span>
+              </div>
+              <div className="text-[0.95em] font-medium leading-snug tracking-normal select-text text-foreground/90 pl-1 border-l-2 border-violet-500/60">
+                «{activeFiller || "Секундочку, сейчас сформулирую…"}»
+              </div>
             </div>
           )}
 
