@@ -24,7 +24,7 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   hop_size: 1024,
   sensitivity_rms: 0.012,
   peak_threshold: 0.035,
-  silence_chunks: 28,
+  silence_chunks: 15, // ~330ms of silence before stopping (fast path)
   min_speech_chunks: 7,
   pre_speech_chunks: 12,
   noise_gate_threshold: 0.003,
@@ -77,7 +77,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
   const [pendingScreenshot, setPendingScreenshot] = useState<string | null>(null);
   const pendingScreenshotRef = useRef<string | null>(null);
-
+  const latestPartialThemRef = useRef<{ text: string; timestamp: number }>({ text: "", timestamp: 0 });
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
 
@@ -121,7 +121,11 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   }, [vadConfig.enabled, capturing]);
 
   const transcribeSegment = useCallback(
-    async (audioBlob: Blob, source: "me" | "them") => {
+    async (
+      audioBlob: Blob,
+      source: "me" | "them",
+      options?: { skipOnInterviewerTranscription?: boolean }
+    ) => {
       const setSegmentProcessing =
         source === "me" ? setIsMicProcessing : setIsSystemProcessing;
 
@@ -169,7 +173,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
             return;
           }
 
-          if (source === "them") {
+          if (source === "them" && !options?.skipOnInterviewerTranscription) {
             await onInterviewerTranscription(transcription);
           }
         } else {
@@ -200,6 +204,21 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       try {
         if (!capturingRef.current) return;
 
+        // Fast path: if we already received a valid final/partial text from the streaming WS/partial STT
+        // within the recent window (last 3000ms), dispatch question to AI immediately without waiting for batch.
+        const now = Date.now();
+        const recentStreamingText =
+          latestPartialThemRef.current.text && (now - latestPartialThemRef.current.timestamp < 3000)
+            ? latestPartialThemRef.current.text
+            : "";
+
+        let fastPathDispatched = false;
+        if (recentStreamingText) {
+          fastPathDispatched = true;
+          // Fast-path dispatch to AI immediately!
+          void onInterviewerTranscription(recentStreamingText);
+        }
+
         const binaryString = atob(base64Audio);
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
@@ -207,7 +226,16 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         }
         const audioBlob = new Blob([bytes], { type: "audio/wav" });
 
-        await transcribeSegment(audioBlob, "them");
+        if (fastPathDispatched) {
+          // Fast-path was taken: run batch transcribeSegment in the background to refine the subtitle feed
+          // without re-dispatching to AI (skipOnInterviewerTranscription = true)
+          void transcribeSegment(audioBlob, "them", { skipOnInterviewerTranscription: true }).catch((err) => {
+            console.warn("[system-audio] Background batch transcription error:", err);
+          });
+        } else {
+          // Fallback: no streaming text available yet -> wait for batch transcribeSegment as before
+          await transcribeSegment(audioBlob, "them");
+        }
       } catch (err) {
         console.warn("[system-audio]", err);
         setError("Failed to process speech");
@@ -269,7 +297,10 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
               prompt,
             });
             if (text && !text.toLowerCase().startsWith("pluely stt error")) {
-              appendLiveSegment("them", text.trim(), true);
+              const trimmed = text.trim();
+              latestPartialThemRef.current.text = trimmed;
+              latestPartialThemRef.current.timestamp = Date.now();
+              appendLiveSegment("them", trimmed, true);
             }
           } catch (err) {
             console.warn("[system-audio]", err);

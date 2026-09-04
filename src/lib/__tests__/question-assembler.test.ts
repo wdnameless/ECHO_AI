@@ -123,8 +123,8 @@ describe("QuestionAssembler", () => {
 
   describe("ASR timing modes (fast vs accurate)", () => {
     it("exposes ASR_TIMING_PRESETS with expected fast and accurate configurations", () => {
-      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBe(800);
-      expect(ASR_TIMING_PRESETS.fast.earlyEmitPauseMs).toBe(900);
+      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBe(450);
+      expect(ASR_TIMING_PRESETS.fast.earlyEmitPauseMs).toBe(500);
       expect(ASR_TIMING_PRESETS.accurate.flushGapMs).toBe(1500);
       expect(ASR_TIMING_PRESETS.accurate.earlyEmitPauseMs).toBeUndefined();
       expect(ACTIVE_ASR_MODE).toBe("fast");
@@ -141,11 +141,11 @@ describe("QuestionAssembler", () => {
       );
     });
 
-    it("emits early in fast mode when inter-segment pause >= 900ms", () => {
+    it("emits early in fast mode when inter-segment pause >= 500ms", () => {
       const a = new QuestionAssembler({ mode: "fast" });
       a.push(seg("Tell me about how you handle merge conflicts", T));
-      // In fast mode, earlyEmitPauseMs is 900ms. Pause of 950ms triggers early emission of previous pending
-      const r = a.push(seg("What tools do you use for CI/CD", T + 950));
+      // In fast mode, earlyEmitPauseMs is 500ms. Pause of 550ms triggers early emission of previous pending
+      const r = a.push(seg("What tools do you use for CI/CD", T + 550));
       expect(r.kind).toBe("emitted");
       if (r.kind === "emitted") {
         expect(r.question).toBe("Tell me about how you handle merge conflicts");
@@ -154,14 +154,34 @@ describe("QuestionAssembler", () => {
       expect(a.current?.text).toBe("What tools do you use for CI/CD");
     });
 
-    it("does not emit early in fast mode when inter-segment pause < 900ms", () => {
+    it("does not emit early in fast mode when inter-segment pause < 500ms", () => {
       const a = new QuestionAssembler({ mode: "fast" });
       a.push(seg("What is your salary expectation", T));
-      const r = a.push(seg("for this senior role", T + 500));
+      const r = a.push(seg("for this senior role", T + 300));
       expect(r.kind).toBe("pending");
       expect(a.current?.text).toBe(
         "What is your salary expectation for this senior role"
       );
+    });
+
+    it("prevents flush when utterance ends with continuation punctuation (comma, ellipsis, dash)", () => {
+      const a = new QuestionAssembler({ flushGapMs: 450 });
+      a.push(seg("Когда вы работали с React,", T));
+      // Calling flush should return null due to trailing comma
+      const r1 = a.flush();
+      expect(r1?.kind).toBe("pending");
+      expect(a.current?.text).toBe("Когда вы работали с React,");
+      // Adding completion (ends with '?') automatically emits in push
+      const pushRes = a.push(seg("какие хуки использовали?", T + 200));
+      expect(pushRes.kind).toBe("emitted");
+      if (pushRes.kind === "emitted") {
+        expect(pushRes.question).toBe("Когда вы работали с React, какие хуки использовали?");
+      }
+    });
+
+    it("verifies silence window thresholds are within 300-500ms bounds", () => {
+      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBeGreaterThanOrEqual(300);
+      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBeLessThanOrEqual(500);
     });
   });
 });

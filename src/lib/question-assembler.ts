@@ -23,10 +23,12 @@
 //
 // - "fast" (answer-first mode):
 //     Optimized for minimum latency during real-time interviews.
-//     Lowers the question-flush gap timer from 1500ms down to 800ms so that
-//     when an interviewer stops speaking, AI inference triggers almost instantly.
-//     Additionally enables early emission if the gap between incoming speech
-//     segments exceeds 900ms (`earlyEmitPauseMs = 900`).
+//     Lowers the question-flush gap timer from 1500ms / 800ms down to 450ms (~330-450ms)
+//     so that when an interviewer stops speaking, AI inference triggers almost instantly.
+//     Early-pause emission triggers at 500ms (`earlyEmitPauseMs = 500`).
+//     Aggressive reduction below 450ms is avoided to prevent cutting pauses inside
+//     complex multi-clause questions. Continuation punctuation protection prevents
+//     premature dispatch if the utterance ends with trailing comma, hyphen, or ellipsis.
 //
 // - "accurate" (default conversational mode):
 //     Preserves standard conversational pacing.
@@ -38,6 +40,16 @@
 // ---------------------------------------------------------------------------
 
 export type AsrTimingMode = "accurate" | "fast";
+
+/**
+ * Default silence window (ms) for fast-path assembly.
+ * Tuned to 450ms: fast enough to eliminate human-perceived lag (~330-450ms),
+ * while safe enough to avoid splitting pauses within long/multi-clause questions.
+ */
+export const DEFAULT_SILENCE_WINDOW_MS = 450;
+
+/** Early pause emission threshold in fast mode (ms) */
+export const DEFAULT_EARLY_EMIT_PAUSE_MS = 500;
 
 export interface AsrTimingConfig {
   /** Gap timer (ms) to flush pending question when speaker goes silent */
@@ -60,9 +72,9 @@ export const ASR_TIMING_PRESETS: Record<AsrTimingMode, AsrTimingConfig> = {
     duplicateSimilarityThreshold: 0.75,
   },
   fast: {
-    flushGapMs: 800,
+    flushGapMs: DEFAULT_SILENCE_WINDOW_MS, // 450ms (~330-450ms fast path)
     maxWindowMs: 4000,
-    earlyEmitPauseMs: 900,
+    earlyEmitPauseMs: DEFAULT_EARLY_EMIT_PAUSE_MS, // 500ms early pause emit
     immediateOnQuestionMark: true,
     duplicateSimilarityThreshold: 0.75,
   },
@@ -78,8 +90,10 @@ export interface QuestionFragment {
 }
 
 export interface QuestionAssemblerOptions {
-  /** Max gap between fragments to treat them as ONE question. Defaults to preset flushGapMs. */
+  /** Milliseconds of silence after last fragment before emitting. Defaults to preset flushGapMs. */
   gapMs?: number;
+  /** Alias for gapMs (ms) */
+  flushGapMs?: number;
   /** Hard cap from the first fragment - emit what we have after that. Defaults to preset maxWindowMs. */
   maxWindowMs?: number;
   /** A fragment ending with "?" emits immediately (no waiting). */
@@ -118,7 +132,7 @@ export class QuestionAssembler {
 
   constructor(opts: QuestionAssemblerOptions = {}) {
     const preset = opts.mode ? ASR_TIMING_PRESETS[opts.mode] : undefined;
-    this.gapMs = opts.gapMs ?? preset?.flushGapMs ?? 1500;
+    this.gapMs = opts.flushGapMs ?? opts.gapMs ?? preset?.flushGapMs ?? 1500;
     this.maxWindowMs = opts.maxWindowMs ?? preset?.maxWindowMs ?? 12000;
     this.immediateOnQuestionMark =
       opts.immediateOnQuestionMark ?? preset?.immediateOnQuestionMark ?? true;
@@ -233,14 +247,37 @@ export class QuestionAssembler {
     return { kind: "pending", question };
   }
 
-  /** Force-emit whatever is pending (caller's gap timer fired). */
-  flush(source?: string): PushResult | null {
+  /**
+   * Returns true if text ends with continuation punctuation (comma, semicolon,
+   * em-dash, en-dash, hyphen, or ellipsis) suggesting the speaker paused mid-sentence.
+   */
+  static hasContinuationPunctuation(text: string): boolean {
+    const trimmed = text.trim();
+    return /([,;\-—–]|\.\.\.|…)$/.test(trimmed);
+  }
+
+  /**
+   * Force-emit whatever is pending (caller's gap timer fired).
+   * If protectContinuation is true (default false or optional parameter),
+   * questions ending with continuation punctuation (e.g. ',', '-', '...')
+   * will NOT be flushed yet to prevent cutting speech mid-sentence.
+   */
+  flush(source?: string, options?: { allowContinuation?: boolean }): PushResult | null {
     const p = this.pending;
     if (!p) return null;
     if (source !== undefined && p.source !== source) return null;
+
+    // If caller didn't explicitly force emit with allowContinuation=true,
+    // check if pending text ends with continuation punctuation.
+    if (!options?.allowContinuation) {
+      const currentText = p.segments.join(" ").trim();
+      if (QuestionAssembler.hasContinuationPunctuation(currentText)) {
+        return { kind: "pending", question: currentText };
+      }
+    }
+
     return this.emit();
   }
-
   reset(): void {
     this.pending = null;
     this.lastEmitted = null;
