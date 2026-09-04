@@ -266,4 +266,15 @@ describe("useAIStreaming", () => {
 
     expect(props.setFillerForInterviewer).not.toHaveBeenCalled();
   });
+
+  it("calls clearFiller when abortAI is invoked", () => {
+    const props = createHookProps();
+    const { result } = renderHook(() => useAIStreaming(props));
+
+    act(() => {
+      result.current.abortAI();
+    });
+
+    expect(props.clearFiller).toHaveBeenCalled();
+  });
 });

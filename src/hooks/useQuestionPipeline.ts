@@ -8,7 +8,7 @@
  * - Provides reset and question-assembler coordination.
  */
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   QuestionAssembler,
   ACTIVE_ASR_MODE,
@@ -62,6 +62,16 @@ export function useQuestionPipeline({
       rotateFiller();
     }, 4000);
   }, [stopFillerRotation, rotateFiller]);
+
+  useEffect(() => {
+    return () => {
+      stopFillerRotation();
+      if (questionFlushTimerRef.current) {
+        clearTimeout(questionFlushTimerRef.current);
+        questionFlushTimerRef.current = null;
+      }
+    };
+  }, [stopFillerRotation]);
 
   const clearFiller = useCallback(() => {
     stopFillerRotation();

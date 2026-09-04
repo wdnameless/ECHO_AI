@@ -221,4 +221,30 @@ describe("useQuestionPipeline", () => {
     expect(result.current.activeFiller).toBeNull();
     expect(mockSelect).toHaveBeenCalledTimes(3);
   });
+
+  it("stops filler rotation on unmount", () => {
+    const mockSelect = vi.fn(() => "Фраза");
+    vi.mocked(selectRussianFiller).mockImplementation(mockSelect);
+    const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+    const liveSegmentsRef = { current: [] as LiveSegment[] };
+
+    const { result, unmount } = renderHook(() =>
+      useQuestionPipeline({
+        onTriggerAI,
+        liveSegmentsRef,
+      })
+    );
+
+    act(() => {
+      result.current.setFillerForInterviewer();
+    });
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+
+    unmount();
+
+    act(() => {
+      vi.advanceTimersByTime(12000);
+    });
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+  });
 });

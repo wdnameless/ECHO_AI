@@ -74,7 +74,8 @@ export function useAIStreaming({
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-  }, []);
+    clearFiller();
+  }, [clearFiller]);
 
   const processWithAI = useCallback(
     async (
