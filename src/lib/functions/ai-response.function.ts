@@ -1,5 +1,6 @@
 import {
   buildDynamicMessages,
+  canonicalizeVariables,
   deepVariableReplacer,
   extractVariables,
   getByPath,
@@ -46,9 +47,43 @@ function parseCurlCached(curl: string): any {
 }
 
 /**
+ * Resolves model variable value across case-variants of the "model" key.
+ * Resolution rule:
+ * - If multiple case-variants exist with different non-empty values,
+ *   prefers lowercase "model" (written by fresh UI interactions / dropdowns).
+ * - Otherwise returns any non-empty value.
+ * - Returns empty string if no valid model is present.
+ */
+export function resolveModelVariable(
+  variables: Record<string, string> | undefined | null
+): string {
+  if (!variables || typeof variables !== "object") return "";
+
+  const modelEntries = Object.entries(variables).filter(
+    ([k, v]) => k.toLowerCase() === "model" && typeof v === "string" && v.trim() !== ""
+  );
+
+  if (modelEntries.length === 0) return "";
+  if (modelEntries.length === 1) return modelEntries[0][1].trim();
+
+  const distinctValues = new Set(modelEntries.map(([, v]) => v.trim()));
+  if (distinctValues.size === 1) {
+    return modelEntries[0][1].trim();
+  }
+
+  // Conflicting values: prioritize lowercase "model" written by fresh UI interactions
+  const lowerMatch = modelEntries.find(([k]) => k === k.toLowerCase());
+  if (lowerMatch) {
+    return lowerMatch[1].trim();
+  }
+
+  return modelEntries[modelEntries.length - 1][1].trim();
+}
+
+/**
  * Resolves the effective LLM model name for a provider.
- * Priority: (1) the user-selected `model` variable (case-insensitive) always
- * wins, (2) a `{{MODEL}}` placeholder in the curl is resolved from variables
+ * Priority: (1) the user-selected `model` variable (case-insensitive, defense against collisions)
+ * always wins, (2) a `{{MODEL}}` placeholder in the curl is resolved from variables
  * (same source as 1), (3) as a last resort the literal `"model": "..."`
  * string baked into the provider curl body is parsed out.
  */
@@ -59,11 +94,9 @@ export function resolveProviderModel(
     | null
     | undefined
 ): string {
-  const vars = selectedProvider?.variables ?? {};
-  const varsModel = Object.entries(vars).find(
-    ([k, v]) => k.toLowerCase() === "model" && v && v.trim() !== ""
-  )?.[1];
-  if (varsModel?.trim()) return varsModel.trim();
+  const vars = selectedProvider?.variables;
+  const varsModel = resolveModelVariable(vars);
+  if (varsModel) return varsModel;
   // Priority 2: a `{{MODEL}}` placeholder also resolves from variables (same
   // lookup as priority 1, already covered above).
   if (provider?.curl) {
@@ -72,6 +105,7 @@ export function resolveProviderModel(
   }
   return "";
 }
+
 
 // ---------------------------------------------------------------------------
 // Parallel web search: results are raced against the first token so search
@@ -388,8 +422,9 @@ async function* streamAIResponse(params: {
       bodyObj[messagesKey] = finalMessages;
     }
 
+    const canonicalVars = canonicalizeVariables(selectedProvider.variables);
     const userVariables = Object.fromEntries(
-      Object.entries(selectedProvider.variables).map(([key, value]) => [
+      Object.entries(canonicalVars).map(([key, value]) => [
         key.toUpperCase(),
         value,
       ])
@@ -416,9 +451,7 @@ async function* streamAIResponse(params: {
     // model configured in settings. Sibling model-like keys (model_id,
     // model_name, modelVersion) that don't match the chosen value are removed
     // so the provider can never fall back to a stale model.
-    const selectedModel = Object.entries(selectedProvider.variables).find(
-      ([k, v]) => k.toLowerCase() === "model" && v && v.trim() !== ""
-    )?.[1];
+    const selectedModel = resolveModelVariable(selectedProvider.variables);
     if (
       typeof bodyObj === "object" &&
       bodyObj !== null &&
