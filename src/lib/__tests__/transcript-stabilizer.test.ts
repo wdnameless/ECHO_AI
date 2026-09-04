@@ -3,9 +3,10 @@ import {
   upsertUtterance,
   finalizeUtterance,
   selectRussianFiller,
-  isExplicitAskEligible,
+  RUSSIAN_FILLERS,
   RUSSIAN_INTERVIEW_FILLERS,
-  TranscriptUtterance,
+  isExplicitAskEligible,
+  type TranscriptUtterance,
 } from "../transcript-stabilizer";
 
 describe("transcript-stabilizer", () => {
@@ -71,6 +72,25 @@ describe("transcript-stabilizer", () => {
     expect(filler1.length).toBeGreaterThan(10);
   });
 
+  it("contains at least 200 unique phrases in RUSSIAN_FILLERS and RUSSIAN_INTERVIEW_FILLERS", () => {
+    expect(RUSSIAN_FILLERS.length).toBeGreaterThanOrEqual(200);
+    expect(RUSSIAN_INTERVIEW_FILLERS.length).toBeGreaterThanOrEqual(200);
+    const uniqueSet = new Set(RUSSIAN_FILLERS);
+    expect(uniqueSet.size).toBeGreaterThanOrEqual(200);
+    expect(uniqueSet.size).toBe(RUSSIAN_FILLERS.length);
+  });
+
+  it("guarantees selection without repeats over 50 consecutive iterations", () => {
+    const selected: string[] = [];
+    for (let i = 0; i < 50; i++) {
+      const phrase = selectRussianFiller();
+      // Check that it does not match the immediately preceding recent history (LRU window of 10)
+      const recentWindow = selected.slice(-10);
+      expect(recentWindow).not.toContain(phrase);
+      selected.push(phrase);
+    }
+    expect(selected.length).toBe(50);
+  });
   it("evaluates eligibility for manual Ask AI", () => {
     expect(isExplicitAskEligible("")).toBe(false);
     expect(isExplicitAskEligible("  ")).toBe(false);

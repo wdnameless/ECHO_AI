@@ -66,6 +66,7 @@ describe("useAIStreaming", () => {
       addInteraction,
       setFillerForInterviewer,
       clearFiller,
+      pendingUtteranceId: null as string | null,
       onError,
       pendingScreenshotRef,
       setPendingScreenshot,
@@ -247,5 +248,33 @@ describe("useAIStreaming", () => {
       })
     );
     expect(props.setPendingScreenshot).toHaveBeenCalledWith(null);
+  });
+
+  it("does not overwrite filler if pendingUtteranceId is already set", async () => {
+    const props = createHookProps();
+    props.pendingUtteranceId = "manual-utterance-123";
+    const { result } = renderHook(() => useAIStreaming(props));
+
+    async function* emptyStream() {
+      yield "Answer";
+    }
+    vi.mocked(fetchAIResponse).mockReturnValue(emptyStream());
+
+    await act(async () => {
+      await result.current.triggerAIForQuestion("How do you design high scale systems?", "them");
+    });
+
+    expect(props.setFillerForInterviewer).not.toHaveBeenCalled();
+  });
+
+  it("calls clearFiller when abortAI is invoked", () => {
+    const props = createHookProps();
+    const { result } = renderHook(() => useAIStreaming(props));
+
+    act(() => {
+      result.current.abortAI();
+    });
+
+    expect(props.clearFiller).toHaveBeenCalled();
   });
 });

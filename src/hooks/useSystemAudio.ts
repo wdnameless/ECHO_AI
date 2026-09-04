@@ -9,10 +9,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useWindowResize, useGlobalShortcuts } from ".";
 import { useApp } from "@/contexts";
-import {
-  isExplicitAskEligible,
-  selectRussianFiller,
-} from "@/lib/transcript-stabilizer";
+import { isExplicitAskEligible } from "@/lib/transcript-stabilizer";
 import {
   generateConversationId,
   generateMessageId,
@@ -110,11 +107,10 @@ export function useSystemAudio() {
 
   const {
     activeFiller,
-    setActiveFiller,
     pendingUtteranceId,
-    setPendingUtteranceId,
     activeAskUtteranceIdRef,
     clearFiller,
+    setFillerForAnchor,
     setFillerForInterviewer,
     resetQuestionAssembly,
     handleInterviewerTranscription,
@@ -192,6 +188,7 @@ export function useSystemAudio() {
     addInteraction,
     setFillerForInterviewer,
     clearFiller,
+    pendingUtteranceId,
     pendingScreenshotRef,
     setPendingScreenshot,
     onError: setError,
@@ -380,10 +377,7 @@ export function useSystemAudio() {
         return;
       }
 
-      const filler = selectRussianFiller();
-      setActiveFiller(filler);
-      setPendingUtteranceId(utteranceId);
-      activeAskUtteranceIdRef.current = utteranceId;
+      setFillerForAnchor(utteranceId);
 
       try {
         await triggerAIForQuestion(text, source);
@@ -395,8 +389,7 @@ export function useSystemAudio() {
     [
       isAIProcessing,
       activeAskUtteranceIdRef,
-      setActiveFiller,
-      setPendingUtteranceId,
+      setFillerForAnchor,
       triggerAIForQuestion,
       clearFiller,
     ]

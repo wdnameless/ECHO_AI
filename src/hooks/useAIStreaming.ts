@@ -40,6 +40,7 @@ export interface UseAIStreamingProps {
   ) => void;
   setFillerForInterviewer: () => void;
   clearFiller: () => void;
+  pendingUtteranceId?: string | null;
   pendingScreenshotRef: React.MutableRefObject<string | null>;
   setPendingScreenshot: (val: string | null) => void;
   onError: (msg: string) => void;
@@ -56,13 +57,13 @@ export function useAIStreaming({
   addInteraction,
   setFillerForInterviewer,
   clearFiller,
+  pendingUtteranceId,
   pendingScreenshotRef,
   setPendingScreenshot,
   onError,
 }: UseAIStreamingProps) {
   const [isAIProcessing, setIsAIProcessing] = useState(false);
   const [lastAIResponse, setLastAIResponse] = useState<string>("");
-
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamBufferRef = useRef<string>("");
   const streamFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -73,7 +74,8 @@ export function useAIStreaming({
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-  }, []);
+    clearFiller();
+  }, [clearFiller]);
 
   const processWithAI = useCallback(
     async (
@@ -217,9 +219,12 @@ export function useAIStreaming({
         );
         return;
       }
-
       startQuestion();
-      setFillerForInterviewer();
+      // Only set generic interviewer filler if pending utterance wasn't already assigned
+      // (e.g. manual askAIForTranscript already set activeFiller + pendingUtteranceId).
+      if (!pendingUtteranceId) {
+        setFillerForInterviewer();
+      }
       const effectiveSystemPrompt = useSystemPrompt
         ? systemPrompt || DEFAULT_SYSTEM_PROMPT
         : contextContent || DEFAULT_SYSTEM_PROMPT;

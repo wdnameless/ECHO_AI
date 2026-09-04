@@ -8,7 +8,7 @@
  * - Provides reset and question-assembler coordination.
  */
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import {
   QuestionAssembler,
   ACTIVE_ASR_MODE,
@@ -42,11 +42,43 @@ export function useQuestionPipeline({
     });
   }
 
+  const fillerRotationTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const stopFillerRotation = useCallback(() => {
+    if (fillerRotationTimerRef.current) {
+      clearInterval(fillerRotationTimerRef.current);
+      fillerRotationTimerRef.current = null;
+    }
+  }, []);
+
+  const rotateFiller = useCallback(() => {
+    const next = selectRussianFiller();
+    setActiveFiller(next);
+  }, []);
+
+  const startFillerRotation = useCallback(() => {
+    stopFillerRotation();
+    fillerRotationTimerRef.current = setInterval(() => {
+      rotateFiller();
+    }, 4000);
+  }, [stopFillerRotation, rotateFiller]);
+
+  useEffect(() => {
+    return () => {
+      stopFillerRotation();
+      if (questionFlushTimerRef.current) {
+        clearTimeout(questionFlushTimerRef.current);
+        questionFlushTimerRef.current = null;
+      }
+    };
+  }, [stopFillerRotation]);
+
   const clearFiller = useCallback(() => {
+    stopFillerRotation();
     setActiveFiller(null);
     setPendingUtteranceId(null);
     activeAskUtteranceIdRef.current = null;
-  }, []);
+  }, [stopFillerRotation]);
 
   const setFillerForAnchor = useCallback(
     (anchorId: string | null = null) => {
@@ -54,11 +86,15 @@ export function useQuestionPipeline({
       setActiveFiller(filler);
       setPendingUtteranceId(anchorId);
       activeAskUtteranceIdRef.current = anchorId || "auto";
+      startFillerRotation();
     },
-    []
+    [startFillerRotation]
   );
 
   const setFillerForInterviewer = useCallback(() => {
+    // Immediate display on dispatch: unbind from anchorId.
+    // In case anchor exists in liveSegmentsRef, keep it for back-compat,
+    // but filler is shown regardless (anchorId can be null or anchor.id).
     const anchor =
       [...liveSegmentsRef.current].reverse().find((s) => s.source === "them") ||
       null;

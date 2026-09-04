@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useQuestionPipeline } from "../useQuestionPipeline";
 import type { LiveSegment } from "../useConversationStore";
+import { selectRussianFiller } from "@/lib/transcript-stabilizer";
 
 vi.mock("@/lib/transcript-stabilizer", () => ({
   selectRussianFiller: vi.fn(() => "Да, секундочку..."),
@@ -158,5 +159,92 @@ describe("useQuestionPipeline", () => {
     });
 
     expect(onTriggerAI).not.toHaveBeenCalled();
+  });
+
+  it("displays filler immediately on dispatch without anchorId (null anchor)", () => {
+    const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+    const liveSegmentsRef = { current: [] as LiveSegment[] };
+
+    const { result } = renderHook(() =>
+      useQuestionPipeline({ onTriggerAI, liveSegmentsRef })
+    );
+
+    act(() => {
+      result.current.setFillerForInterviewer();
+    });
+
+    // Even with 0 segments (anchorId null), activeFiller MUST be displayed immediately
+    expect(result.current.activeFiller).toBe("Да, секундочку...");
+    expect(result.current.pendingUtteranceId).toBeNull();
+    expect(result.current.activeAskUtteranceIdRef.current).toBe("auto");
+  });
+
+  it("rotates filler every 4 seconds when waiting for first token and clears on clearFiller", () => {
+    let fillerCount = 0;
+    const mockSelect = vi.fn(() => `Перебивка ${++fillerCount}`);
+    vi.mocked(selectRussianFiller).mockImplementation(mockSelect);
+    const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+    const liveSegmentsRef = { current: [] as LiveSegment[] };
+
+    const { result } = renderHook(() =>
+      useQuestionPipeline({ onTriggerAI, liveSegmentsRef })
+    );
+
+    act(() => {
+      result.current.setFillerForAnchor(null);
+    });
+
+    expect(result.current.activeFiller).toBe("Перебивка 1");
+
+    // Advance by 4 seconds -> should rotate to next phrase
+    act(() => {
+      vi.advanceTimersByTime(4000);
+    });
+    expect(result.current.activeFiller).toBe("Перебивка 2");
+
+    // Advance by another 4 seconds -> should rotate again
+    act(() => {
+      vi.advanceTimersByTime(4000);
+    });
+    expect(result.current.activeFiller).toBe("Перебивка 3");
+
+    // Calling clearFiller (simulating first token arrival or error/abort)
+    act(() => {
+      result.current.clearFiller();
+    });
+    expect(result.current.activeFiller).toBeNull();
+
+    // Advance another 8 seconds -> rotation timer must have been stopped
+    act(() => {
+      vi.advanceTimersByTime(8000);
+    });
+    expect(result.current.activeFiller).toBeNull();
+    expect(mockSelect).toHaveBeenCalledTimes(3);
+  });
+
+  it("stops filler rotation on unmount", () => {
+    const mockSelect = vi.fn(() => "Фраза");
+    vi.mocked(selectRussianFiller).mockImplementation(mockSelect);
+    const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+    const liveSegmentsRef = { current: [] as LiveSegment[] };
+
+    const { result, unmount } = renderHook(() =>
+      useQuestionPipeline({
+        onTriggerAI,
+        liveSegmentsRef,
+      })
+    );
+
+    act(() => {
+      result.current.setFillerForInterviewer();
+    });
+    expect(mockSelect).toHaveBeenCalledTimes(1);
+
+    unmount();
+
+    act(() => {
+      vi.advanceTimersByTime(12000);
+    });
+    expect(mockSelect).toHaveBeenCalledTimes(1);
   });
 });
