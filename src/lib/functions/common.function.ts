@@ -234,3 +234,65 @@ export function getStreamingContent(
   // Return null if no content is found after trying all paths.
   return null;
 }
+
+/**
+ * Canonicalizes variables dictionary by collapsing case-insensitive duplicate keys
+ * into a single canonical UPPERCASE key (matching curl template placeholders like {{MODEL}}, {{API_KEY}}).
+ *
+ * Resolution rules per key group:
+ * - If a group has conflicting values, lowercase key takes priority (fresh UI interaction / dropdown writes).
+ * - Otherwise, any non-empty value is preserved.
+ * - Groups with only empty values resolve to "".
+ */
+export function canonicalizeVariables(
+  vars: Record<string, string> | undefined | null
+): Record<string, string> {
+  if (!vars || typeof vars !== "object") return {};
+
+  // Group entries by normalized uppercase key:
+  // canonicalKey -> Array<{ originalKey: string; value: string }>
+  const groups = new Map<string, Array<{ originalKey: string; value: string }>>();
+
+  for (const [k, v] of Object.entries(vars)) {
+    const upper = k.toUpperCase();
+    const entry = { originalKey: k, value: v ?? "" };
+    const list = groups.get(upper);
+    if (list) {
+      list.push(entry);
+    } else {
+      groups.set(upper, [entry]);
+    }
+  }
+
+  const result: Record<string, string> = {};
+
+  for (const [upperKey, entries] of groups.entries()) {
+    if (entries.length === 1) {
+      // Keep single key normalized to uppercase canonical placeholder format
+      result[upperKey] = entries[0].value;
+      continue;
+    }
+
+    // Multiple case-variants present:
+    // Check distinct non-empty values
+    const nonEmpty = entries.filter((e) => e.value !== "");
+    if (nonEmpty.length === 0) {
+      result[upperKey] = "";
+      continue;
+    }
+
+    const distinctValues = new Set(nonEmpty.map((e) => e.value));
+    if (distinctValues.size === 1) {
+      result[upperKey] = nonEmpty[0].value;
+    } else {
+      // Conflicting values: lowercase key takes priority (written by fresh UI interactions/dropdowns)
+      const lowerMatch = nonEmpty.find(
+        (e) => e.originalKey === e.originalKey.toLowerCase()
+      );
+      result[upperKey] = lowerMatch ? lowerMatch.value : nonEmpty[nonEmpty.length - 1].value;
+    }
+  }
+
+  return result;
+}
+

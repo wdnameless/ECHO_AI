@@ -4,7 +4,7 @@ import {
   SPEECH_TO_TEXT_PROVIDERS,
   STORAGE_KEYS,
 } from "@/config";
-import { getPlatform, safeLocalStorage, trackAppStart } from "@/lib";
+import { canonicalizeVariables, getPlatform, safeLocalStorage, trackAppStart } from "@/lib";
 import { getShortcutsConfig } from "@/lib/storage";
 import {
   getCustomizableState,
@@ -406,6 +406,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     );
     if (savedSelectedAi) {
       const parsedAi = JSON.parse(savedSelectedAi);
+      // Migrate stored variables: canonicalize duplicate/case-collision keys
+      if (parsedAi && typeof parsedAi === "object" && parsedAi.variables) {
+        parsedAi.variables = canonicalizeVariables(parsedAi.variables);
+      }
       // No legacy-model shim: the user's stored selection is the source of
       // truth. The old recurring "gemini 3.6 flash high" rewrite clobbered
       // newer user selections and re-persisted them every app start.
@@ -746,10 +750,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
     }
 
+    const canonicalVars = canonicalizeVariables(variables);
     setSelectedAIProvider((prev) => ({
       ...prev,
       provider,
-      variables,
+      variables: canonicalVars,
     }));
   };
 
