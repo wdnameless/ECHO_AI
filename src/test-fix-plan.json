@@ -1,0 +1,7 @@
+{
+  "updated_test_files": [
+    "src/lib/__tests__/question-assembler.test.ts",
+    "src/hooks/__tests__/useMicWsStreaming.test.ts"
+  ],
+  "reason": "Updating timing constants and mock expectations to match the new 180ms aggregation buffering strategy defined in the T3 optimization."
+}

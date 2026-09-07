@@ -43,10 +43,9 @@ export type AsrTimingMode = "accurate" | "fast";
 
 /**
  * Default silence window (ms) for fast-path assembly.
- * Tuned to 450ms: fast enough to eliminate human-perceived lag (~330-450ms),
- * while safe enough to avoid splitting pauses within long/multi-clause questions.
+ * Tuned to 800ms to eliminate premature VAD flushes and allow natural pauses.
  */
-export const DEFAULT_SILENCE_WINDOW_MS = 450;
+export const DEFAULT_SILENCE_WINDOW_MS = 800;
 
 /** Early pause emission threshold in fast mode (ms) */
 export const DEFAULT_EARLY_EMIT_PAUSE_MS = 500;

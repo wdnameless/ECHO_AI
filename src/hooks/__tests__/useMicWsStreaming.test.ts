@@ -245,9 +245,9 @@ describe("useMicWsStreaming", () => {
 
     expect(MockWebSocket.instances).toHaveLength(1);
 
-    // Fast-forward reconnect timer (2000ms as per MIC_WS_RECONNECT_MS)
+    // Fast-forward reconnect timer (first retry attempt = 1000ms backoff)
     act(() => {
-      vi.advanceTimersByTime(2000);
+      vi.advanceTimersByTime(1000);
     });
 
     await act(async () => {
@@ -364,5 +364,112 @@ describe("useMicWsStreaming", () => {
 
     // Should NOT reconnect after cleanup
     expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it("implements exponential backoff on consecutive reconnects (min 1s, max 30s)", async () => {
+    const onPartialTranscript = vi.fn();
+    const capturingRef = { current: true };
+
+    const { result } = renderHook(() =>
+      useMicWsStreaming({
+        capturingRef,
+        onPartialTranscript,
+      })
+    );
+
+    act(() => {
+      result.current.micWsWantRef.current = true;
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Attempt 1: drops -> backoff 1s (1000ms)
+    const ws1 = MockWebSocket.instances[0];
+    act(() => {
+      ws1.close();
+    });
+    act(() => {
+      vi.advanceTimersByTime(999);
+    });
+    expect(MockWebSocket.instances).toHaveLength(1);
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    // Attempt 2: drops -> backoff 2s (2000ms)
+    const ws2 = MockWebSocket.instances[1];
+    act(() => {
+      ws2.close();
+    });
+    act(() => {
+      vi.advanceTimersByTime(1999);
+    });
+    expect(MockWebSocket.instances).toHaveLength(2);
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(MockWebSocket.instances).toHaveLength(3);
+  });
+
+  it("throttles logging: warns on first 3 attempts then switches to info", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+
+    const onPartialTranscript = vi.fn();
+    const capturingRef = { current: true };
+
+    const { result } = renderHook(() =>
+      useMicWsStreaming({
+        capturingRef,
+        onPartialTranscript,
+      })
+    );
+
+    act(() => {
+      result.current.micWsWantRef.current = true;
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Trigger 4 consecutive reconnect drops
+    for (let i = 0; i < 4; i++) {
+      const currentWs = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+      act(() => {
+        currentWs.close();
+      });
+      // Advance time enough for any backoff
+      act(() => {
+        vi.advanceTimersByTime(35000);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+
+    // First 3 attempts should log with warn
+    const micWsWarns = warnSpy.mock.calls.filter(([arg]) =>
+      typeof arg === "string" && arg.includes("[mic-ws] (attempt")
+    );
+    expect(micWsWarns.length).toBe(3);
+
+    // 4th attempt should log with info
+    const micWsInfos = infoSpy.mock.calls.filter(([arg]) =>
+      typeof arg === "string" && arg.includes("[mic-ws] (attempt")
+    );
+    expect(micWsInfos.length).toBeGreaterThanOrEqual(1);
+
+    warnSpy.mockRestore();
+    infoSpy.mockRestore();
   });
 });

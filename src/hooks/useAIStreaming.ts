@@ -14,10 +14,10 @@ import { fetchAIResponse, shouldUsePluelyAPI } from "@/lib/functions";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
 import { startQuestion, recordFirstToken } from "@/lib/metrics";
 import { DEFAULT_SYSTEM_PROMPT } from "@/config";
+import { fillerManager } from "@/lib/filler-manager";
 import type { Message } from "@/types/completion";
 import type { TYPE_PROVIDER } from "@/types";
 import type { ChatMessage, ChatConversation } from "./useConversationStore";
-
 const AI_RESPONSE_COOLDOWN_MS = 2000;
 
 export interface SelectedAIProviderConfig {
@@ -95,7 +95,7 @@ export function useAIStreaming({
         setIsAIProcessing(true);
         setLastAIResponse("");
         onError("");
-
+        fillerManager.startMonitoring();
         let fullResponse = "";
 
         const usePluelyAPI = await shouldUsePluelyAPI();
@@ -132,6 +132,7 @@ export function useAIStreaming({
             if (isFirstChunk) {
               isFirstChunk = false;
               recordFirstToken();
+              fillerManager.stop();
               clearFiller();
             }
             fullResponse += chunk;
@@ -160,6 +161,7 @@ export function useAIStreaming({
           }
         } catch (aiError: unknown) {
           console.warn("[ai-stream]", aiError);
+          fillerManager.stop();
           clearFiller();
           const err = aiError as { message?: string };
           onError(err?.message || "Failed to get AI response");
@@ -170,10 +172,11 @@ export function useAIStreaming({
         }
       } catch (err: unknown) {
         console.warn("[ai-stream]", err);
+        fillerManager.stop();
         clearFiller();
-        onError("Failed to get AI response");
       } finally {
         setIsAIProcessing(false);
+        fillerManager.stop();
         clearFiller();
       }
     },
@@ -240,6 +243,7 @@ export function useAIStreaming({
           source
         );
       } finally {
+        fillerManager.stop();
         clearFiller();
       }
     },

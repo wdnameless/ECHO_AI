@@ -95,7 +95,8 @@ export async function fastTranslate(
     }
 
     if (!response.ok) {
-      throw new Error(`Google Translate error: ${response.status}`);
+      console.warn(`[Translator] ${response.status} error, falling back locally`);
+      return trimmed;
     }
 
     const data = await response.json();

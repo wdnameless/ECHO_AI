@@ -154,4 +154,16 @@ describe("Model key collision and canonicalization", () => {
       expect(resolved).toBe("gemini-3.6-flash-low");
     });
   });
+
+  describe("Reasoning effort override", () => {
+    it("canonicalizes REASONING_EFFORT if provided in variables", () => {
+      const input = {
+        reasoning_effort: "high",
+      };
+      const result = canonicalizeVariables(input);
+      expect(result).toEqual({
+        REASONING_EFFORT: "high",
+      });
+    });
+  });
 });

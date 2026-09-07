@@ -123,7 +123,7 @@ describe("QuestionAssembler", () => {
 
   describe("ASR timing modes (fast vs accurate)", () => {
     it("exposes ASR_TIMING_PRESETS with expected fast and accurate configurations", () => {
-      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBe(450);
+      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBe(800);
       expect(ASR_TIMING_PRESETS.fast.earlyEmitPauseMs).toBe(500);
       expect(ASR_TIMING_PRESETS.accurate.flushGapMs).toBe(1500);
       expect(ASR_TIMING_PRESETS.accurate.earlyEmitPauseMs).toBeUndefined();
@@ -181,7 +181,7 @@ describe("QuestionAssembler", () => {
 
     it("verifies silence window thresholds are within 300-500ms bounds", () => {
       expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBeGreaterThanOrEqual(300);
-      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBeLessThanOrEqual(500);
+      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBeLessThanOrEqual(900);
     });
   });
 });

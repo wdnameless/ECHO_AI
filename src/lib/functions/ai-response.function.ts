@@ -430,12 +430,11 @@ async function* streamAIResponse(params: {
       ])
     );
 
-    // Zero-reasoning by default: "low" (or "minimal" for Gemini) gives the
-    // fastest first token. The user can still override via provider variables
-    // (e.g. REASONING_EFFORT=high) for complex questions.
+    // Zero-reasoning by default: "minimal" gives the fastest first token.
+    // The user can still override via provider variables (e.g. REASONING_EFFORT=high)
+    // for complex questions.
     const reasoningEffort =
-      userVariables["REASONING_EFFORT"] ||
-      (provider?.id === "gemini" ? "low" : "low");
+      userVariables["REASONING_EFFORT"] || "minimal";
 
     const allVariables = {
       ...userVariables,
@@ -482,8 +481,8 @@ async function* streamAIResponse(params: {
         bodyObj.reasoning_effort === "none" ||
         bodyObj.reasoning_effort === "disabled"
       ) {
-        // For Gemini / OpenAI: set budget_tokens to 0 or remove reasoning delay
-        bodyObj.reasoning_effort = "low";
+        // Normalize disabled reasoning to "minimal" for fastest first-token delivery
+        bodyObj.reasoning_effort = "minimal";
       }
 
       // Gemini rejects empty image fields with HTTP 400 ("Unable to process

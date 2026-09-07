@@ -405,3 +405,9 @@ export function finalizeUtterance(
 
   return nextList;
 }
+
+/**
+ * Default silence window (ms) for VAD / speech end boundary.
+ * Re-exported from question-assembler for backwards-compatibility / direct access.
+ */
+export { DEFAULT_SILENCE_WINDOW_MS } from "./question-assembler";

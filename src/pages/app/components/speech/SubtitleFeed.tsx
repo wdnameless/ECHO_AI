@@ -477,8 +477,8 @@ export const SubtitleFeed = ({
     prevFeedKeyRef.current = feedKey;
     // Only auto-scroll when the user is already reading the top (hasn't
     // scrolled away into history).
-    if (el.scrollTop > 40) return;
-    el.scrollTo({ top: 0, behavior: "smooth" });
+    if (el.scrollTop > 100) return;
+    el.scrollTo({ top: 0, behavior: "auto" });
   }, [visible, paused]);
 
   // Count rows that arrived while the feed is frozen.
