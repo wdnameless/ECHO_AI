@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   getMetrics,
   recordTtft,
@@ -84,10 +84,19 @@ describe("metrics module", () => {
       expect(getMetrics().wsReconnectCount).toBe(3);
     });
 
-    it("increments lostSegmentsCount", () => {
+    it("throttles lostSegmentsCount to one increment per second", () => {
+      vi.useFakeTimers();
       recordLostSegment();
+      // Calls within the same second are dropped (frame-level noise).
       recordLostSegment(4);
-      expect(getMetrics().lostSegmentsCount).toBe(5);
+      vi.advanceTimersByTime(50);
+      recordLostSegment();
+      expect(getMetrics().lostSegmentsCount).toBe(1);
+      // After the throttle window a new window is counted.
+      vi.advanceTimersByTime(1000);
+      recordLostSegment();
+      expect(getMetrics().lostSegmentsCount).toBe(2);
+      vi.useRealTimers();
     });
   });
 
