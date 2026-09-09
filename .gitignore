@@ -38,3 +38,4 @@ src-tauri/resources/nemotron*
 src-tauri/resources/*.gguf
 src-tauri/resources/pluely-asr*
 release-resources/*.zip
+logs.zip
