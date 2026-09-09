@@ -41,7 +41,6 @@ export const DEFAULT_FILLER_MANAGER_CONFIG: FillerManagerConfig = {
 export class FillerManager {
   private static instance: FillerManager | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
-  private rotationTimer: ReturnType<typeof setTimeout> | null = null;
   private startTime: number = 0;
   private status: FillerStatus = "idle";
   private isPlaying: boolean = false;
@@ -159,12 +158,8 @@ export class FillerManager {
       this.playAudio(phrase);
     }
 
-    // Rotate phrase if waiting continues (> 4s per filler)
-    this.rotationTimer = setTimeout(() => {
-      if (this.status === "playing") {
-        this.triggerFiller(onTrigger);
-      }
-    }, 4000);
+    // One filler per answer: no rotation. The phrase stays on screen and
+    // audio until the LLM stream starts (stop()) or the request ends.
   }
 
   /**
@@ -207,10 +202,6 @@ export class FillerManager {
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
-    }
-    if (this.rotationTimer !== null) {
-      clearTimeout(this.rotationTimer);
-      this.rotationTimer = null;
     }
 
     if (typeof window !== "undefined" && "speechSynthesis" in window) {

@@ -12,7 +12,7 @@ import { useCallback, useRef } from "react";
 import { getAsrBaseUrl } from "@/lib/asr-discovery";
 import { getResponseSettings } from "@/lib";
 import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
-const MIC_WS_RECONNECT_MS = 2000;
+const MIC_WS_RECONNECT_MS = 400;
 
 export interface UseMicWsStreamingProps {
   capturingRef: React.MutableRefObject<boolean>;

@@ -4,11 +4,11 @@
  * Responsibility:
  * - Accumulates fragmented VAD transcription segments into single coherent questions.
  * - Handles flush timers on pauses/silence gaps.
- * - Manages active Russian filler state ("Да, секундочку..." / перебивки) and utterance association.
+ * - Manages active Russian filler state ("Да, секундочку..." / перебивки): one
+ *   stable phrase per pending answer, cleared when the response starts streaming.
  * - Provides reset and question-assembler coordination.
  */
-
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback } from "react";
 import {
   QuestionAssembler,
   ACTIVE_ASR_MODE,
@@ -42,53 +42,24 @@ export function useQuestionPipeline({
     });
   }
 
-  const fillerRotationTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  const stopFillerRotation = useCallback(() => {
-    if (fillerRotationTimerRef.current) {
-      clearInterval(fillerRotationTimerRef.current);
-      fillerRotationTimerRef.current = null;
-    }
-  }, []);
-
-  const rotateFiller = useCallback(() => {
-    const next = selectRussianFiller();
-    setActiveFiller(next);
-  }, []);
-
-  const startFillerRotation = useCallback(() => {
-    stopFillerRotation();
-    fillerRotationTimerRef.current = setInterval(() => {
-      rotateFiller();
-    }, 4000);
-  }, [stopFillerRotation, rotateFiller]);
-
-  useEffect(() => {
-    return () => {
-      stopFillerRotation();
-      if (questionFlushTimerRef.current) {
-        clearTimeout(questionFlushTimerRef.current);
-        questionFlushTimerRef.current = null;
-      }
-    };
-  }, [stopFillerRotation]);
 
   const clearFiller = useCallback(() => {
-    stopFillerRotation();
     setActiveFiller(null);
     setPendingUtteranceId(null);
     activeAskUtteranceIdRef.current = null;
-  }, [stopFillerRotation]);
+  }, []);
 
   const setFillerForAnchor = useCallback(
     (anchorId: string | null = null) => {
+      // One filler phrase per answer: pick once, keep stable until cleared.
+      // No rotation interval — the phrase must not change while the user
+      // is reading it aloud mid-sentence.
       const filler = selectRussianFiller();
       setActiveFiller(filler);
       setPendingUtteranceId(anchorId);
       activeAskUtteranceIdRef.current = anchorId || "auto";
-      startFillerRotation();
     },
-    [startFillerRotation]
+    []
   );
 
   const setFillerForInterviewer = useCallback(() => {

@@ -129,13 +129,20 @@ export function recordWsReconnect(amount = 1): void {
 }
 
 /**
- * Increment the lost segments counter.
+ * Record a lost-audio window. Throttled to at most one increment per
+ * second: micFeedFrame fires ~33x/s while the WS is down, and counting
+ * every frame inflated the "lost" badge into meaninglessness. One unit
+ * here now means "about one second of speech audio was dropped".
  */
+let lastLostSegmentAt = 0;
 export function recordLostSegment(amount = 1): void {
+  const now = Date.now();
+  if (now - lastLostSegmentAt < 1000) return;
+  lastLostSegmentAt = now;
   metricsState = {
     ...metricsState,
     lostSegmentsCount: metricsState.lostSegmentsCount + Math.max(1, amount),
-    updatedAt: Date.now(),
+    updatedAt: now,
   };
   emit();
 }
