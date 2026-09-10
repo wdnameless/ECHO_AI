@@ -139,10 +139,14 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
           prompt: buildInitialPrompt(),
         });
 
+        // Sidecar waits for the GPU lease up to 30s (busy-retry) and the
+        // batch queue holds up to 40s; the race timeout must stay above the
+        // server-side worst case so a legitimately queued request is not
+        // abandoned mid-wait (its slot would still be parked server-side).
         const timeoutPromise = new Promise<string>((_, reject) => {
           setTimeout(
-            () => reject(new Error("Speech transcription timed out (30s)")),
-            30000
+            () => reject(new Error("Speech transcription timed out (45s)")),
+            45000
           );
         });
 
@@ -274,6 +278,11 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
       void (async () => {
         while (partialQueue.length > 0) {
+          // Only the freshest queued partial matters: older ones describe
+          // audio the NEXT partial already includes (they are cumulative
+          // buffers), and each batch costs a GPU lease wait. Transcribing a
+          // backlog after a stall just burns the queue slot for nothing.
+          while (partialQueue.length > 1) partialQueue.shift();
           const payload = partialQueue.shift()!;
           const binaryString = atob(payload);
           const bytes = new Uint8Array(binaryString.length);

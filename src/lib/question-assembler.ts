@@ -256,6 +256,35 @@ export class QuestionAssembler {
   }
 
   /**
+   * True when the accumulated text clearly reads as an unfinished utterance:
+   * ASR normalizers strip mid-sentence punctuation, so continuation commas
+   * are often missing. A fragment ending in a coordinating/subordinating
+   * connector ("и", "но", "что", "который", "because", "and", ...) or having
+   * no terminal .!? mark at all is treated as mid-sentence. Question marks
+   * and terminal periods end the utterance immediately.
+   */
+  static looksUnfinished(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    if (/[.!?…]$/.test(trimmed)) return false;
+    if (QuestionAssembler.hasContinuationPunctuation(trimmed)) return true;
+    // Fragments opening with an interrogative ("какие у вас цели", "what is
+    // your experience") read as complete questions even without the final
+    // "?" the ASR often drops — never hold those back.
+    // NOTE: \b does not work around Cyrillic in JS (\w is ASCII-only), so
+    // word-boundary is expressed as a non-letter lookahead instead.
+    if (/^(почему|зачем|как|что|кто|где|куда|когда|сколько|какой|какая|какие|какое|каким|какими|какого|каких|каком|чем|расскажите|расскажи|объясните|объясни|опишите|опиши|назовите|назови|приведите|приведи|what|how|why|where|when|who|whom|whose|which|can|could|would|should|shall|will|do|does|did|have|has|are|is|were|was|tell|describe|explain|name|list|give)(?=$|[^\p{L}\p{N}])/iu.test(trimmed)) {
+      return false;
+    }
+    // No terminal punctuation at all → sentence never properly closed.
+    // Only applies to multi-word fragments: a bare "да"/"нет" answer IS a
+    // complete utterance and must not be delayed.
+    const words = trimmed.split(/\s+/);
+    if (words.length < 3) return false;
+    return true;
+  }
+
+  /**
    * Force-emit whatever is pending (caller's gap timer fired).
    * If protectContinuation is true (default false or optional parameter),
    * questions ending with continuation punctuation (e.g. ',', '-', '...')
@@ -267,10 +296,13 @@ export class QuestionAssembler {
     if (source !== undefined && p.source !== source) return null;
 
     // If caller didn't explicitly force emit with allowContinuation=true,
-    // check if pending text ends with continuation punctuation.
+    // check if pending text ends with continuation punctuation OR reads as
+    // an unfinished sentence (no terminal .!? on a multi-word fragment).
+    // The caller re-arms a longer timer on "pending" instead of cutting
+    // the interviewer off mid-phrase.
     if (!options?.allowContinuation) {
       const currentText = p.segments.join(" ").trim();
-      if (QuestionAssembler.hasContinuationPunctuation(currentText)) {
+      if (QuestionAssembler.looksUnfinished(currentText)) {
         return { kind: "pending", question: currentText };
       }
     }

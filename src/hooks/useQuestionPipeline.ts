@@ -74,10 +74,8 @@ export function useQuestionPipeline({
 
   const resetQuestionAssembly = useCallback(() => {
     questionAssemblerRef.current?.reset();
-    if (questionFlushTimerRef.current) {
-      clearTimeout(questionFlushTimerRef.current);
-      questionFlushTimerRef.current = null;
-    }
+    clearTimeout(questionFlushTimerRef.current ?? undefined);
+    questionFlushTimerRef.current = null;
   }, []);
 
   const handleInterviewerTranscription = useCallback(
@@ -98,22 +96,33 @@ export function useQuestionPipeline({
 
       // (Re)arm the gap timer: if the interviewer goes quiet, emit the
       // accumulated question and let the AI answer it.
-      if (questionFlushTimerRef.current) {
-        clearTimeout(questionFlushTimerRef.current);
-      }
-      questionFlushTimerRef.current = setTimeout(() => {
-        questionFlushTimerRef.current = null;
-        const emitted = questionAssemblerRef.current?.flush("them");
-        if (emitted?.kind === "emitted") {
-          void onTriggerAI(emitted.question, "them");
-        }
-      }, asrTimingConfig.flushGapMs);
+      //
+      // Mid-sentence protection: an interviewer often pauses mid-phrase and
+      // the ASR fragment ends WITHOUT continuation punctuation (hyphen/comma)
+      // because the recognizer normalizes it away. So flush() declining on
+      // continuation punctuation is not enough — when flush returns "pending"
+      // (or the text clearly reads unfinished: no terminal .!?), we re-arm the
+      // timer with an EXTENDED window instead of dispatching early.
+      clearTimeout(questionFlushTimerRef.current ?? undefined);
+      const gapMs = asrTimingConfig.flushGapMs;
+      const arm = (delay: number) => {
+        questionFlushTimerRef.current = setTimeout(() => {
+          questionFlushTimerRef.current = null;
+          const emitted = questionAssemblerRef.current?.flush("them");
+          if (emitted?.kind === "emitted") {
+            void onTriggerAI(emitted.question, "them");
+          } else if (emitted?.kind === "pending") {
+            // Speaker paused mid-sentence — give them a generous second window
+            // (2x the base gap) before forcing the question through.
+            arm(gapMs * 2);
+          }
+        }, delay);
+      };
+      arm(gapMs);
 
       if (result.kind === "emitted") {
-        if (questionFlushTimerRef.current) {
-          clearTimeout(questionFlushTimerRef.current);
-          questionFlushTimerRef.current = null;
-        }
+        clearTimeout(questionFlushTimerRef.current ?? undefined);
+        questionFlushTimerRef.current = null;
         await onTriggerAI(result.question, "them");
       }
     },

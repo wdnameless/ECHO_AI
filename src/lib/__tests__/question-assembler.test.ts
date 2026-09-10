@@ -60,8 +60,9 @@ describe("QuestionAssembler", () => {
     const r = a.push(seg("Second separate question", T + 2000));
     expect(r.kind).toBe("pending");
     expect(a.current?.text).toBe("Second separate question");
-    // flush releases the newest accumulated question
-    const flushed = a.flush("them");
+    // flush() declines on an unfinished-looking fragment; the caller re-arms
+    // a longer timer. A forced flush (allowContinuation) releases it.
+    const flushed = a.flush("them", { allowContinuation: true });
     expect(flushed?.kind).toBe("emitted");
     if (flushed?.kind === "emitted") {
       expect(flushed.question).toBe("Second separate question");
@@ -184,4 +185,29 @@ describe("QuestionAssembler", () => {
       expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBeLessThanOrEqual(900);
     });
   });
+
+    it("holds flush for a mid-sentence fragment without terminal punctuation", () => {
+      const a = new QuestionAssembler({ flushGapMs: 450 });
+      a.push(seg("Мы используем эвент сорсинг в основном модуле", T));
+      // No .!? and not question-like → treated as unfinished; flush must wait.
+      const r1 = a.flush();
+      expect(r1?.kind).toBe("pending");
+      // A proper ending immediately unlocks flush on the next call.
+      a.push(seg("и в биллинге тоже.", T + 200));
+      const r2 = a.flush();
+      expect(r2?.kind).toBe("emitted");
+    });
+
+    it("flushes immediately for question-like fragments without '?'", () => {
+      const a = new QuestionAssembler({ flushGapMs: 450 });
+      a.push(seg("Какие хуки вы используете чаще всего", T));
+      const r = a.flush();
+      expect(r?.kind).toBe("emitted");
+    });
+
+    it("flushes short bare answers without delay (да / нет)", () => {
+      const a = new QuestionAssembler({ flushGapMs: 450 });
+      a.push(seg("Да", T));
+      expect(a.flush()?.kind).toBe("emitted");
+    });
 });
