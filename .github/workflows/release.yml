@@ -50,12 +50,12 @@ jobs:
           # PowerShell split it into two argv entries (gh: accepts 1 arg),
           # so parse JSON with ConvertFrom-Json instead of jq filtering.
           $release = gh api repos/wdnameless/pluely/releases/tags/resources-v0.1.0 | ConvertFrom-Json
-          $asset = $release.assets | Where-Object { $_.name -eq "pluely-asr-windows-x64-v0.1.1.zip" }
+          $asset = $release.assets | Where-Object { $_.name -eq "pluely-asr-windows-x64-v0.1.2.zip" }
           if (-not $asset) { Write-Error "Sidecar asset not found in resources-v0.1.0 release" }
           Write-Host "Downloading sidecar asset id=$($asset.id)..."
-          curl.exe -sS -L -o pluely-asr-windows-x64-v0.1.1.zip -H "Authorization: token $env:GH_TOKEN" -H "Accept: application/octet-stream" "https://api.github.com/repos/wdnameless/pluely/releases/assets/$($asset.id)"
-          Expand-Archive -Path pluely-asr-windows-x64-v0.1.1.zip -DestinationPath $resourceDir -Force
-          Remove-Item -Path pluely-asr-windows-x64-v0.1.1.zip -Force
+          curl.exe -sS -L -o pluely-asr-windows-x64-v0.1.2.zip -H "Authorization: token $env:GH_TOKEN" -H "Accept: application/octet-stream" "https://api.github.com/repos/wdnameless/pluely/releases/assets/$($asset.id)"
+          Expand-Archive -Path pluely-asr-windows-x64-v0.1.2.zip -DestinationPath $resourceDir -Force
+          Remove-Item -Path pluely-asr-windows-x64-v0.1.2.zip -Force
           
           # Download Nemotron model from immutable HuggingFace snapshot
           $modelUrl = "https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/6d44e540bc31b0de1dbe174a3cea87f53a7f22fb/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf"
