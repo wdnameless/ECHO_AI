@@ -1,16 +1,14 @@
 import { useState, useRef } from "react";
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
-  PopoverTrigger,
   Button,
   ScrollArea,
 } from "@/components";
 import { PermissionFlow } from "./PermissionFlow";
 import {
   AlertCircleIcon,
-  MessageSquareQuoteIcon,
-  RadioIcon,
   CameraIcon,
   XIcon,
   PlusIcon,
@@ -27,7 +25,6 @@ import { useSystemAudio } from "@/hooks";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { useApp } from "@/contexts";
-import { useMicState } from "@/stores/mic-state";
 
 export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const {
@@ -59,7 +56,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     setContextContent,
     updateVadConfiguration,
     startCapture,
-    stopCapture,
     startContinuousRecording,
     handleQuickActionClick,
     addQuickAction,
@@ -71,8 +67,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     resizeWindow,
   } = props;
 
-  const micState = useMicState();
-  const isDictationActive = capturing || micState.mode === "DICTATION";
   const isVadMode = !isContinuousMode;
   const handleModeChange = (vadEnabled: boolean) => {
     if (setIsContinuousMode) {
@@ -89,14 +83,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
   const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-
-  const handleToggleCapture = async () => {
-    if (capturing) {
-      await stopCapture();
-    } else {
-      await startCapture();
-    }
-  };
 
   const handleRemoveScreenshot = () => {
     setScreenshotImage(null);
@@ -133,20 +119,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     }
   };
 
-  const getButtonIcon = () => {
-    if (error && !setupRequired)
-      return <AlertCircleIcon className="w-3.5 h-3.5 text-red-500" />;
-    if (capturing)
-      return <RadioIcon className="w-3.5 h-3.5 text-green-500 animate-pulse" />;
-    return <MessageSquareQuoteIcon className="w-3.5 h-3.5 text-primary" />;
-  };
-
-  const getButtonTitle = () => {
-    if (setupRequired) return "Setup Required";
-    if (error && !setupRequired) return `Error: ${error}`;
-    if (isDictationActive) return "Stop live conversation copilot (Dictation)";
-    return "Start live conversation copilot (Dictation)";
-  };
   const hasResponse =
     !!lastAIResponse ||
     isAIProcessing ||
@@ -163,19 +135,11 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
         setIsPopoverOpen(open);
       }}
     >
-      <PopoverTrigger asChild>
-        <Button
-          size="icon"
-          title={getButtonTitle()}
-          onClick={handleToggleCapture}
-          className={cn(
-            capturing && "bg-green-50 hover:bg-green-100 dark:bg-green-950/40",
-            error && "bg-red-100 hover:bg-red-200"
-          )}
-        >
-          {getButtonIcon()}
-        </Button>
-      </PopoverTrigger>
+      {/* Кнопка-дубль убрана: запуск захвата дублировал переключатель
+          «Встреча» в верхнем баре. Popover с лентой субтитров остаётся
+          и открывается сам при старте захвата (см. useSystemAudio),
+          поэтому ему нужен невидимый якорь вместо кнопки-триггера. */}
+      <PopoverAnchor className="w-0 h-0" />
 
       {(capturing || setupRequired || error) && (
         <PopoverContent

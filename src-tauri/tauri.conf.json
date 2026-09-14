@@ -63,7 +63,7 @@
     },
     "updater": {
       "endpoints": [
-        "https://github.com/wdnameless/pluely/releases/latest/download/latest.json"
+        "https://github.com/wdnameless/ECHO_AI/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDcyQTFDNjNENDc4QjlDRTcKUldUbm5JdEhQY2FoY3FLd0hDczZ2aGttZVBvZThvVnJqeTM2ajVnMmVzTXg1dm55NUxsdU5acVEK",
       "windows": {

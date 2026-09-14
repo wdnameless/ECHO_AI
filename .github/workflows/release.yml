@@ -49,11 +49,11 @@ jobs:
           # anonymous links 404. Also: spaces inside a --jq expression make
           # PowerShell split it into two argv entries (gh: accepts 1 arg),
           # so parse JSON with ConvertFrom-Json instead of jq filtering.
-          $release = gh api repos/wdnameless/pluely/releases/tags/resources-v0.1.0 | ConvertFrom-Json
+          $release = gh api repos/wdnameless/ECHO_AI/releases/tags/resources-v0.1.0 | ConvertFrom-Json
           $asset = $release.assets | Where-Object { $_.name -eq "pluely-asr-windows-x64-v0.1.2.zip" }
           if (-not $asset) { Write-Error "Sidecar asset not found in resources-v0.1.0 release" }
           Write-Host "Downloading sidecar asset id=$($asset.id)..."
-          curl.exe -sS -L -o pluely-asr-windows-x64-v0.1.2.zip -H "Authorization: token $env:GH_TOKEN" -H "Accept: application/octet-stream" "https://api.github.com/repos/wdnameless/pluely/releases/assets/$($asset.id)"
+          curl.exe -sS -L -o pluely-asr-windows-x64-v0.1.2.zip -H "Authorization: token $env:GH_TOKEN" -H "Accept: application/octet-stream" "https://api.github.com/repos/wdnameless/ECHO_AI/releases/assets/$($asset.id)"
           Expand-Archive -Path pluely-asr-windows-x64-v0.1.2.zip -DestinationPath $resourceDir -Force
           Remove-Item -Path pluely-asr-windows-x64-v0.1.2.zip -Force
           
@@ -106,12 +106,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" --repo wdnameless/pluely >/dev/null 2>&1; then
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $GITHUB_REF_NAME already exists - publishing if draft."
-            gh release edit "$GITHUB_REF_NAME" --repo wdnameless/pluely --draft=false >/dev/null 2>&1 || true
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false >/dev/null 2>&1 || true
           else
-            gh release create "$GITHUB_REF_NAME" --repo wdnameless/pluely \
-              --title "Pluely $GITHUB_REF_NAME" \
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "Echo AI $GITHUB_REF_NAME" \
               --notes "Auto-generated release." \
               --verify-tag
             echo "Release $GITHUB_REF_NAME created with PAT."

@@ -1,7 +1,6 @@
 import { useEffect } from "react";
-import { InfoIcon, MicIcon } from "lucide-react";
-import { Popover, PopoverContent, PopoverTrigger, Button } from "@/components";
-import { cn } from "@/lib/utils";
+import { InfoIcon } from "lucide-react";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components";
 import { AutoSpeechVAD } from "./AutoSpeechVad";
 import { UseCompletionReturn } from "@/types";
 import { useApp } from "@/contexts";
@@ -17,7 +16,6 @@ export const Audio = ({
   suppressAutoVAD,
 }: UseCompletionReturn & { suppressAutoVAD?: boolean }) => {
   const micState = useMicState();
-  const isAssistantActive = micState.mode === "ASSISTANT";
 
   // Keep enableVAD in sync with micStateStore ASSISTANT mode
   useEffect(() => {
@@ -34,47 +32,31 @@ export const Audio = ({
       setEnableVAD(false);
     }
   }, [micState.mode, enableVAD, setEnableVAD]);
+
   const { selectedSttProvider, pluelyApiEnabled, selectedAudioDevices } =
     useApp();
 
   const speechProviderStatus = selectedSttProvider.provider;
+  const autoVadVisible =
+    (pluelyApiEnabled || speechProviderStatus) && enableVAD && !suppressAutoVAD;
 
   return (
     <Popover open={micOpen} onOpenChange={setMicOpen}>
-      <PopoverTrigger asChild>
-        {(pluelyApiEnabled || speechProviderStatus) &&
-        enableVAD &&
-        !suppressAutoVAD ? (
-          <AutoSpeechVAD
-            key={selectedAudioDevices.input.id}
-            submit={submit}
-            setState={setState}
-            setEnableVAD={setEnableVAD}
-            microphoneDeviceId={selectedAudioDevices.input.id}
-          />
-        ) : (
-          <Button
-            size="icon"
-            onClick={() => {
-              if (isAssistantActive) {
-                micStateStore.setMode("IDLE");
-                setEnableVAD(false);
-              } else {
-                micStateStore.setMode("ASSISTANT");
-                setEnableVAD(true);
-              }
-            }}
-            className={cn(
-              "cursor-pointer transition-colors",
-              isAssistantActive && "bg-purple-600 hover:bg-purple-700 text-white shadow-sm",
-              suppressAutoVAD && "hidden"
-            )}
-            title={isAssistantActive ? "Stop Voice for AI" : "Voice for AI (Ask AI)"}
-          >
-            <MicIcon className={cn("h-4 w-4", isAssistantActive && "text-white animate-pulse")} />
-          </Button>
-        )}
-      </PopoverTrigger>
+      {/* Кнопка-микрофон убрана: она дублировала переключатель «Диктовка»,
+          а сам голосовой ввод для AI остаётся доступен по хоткею
+          (Ctrl+Shift+J). Якорь сохраняет позицию popover'а с подсказкой
+          о ненастроенном провайдере. */}
+      <PopoverAnchor className="w-0 h-0" />
+
+      {autoVadVisible && (
+        <AutoSpeechVAD
+          key={selectedAudioDevices.input.id}
+          submit={submit}
+          setState={setState}
+          setEnableVAD={setEnableVAD}
+          microphoneDeviceId={selectedAudioDevices.input.id}
+        />
+      )}
 
       <PopoverContent
         align="end"

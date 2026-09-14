@@ -1,0 +1,22 @@
+schema: spec-driven
+created: 2026-09-14
+title: "Echo AI 1.0.0 — security hardening, freemium, rebrand"
+slices:
+  - id: s1-csp
+    title: "Закрытие XSS-цепочки в WebView"
+    status: in-spec
+  - id: s2-http-scope
+    title: "Контроль исходящих запросов и защита ключей"
+    status: in-spec
+  - id: s3-entitlement
+    title: "Честное состояние лицензии и гейты сборки"
+    status: in-spec
+  - id: s4-secrets
+    title: "Перенос секретов в защищённое хранилище ОС"
+    status: in-spec
+  - id: s5-rebrand
+    title: "Ребрендинг в Echo AI"
+    status: in-spec
+  - id: s6-freemium
+    title: "Freemium: разделение Free и Pro"
+    status: in-spec

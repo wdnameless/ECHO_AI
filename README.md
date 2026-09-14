@@ -28,7 +28,7 @@
 - **Cloud Fallback (Groq Whisper)**: Если локальный сервер недоступен, распознавание речи автоматически переключается на облачный Groq (`whisper-large-v3-turbo`).
 
 ### 🔄 4. Встроенный модуль автообновлений (Tauri Auto-Updater)
-- Проверка обновлений напрямую через **GitHub Releases** (`wdnameless/pluely`).
+- Проверка обновлений напрямую через **GitHub Releases** (`wdnameless/ECHO_AI`).
 - Обновление одной кнопкой **«Download & Install Update»** прямо в интерфейсе без необходимости ручной переустановки.
 
 ---
@@ -89,7 +89,7 @@ npm run tauri build
 
 ## 📦 Репозиторий и автообновления
 
-- **GitHub Repository**: [https://github.com/wdnameless/pluely](https://github.com/wdnameless/pluely)
+- **GitHub Repository**: [https://github.com/wdnameless/ECHO_AI](https://github.com/wdnameless/ECHO_AI)
 - **CI/CD**: Каждый push в ветку `master` автоматически собирает приложение под Windows, подписывает артефакты и публикует новый GitHub Release с манифестом `latest.json`.
 - **Обновление в приложении**: При появлении нового релиза в окне Pluely отображается кнопка обновления, скачивающая и применяющая апдейт на лету.
 
