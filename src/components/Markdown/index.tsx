@@ -1,12 +1,42 @@
 import React from "react";
 import { Streamdown } from "streamdown";
+import rehypeKatex from "rehype-katex";
 import "katex/dist/katex.min.css";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { sanitizeSchema } from "@/lib/sanitize-schema";
 
 interface MarkdownRendererProps {
   children: string;
   isStreaming?: boolean;
 }
+
+interface AnchorProps extends React.AnchorHTMLAttributes<HTMLAnchorElement> {
+  children?: React.ReactNode;
+  href?: string;
+}
+
+/**
+ * Ответы моделей и сниппеты веб-поиска — недоверенный ввод. Streamdown по
+ * умолчанию подключает rehype-raw (интерпретирует HTML из ответа) и
+ * rehype-harden, который обрабатывает только <a>/<img>. Мы переопределяем
+ * набор rehype-плагинов: без raw HTML, с собственным санитайзером.
+ * `rehypePlugins` — публичный проп Streamdown, поэтому переопределение
+ * не требует патча библиотеки.
+ *
+ * remarkPlugins не трогаем: gfm/math/cjk на безопасность не влияют.
+ */
+type RehypePluginList = NonNullable<
+  React.ComponentProps<typeof Streamdown>["rehypePlugins"]
+>;
+
+const REHYPE_PLUGINS = [
+  [rehypeKatex, { errorColor: "var(--color-muted-foreground)" }],
+  sanitizeSchema,
+] as unknown as RehypePluginList;
+
+type StreamdownComponents = NonNullable<
+  React.ComponentProps<typeof Streamdown>["components"]
+>;
 
 export function Markdown({
   children,
@@ -16,7 +46,8 @@ export function Markdown({
     <Streamdown
       isAnimating={isStreaming}
       shikiTheme={["github-light", "github-dark"]}
-      components={COMPONENTS as any}
+      components={COMPONENTS}
+      rehypePlugins={REHYPE_PLUGINS}
       controls={{
         table: true,
         code: true,
@@ -34,7 +65,7 @@ export function Markdown({
 }
 
 const COMPONENTS = {
-  a: ({ children, href, ...props }: any) => {
+  a: ({ children, href, ...props }: AnchorProps) => {
     const handleClick = async (e: React.MouseEvent) => {
       e.preventDefault();
       if (href) {
@@ -57,4 +88,5 @@ const COMPONENTS = {
       </a>
     );
   },
-};
+} satisfies StreamdownComponents;
+

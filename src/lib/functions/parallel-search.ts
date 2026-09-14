@@ -56,9 +56,27 @@ export function cacheSearchResults(
   searchResultsCache.set(key, { results, ts: Date.now() });
 }
 
+/**
+ * Нейтрализует HTML-спецсимволы в тексте из внешнего поискового сервиса.
+ * Сниппеты попадают в контекст промпта, а их источник не контролируется:
+ * разметка из внешнего ответа не должна читаться как управляющая.
+ */
+function escapeExternalText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/[[\]]/g, (ch) => (ch === "[" ? "&#91;" : "&#93;"));
+}
+
 export function buildSearchBlock(results: SearchResultItem[]): string {
   const searchBlock = results
-    .map((r, i) => `[${i + 1}] ${r.title} (${r.url}):\n${r.snippet}`)
+    .map(
+      (r, i) =>
+        `[${i + 1}] ${escapeExternalText(r.title)} (${escapeExternalText(
+          r.url
+        )}):\n${escapeExternalText(r.snippet)}`
+    )
     .join("\n\n");
   return `[LIVE WEB SEARCH RESULTS - РЕЗУЛЬТАТЫ ПОИСКА В ИНТЕРНЕТЕ]\n${searchBlock}\nИспользуй эти актуальные данные для точного ответа.\n[/LIVE WEB SEARCH RESULTS]`;
 }
