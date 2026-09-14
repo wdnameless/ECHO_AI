@@ -970,8 +970,8 @@ export const SubtitleFeed = ({
 
                 <div
                   className={cn(
-                    "grid gap-x-2",
-                    translationsOn ? "grid-cols-[1fr_1fr]" : "grid-cols-1"
+                    "grid gap-x-2 w-full min-w-0 max-w-full",
+                    translationsOn ? "grid-cols-2" : "grid-cols-1"
                   )}
                 >
                   <div
@@ -1024,12 +1024,11 @@ export const SubtitleFeed = ({
             <div key={rowId} className="space-y-0.5">
               <div
                 className={cn(
-                  "group grid gap-x-2 py-0.5 border-b border-border/20 hover:bg-muted/30 rounded transition-colors",
-                  translationsOn ? "grid-cols-[1fr_1fr]" : "grid-cols-1",
-                  isEditing && "bg-muted/40 border-primary/30"
+                  "group grid gap-x-2 py-0.5 border-b border-border/20 hover:bg-muted/30 rounded transition-colors w-full min-w-0 max-w-full",
+                  translationsOn ? "grid-cols-2" : "grid-cols-1"
                 )}
               >
-                <div className="min-w-0 flex items-start gap-1.5">
+                <div className="flex items-start gap-1.5 min-w-0 overflow-hidden">
                   <span
                     className={cn(
                       "shrink-0 mt-px inline-flex items-center gap-0.5 text-[0.56em] font-semibold px-1 py-px rounded border uppercase tracking-wide",

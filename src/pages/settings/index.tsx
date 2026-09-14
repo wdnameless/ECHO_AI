@@ -12,6 +12,7 @@ import {
   RetentionSettings,
   AutoAskSettings,
   FillerFilterSettings,
+  StealthToggle,
 } from "./components";
 import { PageLayout } from "@/layouts";
 
@@ -52,6 +53,8 @@ const Settings = () => {
       {/* Always On Top Toggle */}
       <AlwaysOnTopToggle />
 
+      {/* Stealth Mode (Hide from Screenshots) Toggle */}
+      <StealthToggle />
       {/* Unified AI Context: system prompt + resume + job + humanizer */}
       <AiContextSettings />
     </PageLayout>

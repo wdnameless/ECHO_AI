@@ -26,7 +26,7 @@ tauri-build = { version = "2", features = [] }
 dotenv = "0.15"
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2.9.0"
 tauri-plugin-http = "2.5.2"
@@ -44,8 +44,8 @@ once_cell = "1.19.0"
 uuid = { version = "1.0", features = ["v4"] }
 reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 dotenv = "0.15"
-futures-util = "0.3"
 anyhow = "1.0"
+futures-util = "0.3"
 tracing = "0.1"
 ringbuf = "0.4.8"
 tauri-plugin-shell = "2.3.1"

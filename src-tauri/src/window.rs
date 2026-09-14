@@ -25,8 +25,43 @@ pub fn apply_stealth_to_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
+pub fn set_window_stealth<R: Runtime>(window: &WebviewWindow<R>, enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+    };
+
+    if let Ok(hwnd_ptr) = window.hwnd() {
+        let hwnd = HWND(hwnd_ptr.0 as *mut _);
+        unsafe {
+            let affinity = if enabled {
+                WDA_EXCLUDEFROMCAPTURE
+            } else {
+                WDA_NONE
+            };
+            let _ = SetWindowDisplayAffinity(hwnd, affinity);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(not(target_os = "windows"))]
-pub fn apply_stealth_to_window<R: Runtime>(_window: &WebviewWindow<R>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn set_window_stealth<R: Runtime>(_window: &WebviewWindow<R>, _enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_stealth_mode<R: Runtime>(app: AppHandle<R>, enabled: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        set_window_stealth(&window, enabled)
+            .map_err(|e| format!("Failed to set stealth mode: {}", e))?;
+        let _ = window.set_content_protected(enabled);
+    }
+    if let Some(window) = app.get_webview_window("dashboard") {
+        let _ = set_window_stealth(&window, enabled);
+        let _ = window.set_content_protected(enabled);
+    }
     Ok(())
 }
 // The offset from the top of the screen to the window
@@ -258,7 +293,7 @@ pub fn create_dashboard_window<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<WebviewWindow<R>, tauri::Error> {
     let base_builder =
-        WebviewWindowBuilder::new(app, "dashboard", tauri::WebviewUrl::App("/chats".into()));
+        WebviewWindowBuilder::new(app, "dashboard", tauri::WebviewUrl::App("index.html".into()));
 
     #[cfg(target_os = "macos")]
     let base_builder = base_builder
@@ -284,10 +319,7 @@ pub fn create_dashboard_window<R: Runtime>(
         .visible(false);
 
     let window = base_builder.build()?;
-
-    // Set up close event handler - hide window instead of destroying it
     setup_dashboard_close_handler(&window);
-
     #[cfg(target_os = "windows")]
     {
         let _ = apply_stealth_to_window(&window);

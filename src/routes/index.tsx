@@ -1,4 +1,5 @@
-import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
+import { HashRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Dashboard,
   App,
@@ -16,10 +17,13 @@ import {
 import { DashboardLayout } from "@/layouts";
 
 export default function AppRoutes() {
+  const currentWindow = getCurrentWindow();
+  const isDashboard = currentWindow.label === "dashboard";
+
   return (
     <Router>
       <Routes>
-        <Route path="/" element={<App />} />
+        <Route path="/" element={isDashboard ? <Navigate to="/chats" replace /> : <App />} />
         <Route element={<DashboardLayout />}>
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/chats" element={<Chats />} />

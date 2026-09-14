@@ -12,6 +12,7 @@ import {
   updateAppIconVisibility,
   updateAlwaysOnTop,
   updateAutostart,
+  updateStealthMode,
   CustomizableState,
   DEFAULT_CUSTOMIZABLE_STATE,
   CursorType,
@@ -454,7 +455,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setCustomizable(customizableState);
 
     updateCursor(customizableState.cursor.type || "invisible");
-
+    if (customizableState.stealth) {
+      invoke("set_stealth_mode", { enabled: customizableState.stealth.isEnabled }).catch((err) => {
+        console.debug("Failed to apply initial stealth mode:", err);
+      });
+    }
     const stored = safeLocalStorage.getItem(STORAGE_KEYS.CUSTOMIZABLE);
     if (!stored) {
       // save the default state
@@ -797,6 +802,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   };
 
+  const toggleStealthMode = async (isEnabled: boolean) => {
+    const newState = updateStealthMode(isEnabled);
+    setCustomizable(newState);
+    try {
+      await invoke("set_stealth_mode", { enabled: isEnabled });
+      loadData();
+    } catch (error) {
+      console.error("Failed to toggle stealth mode:", error);
+    }
+  };
+
   const toggleAutostart = async (isEnabled: boolean) => {
     const newState = updateAutostart(isEnabled);
     setCustomizable(newState);
@@ -877,6 +893,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     toggleAppIconVisibility,
     toggleAlwaysOnTop,
     toggleAutostart,
+    toggleStealthMode,
     loadData,
     pluelyApiEnabled,
     setPluelyApiEnabled,

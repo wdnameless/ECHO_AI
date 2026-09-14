@@ -7,8 +7,9 @@ import {
 } from "./components";
 import { useApp } from "@/hooks";
 import { useApp as useAppContext } from "@/contexts";
-import { HeadphonesIcon, SparklesIcon, MicIcon } from "lucide-react";
+import { HeadphonesIcon, SparklesIcon, MicIcon, Eye, EyeOff } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ErrorBoundary } from "react-error-boundary";
 import { ErrorLayout } from "@/layouts";
 import { getPlatform } from "@/lib";
@@ -24,8 +25,29 @@ type AppMode = "dictation" | "meeting";
 
 const App = () => {
   const { isHidden, systemAudio } = useApp();
-  const { customizable } = useAppContext();
+  const { customizable, toggleStealthMode } = useAppContext();
   const platform = getPlatform();
+
+  const handleDragMouseDown = async (e: React.MouseEvent) => {
+    // Only drag with left mouse button
+    if (e.button !== 0) return;
+    // Don't drag if clicking interactive elements
+    const target = e.target as HTMLElement | null;
+    if (
+      target?.closest("button") ||
+      target?.closest("input") ||
+      target?.closest("textarea") ||
+      target?.closest("[role='button']") ||
+      target?.closest(".no-drag")
+    ) {
+      return;
+    }
+    try {
+      await getCurrentWindow().startDragging();
+    } catch (err) {
+      console.debug("Failed to start dragging from bar:", err);
+    }
+  };
 
   // Explicit two-mode switch: dictation (bar input + AI) vs meeting copilot
   // (system audio capture + subtitle feed). The single source of truth is
@@ -79,6 +101,7 @@ const App = () => {
         {systemAudio?.micBridge}
         <Card
           data-tauri-drag-region="true"
+          onMouseDown={handleDragMouseDown}
           className="w-full flex flex-row items-center gap-2 p-2 select-none"
         >
           {/* Mode switcher */}
@@ -167,6 +190,29 @@ const App = () => {
               <SparklesIcon className="h-4 w-4" />
             </Button>
           </div>
+          {/* Stealth Mode toggle button */}
+          <Button
+            size="icon"
+            variant="ghost"
+            className={cn(
+              "h-8 w-8 cursor-pointer shrink-0 transition-colors",
+              customizable.stealth?.isEnabled
+                ? "text-emerald-500 hover:text-emerald-400 hover:bg-emerald-500/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+            )}
+            title={
+              customizable.stealth?.isEnabled
+                ? "Stealth Mode: ВКЛ (окно скрыто от записи/скриншотов). Нажмите, чтобы выключить."
+                : "Stealth Mode: ВЫКЛ (окно видно на скриншотах/записи). Нажмите, чтобы включить."
+            }
+            onClick={() => toggleStealthMode(!customizable.stealth?.isEnabled)}
+          >
+            {customizable.stealth?.isEnabled ? (
+              <EyeOff className="h-4 w-4" />
+            ) : (
+              <Eye className="h-4 w-4 opacity-70" />
+            )}
+          </Button>
 
           <Updater />
           <DragButton />

@@ -36,7 +36,7 @@ export const Input = ({
   setKeepEngaged,
 }: UseCompletionReturn & { isHidden: boolean }) => {
   return (
-    <div className="relative flex-1">
+    <div className="relative flex-1 min-w-[140px]">
       <Popover
         open={isPopoverOpen}
         onOpenChange={(open) => {
@@ -46,7 +46,7 @@ export const Input = ({
         }}
       >
         <PopoverTrigger asChild className="!border-none !bg-transparent">
-          <div className="relative select-none">
+          <div className="relative select-none w-full">
             <InputComponent
               ref={inputRef}
               placeholder="Ask me anything..."
@@ -90,7 +90,7 @@ export const Input = ({
         <PopoverContent
           align="end"
           side="bottom"
-          className="w-screen p-0 border shadow-lg overflow-hidden"
+          className="w-[calc(100vw-1rem)] max-w-full p-0 border shadow-lg overflow-hidden"
           sideOffset={8}
         >
           <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
@@ -153,8 +153,8 @@ export const Input = ({
             </div>
           </div>
 
-          <ScrollArea ref={scrollAreaRef} className="h-[calc(100vh-7rem)]">
-            <div className="p-4">
+          <ScrollArea ref={scrollAreaRef} className="h-[calc(100vh-7rem)] w-full min-w-0 max-w-full">
+            <div className="p-4 w-full min-w-0 max-w-full break-words">
               {error && (
                 <div className="mb-4 p-3 bg-destructive/10 border border-destructive/20 rounded text-sm text-destructive">
                   <strong>Error:</strong> {error}
