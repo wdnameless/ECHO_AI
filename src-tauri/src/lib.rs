@@ -119,6 +119,7 @@ pub fn run() {
             activate::get_checkout_url,
             activate::secure_storage_save,
             activate::secure_storage_get,
+            activate::secure_storage_get_item,
             activate::secure_storage_remove,
             api::transcribe_audio,
             api::chat_stream_response,

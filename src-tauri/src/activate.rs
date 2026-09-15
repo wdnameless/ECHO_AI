@@ -1,5 +1,6 @@
 use crate::api::get_stored_credentials;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -39,9 +40,17 @@ fn get_secure_storage_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 #[derive(Debug, Serialize, Deserialize, Default)]
 struct SecureStorage {
+    #[serde(default)]
     license_key: Option<String>,
+    #[serde(default)]
     instance_id: Option<String>,
+    #[serde(default)]
     selected_pluely_model: Option<String>,
+    /// Произвольные секреты (ключи провайдеров, поисковых сервисов).
+    /// Flatten сохраняет обратную совместимость: файл, записанный прежней
+    /// версией, читается без изменений, а новые ключи ложатся рядом.
+    #[serde(default, flatten)]
+    extra: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -74,7 +83,9 @@ pub async fn secure_storage_save(app: AppHandle, items: Vec<StorageItem>) -> Res
             "pluely_license_key" => storage.license_key = Some(item.value),
             "pluely_instance_id" => storage.instance_id = Some(item.value),
             "selected_pluely_model" => storage.selected_pluely_model = Some(item.value),
-            _ => return Err(format!("Invalid storage key: {}", item.key)),
+            other => {
+                storage.extra.insert(other.to_string(), item.value);
+            }
         }
     }
 
@@ -112,6 +123,35 @@ pub async fn secure_storage_get(app: AppHandle) -> Result<StorageResult, String>
     })
 }
 
+/// Читает один секрет по ключу: сначала известные поля лицензии, затем
+/// произвольные секреты. Отсутствие ключа — не ошибка, а `None`.
+#[tauri::command]
+pub async fn secure_storage_get_item(
+    app: AppHandle,
+    key: String,
+) -> Result<Option<String>, String> {
+    let storage_path = get_secure_storage_path(&app)?;
+
+    if !storage_path.exists() {
+        return Ok(None);
+    }
+
+    let content = fs::read_to_string(&storage_path)
+        .map_err(|e| format!("Failed to read storage file: {}", e))?;
+
+    let storage: SecureStorage = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse storage file: {}", e))?;
+
+    let value = match key.as_str() {
+        "pluely_license_key" => storage.license_key,
+        "pluely_instance_id" => storage.instance_id,
+        "selected_pluely_model" => storage.selected_pluely_model,
+        other => storage.extra.get(other).cloned(),
+    };
+
+    Ok(value)
+}
+
 #[tauri::command]
 pub async fn secure_storage_remove(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
     let storage_path = get_secure_storage_path(&app)?;
@@ -131,7 +171,9 @@ pub async fn secure_storage_remove(app: AppHandle, keys: Vec<String>) -> Result<
             "pluely_license_key" => storage.license_key = None,
             "pluely_instance_id" => storage.instance_id = None,
             "selected_pluely_model" => storage.selected_pluely_model = None,
-            _ => return Err(format!("Invalid storage key: {}", key)),
+            other => {
+                storage.extra.remove(other);
+            }
         }
     }
 

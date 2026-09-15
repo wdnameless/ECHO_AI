@@ -12,6 +12,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
 import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
+import { getSecret, secretKey } from "@/lib/storage/secret-store";
 import { getResponseSettings, RESPONSE_LENGTHS, LANGUAGES } from "@/lib";
 import { MARKDOWN_FORMATTING_INSTRUCTIONS, STORAGE_KEYS } from "@/config/constants";
 import {
@@ -430,6 +431,21 @@ async function* streamAIResponse(params: {
         value,
       ])
     );
+
+    // S4: после миграции ключ живёт в защищённом хранилище, а не в
+    // переменных провайдера. Если ключа в переменных нет — читаем его из
+    // хранилища, чтобы запросы продолжали работать.
+    const hasApiKey =
+      typeof userVariables["API_KEY"] === "string" &&
+      userVariables["API_KEY"].length > 0;
+    if (!hasApiKey && selectedProvider.provider) {
+      const storedKey = await getSecret(
+        secretKey.aiProvider(selectedProvider.provider)
+      );
+      if (storedKey) {
+        userVariables["API_KEY"] = storedKey;
+      }
+    }
 
     // Zero-reasoning by default: "minimal" gives the fastest first token.
     // The user can still override via provider variables (e.g. REASONING_EFFORT=high)

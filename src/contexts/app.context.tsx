@@ -6,6 +6,7 @@ import {
 } from "@/config";
 import { canonicalizeVariables, getPlatform, safeLocalStorage, trackAppStart } from "@/lib";
 import { getShortcutsConfig } from "@/lib/storage";
+import { migrateSecretsFromLocalStorage } from "@/lib/storage/secret-store";
 import {
   getCustomizableState,
   setCustomizableState,
@@ -523,6 +524,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   // Load data on mount
   useEffect(() => {
     const initializeApp = async () => {
+      // S4: переносим ключи из localStorage в защищённое хранилище до того,
+      // как провайдеры будут прочитаны, чтобы дальнейшие чтения шли уже
+      // из защищённого источника.
+      try {
+        await migrateSecretsFromLocalStorage();
+      } catch (error) {
+        console.debug("Secret migration skipped:", error);
+      }
+
       // Load license and data
       await getActiveLicenseStatus();
 
