@@ -25,6 +25,7 @@ import { useSystemAudio } from "@/hooks";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { useApp } from "@/contexts";
+import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const {
@@ -83,6 +84,10 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
   const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const screenshotAllowed = canUseFeature("screenshot", {
+    isDevBuild: isDevBuild(),
+    hasLicense: hasActiveLicense,
+  });
 
   const handleRemoveScreenshot = () => {
     setScreenshotImage(null);
@@ -183,29 +188,35 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                     </Button>
                   )}
 
-                  {/* Screenshot Button */}
-                  {hasActiveLicense &&
-                    supportsImages &&
-                    isVadMode &&
-                    !setupRequired && (
-                      <Button
-                        size="sm"
-                        variant={screenshotImage ? "default" : "ghost"}
-                        onClick={handleCaptureScreenshot}
-                        disabled={isCapturingScreenshot || isAIProcessing}
-                        className={cn(
-                          "h-6 text-[10px] gap-1 px-2",
-                          screenshotImage && "bg-primary text-primary-foreground"
-                        )}
-                        title="Capture screenshot"
-                      >
-                        {isCapturingScreenshot ? (
-                          <LoaderIcon className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <CameraIcon className="w-3 h-3" />
-                        )}
-                      </Button>
-                    )}
+                  {/* Screenshot Button — остаётся видимой и объясняет причину,
+                      когда возможность недоступна (R17), вместо исчезновения. */}
+                  {supportsImages && isVadMode && !setupRequired && (
+                    <Button
+                      size="sm"
+                      variant={screenshotImage ? "default" : "ghost"}
+                      onClick={handleCaptureScreenshot}
+                      disabled={
+                        isCapturingScreenshot ||
+                        isAIProcessing ||
+                        !screenshotAllowed
+                      }
+                      className={cn(
+                        "h-6 text-[10px] gap-1 px-2",
+                        screenshotImage && "bg-primary text-primary-foreground"
+                      )}
+                      title={
+                        screenshotAllowed
+                          ? "Capture screenshot"
+                          : "Screenshot входит в тариф Pro. Оплата пока недоступна."
+                      }
+                    >
+                      {isCapturingScreenshot ? (
+                        <LoaderIcon className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <CameraIcon className="w-3 h-3" />
+                      )}
+                    </Button>
+                  )}
 
                   {/* Settings Drawer Toggle */}
                   <Button

@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import { Button, Card, GetLicense, Switch } from "@/components";
 import { RotateCcw, AlertCircle, Keyboard, Lock } from "lucide-react";
 import {
@@ -17,6 +18,10 @@ import { ShortcutRecorder } from "./ShortcutRecorder";
 
 export const ShortcutManager = () => {
   const { hasActiveLicense } = useApp();
+  const customShortcutsAllowed = canUseFeature("customShortcuts", {
+    isDevBuild: isDevBuild(),
+    hasLicense: hasActiveLicense,
+  });
   const [actions, setActions] = useState<ShortcutAction[]>([]);
   const [bindings, setBindings] = useState<Record<string, ShortcutBinding>>({});
   const [editingAction, setEditingAction] = useState<string | null>(null);
@@ -25,11 +30,11 @@ export const ShortcutManager = () => {
 
   useEffect(() => {
     loadShortcuts();
-  }, [hasActiveLicense]);
+  }, [customShortcutsAllowed]);
 
   const loadShortcuts = () => {
     const config = getShortcutsConfig();
-    const allActions = getAllShortcutActions(hasActiveLicense);
+    const allActions = getAllShortcutActions(customShortcutsAllowed);
     setActions(allActions);
     setBindings(config.bindings);
   };
@@ -130,7 +135,7 @@ export const ShortcutManager = () => {
           <p className="text-sm text-muted-foreground">
             {actions.length} shortcut{actions.length !== 1 ? "s" : ""}{" "}
             configured
-            {!hasActiveLicense && " • Get a license to customize shortcuts"}
+            {!customShortcutsAllowed && " • Кастомизация шорткатов входит в тариф Pro"}
           </p>
         </div>
         <div className="flex gap-2">
@@ -177,7 +182,7 @@ export const ShortcutManager = () => {
       )}
 
       {/* License Prompt for Non-Licensed Users */}
-      {!hasActiveLicense && (
+      {!customShortcutsAllowed && (
         <Card className="p-4 bg-primary/5 border-primary/20">
           <div className="flex items-start gap-3">
             <Lock className="size-4 lg:size-5 text-primary mt-0.5" />
@@ -206,7 +211,7 @@ export const ShortcutManager = () => {
             key: getPlatformDefaultKey(action),
             enabled: true,
           };
-          const isLocked = !hasActiveLicense;
+          const isLocked = !customShortcutsAllowed;
           const isEditing = editingAction === action.id;
 
           return (

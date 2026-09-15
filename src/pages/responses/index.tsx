@@ -5,26 +5,30 @@ import {
 } from "./components";
 import { PageLayout } from "@/layouts";
 import { useApp } from "@/contexts";
+import { canUseFeature, isDevBuild } from "@/lib/entitlements";
+import { UpgradePrompt } from "@/components";
 
 const Responses = () => {
   const { hasActiveLicense } = useApp();
+  // Каждый контрол ниже сам объясняет свою недоступность (R17), поэтому
+  // общего блокирующего баннера нет — он дублировал бы пояснения.
+  const anyProAvailable =
+    canUseFeature("responseLength", {
+      isDevBuild: isDevBuild(),
+      hasLicense: hasActiveLicense,
+    }) ||
+    canUseFeature("language", {
+      isDevBuild: isDevBuild(),
+      hasLicense: hasActiveLicense,
+    });
 
   return (
     <PageLayout
       title="Response Settings"
       description="Customize how AI generates and displays responses"
     >
-      {!hasActiveLicense && (
-        <div className="p-4 bg-primary/10 border border-primary/20 rounded-lg">
-          <p className="text-[10px] lg:text-sm text-foreground font-medium mb-2">
-            🔒 Premium Features
-          </p>
-          <p className="text-[10px] lg:text-sm text-muted-foreground">
-            Response customization features (Response Length, Language
-            Selection, and Auto-Scroll Control) require an active license to
-            use.
-          </p>
-        </div>
+      {!anyProAvailable && (
+        <UpgradePrompt feature="Настройка ответов (длина, язык, авто-скролл)" />
       )}
 
       {/* Response Length */}

@@ -1,4 +1,5 @@
 import { useApp, useTheme } from "@/contexts";
+import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import { Header, Label, Slider, Button } from "@/components";
 import { MonitorIcon, MoonIcon, SunIcon } from "lucide-react";
 import {
@@ -11,14 +12,16 @@ import {
 export const Theme = () => {
   const { theme, transparency, setTheme, onSetTransparency } = useTheme();
   const { hasActiveLicense } = useApp();
+  const allowed = canUseFeature("themes", {
+    isDevBuild: isDevBuild(),
+    hasLicense: hasActiveLicense,
+  });
 
   return (
     <div id="theme" className="relative space-y-3">
       <Header
         title={`Theme Customization ${
-          hasActiveLicense
-            ? ""
-            : " (You need an active license to use this feature)"
+          allowed ? "" : " (входит в тариф Pro)"
         }`}
         description="Personalize your experience with custom theme and transparency settings"
         isMainTitle
@@ -27,7 +30,7 @@ export const Theme = () => {
       {/* Theme Toggle */}
       <div
         className={`space-y-2 ${
-          hasActiveLicense ? "" : "opacity-60 pointer-events-none"
+          allowed ? "" : "opacity-60 pointer-events-none"
         }`}
       >
         <div className="flex items-center justify-between">
@@ -89,7 +92,7 @@ export const Theme = () => {
       {/* Transparency Slider */}
       <div
         className={`space-y-2 ${
-          hasActiveLicense ? "" : "opacity-60 pointer-events-none"
+          allowed ? "" : "opacity-60 pointer-events-none"
         }`}
       >
         <Header
