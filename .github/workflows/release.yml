@@ -36,24 +36,22 @@ jobs:
 
       - name: Prepare Windows runtime resources
         shell: powershell
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
           $resourceDir = "src-tauri/resources"
           if (!(Test-Path $resourceDir)) {
             New-Item -ItemType Directory -Path $resourceDir -Force | Out-Null
           }
-          
-          # Download sidecar bundle. The repo is PRIVATE: releases/download
-          # anonymous links 404. Also: spaces inside a --jq expression make
-          # PowerShell split it into two argv entries (gh: accepts 1 arg),
-          # so parse JSON with ConvertFrom-Json instead of jq filtering.
-          $release = gh api repos/wdnameless/ECHO_AI/releases/tags/resources-v0.1.0 | ConvertFrom-Json
-          $asset = $release.assets | Where-Object { $_.name -eq "pluely-asr-windows-x64-v0.1.2.zip" }
-          if (-not $asset) { Write-Error "Sidecar asset not found in resources-v0.1.0 release" }
-          Write-Host "Downloading sidecar asset id=$($asset.id)..."
-          curl.exe -sS -L -o pluely-asr-windows-x64-v0.1.2.zip -H "Authorization: token $env:GH_TOKEN" -H "Accept: application/octet-stream" "https://api.github.com/repos/wdnameless/ECHO_AI/releases/assets/$($asset.id)"
+
+          # Sidecar bundle comes from a public release on this repository, so the
+          # plain download URL works without a token. Pinned by tag + filename;
+          # contents are verified against CHECKSUMS.sha256 below.
+          $sidecarUrl = "https://github.com/wdnameless/ECHO_AI/releases/download/resources-v0.1.0/pluely-asr-windows-x64-v0.1.2.zip"
+          Write-Host "Downloading sidecar from $sidecarUrl..."
+          curl.exe -sS -L -o pluely-asr-windows-x64-v0.1.2.zip $sidecarUrl
+          if (!(Test-Path pluely-asr-windows-x64-v0.1.2.zip)) {
+            Write-Error "Sidecar download produced no file"
+          }
           Expand-Archive -Path pluely-asr-windows-x64-v0.1.2.zip -DestinationPath $resourceDir -Force
           Remove-Item -Path pluely-asr-windows-x64-v0.1.2.zip -Force
           
