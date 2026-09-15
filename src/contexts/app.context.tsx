@@ -313,25 +313,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     safeLocalStorage.getItem(STORAGE_KEYS.PLUELY_API_ENABLED) === "true"
   );
 
-  const getActiveLicenseStatus = async () => {
-    const response: { is_active: boolean; is_dev_license: boolean } =
-      await invoke("validate_license_api");
-    setHasActiveLicense(response.is_active);
-
-    if (response?.is_dev_license) {
-      setPluelyApiEnabled(false);
-    }
-
-    // Check if the auto configs are enabled
-    const autoConfigsEnabled = localStorage.getItem("auto-configs-enabled");
-    if (response.is_active && !autoConfigsEnabled) {
-      setScreenshotConfiguration({
-        mode: "auto",
-        autoPrompt: "Analyze the screenshot and provide insights",
-        enabled: false,
-      });
-      // Set the flag to true so that we don't change the mode again
-      localStorage.setItem("auto-configs-enabled", "true");
+  const getActiveLicenseStatus = async (): Promise<boolean> => {
+    try {
+      // Single source of truth: check_license_status Rust command
+      // In dev builds, Rust returns true (cfg!(debug_assertions)).
+      // In release builds, Rust verifies real credentials and activation.
+      const status = await invoke<boolean>("check_license_status");
+      setHasActiveLicense(status);
+      return status;
+    } catch {
+      setHasActiveLicense(false);
+      return false;
     }
   };
 
