@@ -47,7 +47,7 @@ export type IContextType = {
   setPluelyApiEnabled: (enabled: boolean) => Promise<void>;
   hasActiveLicense: boolean;
   setHasActiveLicense: Dispatch<SetStateAction<boolean>>;
-  getActiveLicenseStatus: () => Promise<void>;
+  getActiveLicenseStatus: () => Promise<boolean>;
   selectedAudioDevices: {
     input: { id: string; name: string };
     output: { id: string; name: string };

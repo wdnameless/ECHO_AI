@@ -1125,8 +1125,21 @@ pub async fn create_system_prompt(
 // Helper command to check if license is available
 #[tauri::command]
 pub async fn check_license_status(app: AppHandle) -> Result<bool, String> {
+    if cfg!(debug_assertions) {
+        return Ok(true);
+    }
+
     match get_stored_credentials(&app).await {
-        Ok(_) => Ok(true),
+        Ok((license_key, _instance_id, _model)) => {
+            if license_key.trim().is_empty() {
+                Ok(false)
+            } else {
+                match crate::activate::validate_license_api(app).await {
+                    Ok(resp) => Ok(resp.is_active()),
+                    Err(_) => Ok(false),
+                }
+            }
+        }
         Err(_) => Ok(false),
     }
 }

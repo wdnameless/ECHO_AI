@@ -163,11 +163,16 @@ pub struct ActivationResponse {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ValidateResponse {
-    is_active: bool,
-    last_validated_at: Option<String>,
-    is_dev_license: bool,
+    pub is_active: bool,
+    pub last_validated_at: Option<String>,
+    pub is_dev_license: bool,
 }
 
+impl ValidateResponse {
+    pub fn is_active(&self) -> bool {
+        self.is_active
+    }
+}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InstanceInfo {
     id: String,
@@ -304,9 +309,10 @@ pub async fn deactivate_license_api(app: AppHandle) -> Result<ActivationResponse
 
 #[tauri::command]
 pub async fn validate_license_api(_app: AppHandle) -> Result<ValidateResponse, String> {
+    // Without server validation, return inactive license
     Ok(ValidateResponse {
-        is_active: true,
-        last_validated_at: Some("2099-12-31T23:59:59Z".to_string()),
+        is_active: false,
+        last_validated_at: None,
         is_dev_license: false,
     })
 }
@@ -326,49 +332,10 @@ pub fn mask_license_key_cmd(license_key: String) -> String {
 
 #[tauri::command]
 pub async fn get_checkout_url() -> Result<CheckoutResponse, String> {
-    // Get payment endpoint and API access key from environment
-    let payment_endpoint = get_payment_endpoint()?;
-    let api_access_key = get_api_access_key()?;
-
-    // Make HTTP request to checkout endpoint with authorization header
-    let client = reqwest::Client::new();
-    let url = format!("{}/checkout", payment_endpoint);
-
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .header("Authorization", format!("Bearer {}", api_access_key))
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-        .map_err(|e| {
-            let error_msg = format!("{}", e);
-            if error_msg.contains("url (") {
-                // Remove the URL part from the error message
-                let parts: Vec<&str> = error_msg.split(" for url (").collect();
-                if parts.len() > 1 {
-                    format!("Failed to make chat request: {}", parts[0])
-                } else {
-                    format!("Failed to make chat request: {}", error_msg)
-                }
-            } else {
-                format!("Failed to make chat request: {}", error_msg)
-            }
-        })?;
-
-    let checkout_response: CheckoutResponse = response.json().await.map_err(|e| {
-        let error_msg = format!("{}", e);
-        if error_msg.contains("url (") {
-            // Remove the URL part from the error message
-            let parts: Vec<&str> = error_msg.split(" for url (").collect();
-            if parts.len() > 1 {
-                format!("Failed to make chat request: {}", parts[0])
-            } else {
-                format!("Failed to make chat request: {}", error_msg)
-            }
-        } else {
-            format!("Failed to make chat request: {}", error_msg)
-        }
-    })?;
-    Ok(checkout_response)
+    // Payment is disabled/unavailable (placeholder per R29)
+    Ok(CheckoutResponse {
+        success: Some(false),
+        checkout_url: None,
+        error: Some("Payment checkout is currently unavailable".to_string()),
+    })
 }
