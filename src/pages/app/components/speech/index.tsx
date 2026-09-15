@@ -153,7 +153,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
           className="select-none w-screen max-w-full min-w-0 p-0 border shadow-lg overflow-hidden border-input/50"
           sideOffset={8}
         >
-          <div className="flex flex-col h-[calc(100vh-3.2rem)] max-w-full min-w-0 overflow-hidden">
+          <div className="flex flex-col h-[calc(100vh - var(--bar-chrome))] max-w-full min-w-0 overflow-hidden">
             {/* Header - Top Control Toolbar (All actions consolidated at top!) */}
             <div className="flex-shrink-0 p-2.5 border-b border-border/50 bg-muted/10">
               <div className="flex items-center justify-between gap-1.5 min-w-0 w-full">

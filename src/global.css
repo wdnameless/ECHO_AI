@@ -46,6 +46,10 @@
 :root {
   --radius: 0.625rem;
   --cursor-type: default;
+  /* Высота верхнего бара плюс отступ всплывающей панели. В пикселях, а НЕ в
+     rem: настройка «Font Size» меняет корневой font-size (13–19px), из-за
+     чего rem-вычисления меняли высоту панелей и верхняя панель съезжала. */
+  --bar-chrome: 62px;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);

@@ -84,7 +84,7 @@ export const Files = ({
               </Button>
             </div>
 
-            <ScrollArea className="p-4 h-[calc(100vh-11rem)]">
+            <ScrollArea className="p-4 h-[calc(100vh - var(--bar-chrome) - 72px)]">
               {/* Grid layout based on number of images */}
               <div
                 className={`gap-3 ${

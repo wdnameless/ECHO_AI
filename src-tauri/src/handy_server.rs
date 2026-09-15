@@ -173,7 +173,6 @@ fn find_model_path() -> Option<String> {
     }
     let manifest = env!("CARGO_MANIFEST_DIR");
     candidates.push(format!("{}/resources/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf", manifest));
-    candidates.push(r"D:\WORK\Pluely fork\models\nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf".to_string());
     if let Ok(user_profile) = std::env::var("USERPROFILE") {
         candidates.push(format!(
             r"{}\.cache\huggingface\hub\models--handy-computer--nemotron-3.5-asr-streaming-0.6b-gguf\snapshots\6d44e540bc31b0de1dbe174a3cea87f53a7f22fb\nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf",
@@ -302,9 +301,13 @@ fn spawn_pluely_asr() -> bool {
     let Some(asr_bin) = find_pluely_asr() else {
         return false;
     };
-    let model_path = find_model_path().unwrap_or_else(|| {
-        r"D:\WORK\Pluely fork\models\nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf".to_string()
-    });
+    // Без модели движок не запустится: раньше здесь молча подставлялся путь
+    // к машине разработчика, из-за чего на чужой системе движок падал с
+    // невнятной ошибкой вместо честного отказа.
+    let Some(model_path) = find_model_path() else {
+        eprintln!("[tauri] pluely-asr: model not found, skipping native ASR");
+        return false;
+    };
 
     let log_file = open_sidecar_log_file();
 

@@ -153,7 +153,7 @@ export const Input = ({
             </div>
           </div>
 
-          <ScrollArea ref={scrollAreaRef} className="h-[calc(100vh-7rem)] w-full min-w-0 max-w-full">
+          <ScrollArea ref={scrollAreaRef} className="h-[calc(100vh - var(--bar-chrome) - 56px)] w-full min-w-0 max-w-full">
             <div className="p-4 w-full min-w-0 max-w-full break-words">
               {error && (
                 <div className="mb-4 p-3 bg-destructive/10 border border-destructive/20 rounded text-sm text-destructive">

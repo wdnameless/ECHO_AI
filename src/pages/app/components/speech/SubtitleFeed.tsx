@@ -480,18 +480,17 @@ export const SubtitleFeed = ({
     const pending = entries
       .filter((e) => {
         const key = e.text.trim();
-        // The user's own rows are NOT translated: the right column is for
-        // interviewer questions and AI answers. Saves requests and keeps
-        // the important translations instant.
+        // Переводим все строки, включая собственную речь: при ответе на
+        // английском нужно видеть, как звучит фраза, а не прочерк. Строки
+        // в процессе распознавания пропускаем — текст ещё меняется.
         return (
           key &&
-          e.kind !== "me" &&
           !e.streaming &&
           !translatedKeysRef.current.has(key) &&
           translations[key] === undefined
         );
       })
-      // Interviewer questions and AI answers translate first.
+      // Вопросы собеседника и ответы ИИ — в первую очередь.
       .sort((a, b) => b.ts - a.ts);
 
     if (pending.length === 0) return;
@@ -1184,8 +1183,6 @@ export const SubtitleFeed = ({
                   <div className="min-w-0 flex items-start">
                     {e.streaming ? (
                       <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
-                    ) : e.kind === "me" ? (
-                      <span className="text-muted-foreground/30 text-[0.7em] mt-0.5">—</span>
                     ) : translation === undefined ? (
                       <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
                     ) : (

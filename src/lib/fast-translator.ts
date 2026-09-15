@@ -55,7 +55,7 @@ export async function fastTranslate(
     trimmed
   )}`;
 
-  // 1) Local pluely-asr proxy (most reliable: no WebView/network quirks).
+  // 1) Local proxy (если сайдкар отдаёт /translate — самый надёжный путь).
   try {
     const local = await fetch(
       `http://127.0.0.1:9877/translate?text=${encodeURIComponent(
@@ -70,9 +70,20 @@ export async function fastTranslate(
       }
     }
   } catch {
-    /* local service down — fall through to Google */
+    /* локальный сервис недоступен — идём дальше */
   }
 
+  // 2) MyMemory — основной провайдер.
+  // Google GTX стабильно отвечает 429 на этом эндпоинте, поэтому порядок
+  // обратный прежнему: сначала сервис, который реально отвечает, иначе
+  // пользователь видел непреобразованный текст.
+  const memory = await myMemoryTranslate(trimmed, tl);
+  if (memory) {
+    cacheSet(cacheKey, memory);
+    return memory;
+  }
+
+  // 3) Google GTX — резерв.
   try {
     // Try Tauri native fetch first, fallback to browser fetch
     let response: Response;
@@ -87,15 +98,8 @@ export async function fastTranslate(
       response = await fetch(url);
     }
 
-    if (response.status === 429) {
-      // Rate limited: return the cached text if we have it, else original
-      console.warn("[FastTranslator] 429 rate limited, using fallback");
-      const existing = translationCache.get(cacheKey);
-      return existing ? existing.text : trimmed;
-    }
-
     if (!response.ok) {
-      console.warn(`[Translator] ${response.status} error, falling back locally`);
+      console.warn(`[Translator] ${response.status}, returning original`);
       return trimmed;
     }
 
@@ -112,22 +116,9 @@ export async function fastTranslate(
       return result;
     }
 
-    // 2) MyMemory fallback before giving up.
-    const memory = await myMemoryTranslate(trimmed, tl);
-    if (memory) {
-      cacheSet(cacheKey, memory);
-      return memory;
-    }
-
     return trimmed;
   } catch (error) {
     console.warn("[FastTranslator] Translation failed, returning original:", error);
-    // 2) MyMemory fallback before giving up.
-    const memory = await myMemoryTranslate(trimmed, tl);
-    if (memory) {
-      cacheSet(cacheKey, memory);
-      return memory;
-    }
     return trimmed;
   }
 }
@@ -146,15 +137,30 @@ async function myMemoryTranslate(
 ): Promise<string | null> {
   try {
     const pair = tl === "ru" ? "en|ru" : "ru|en";
-    const resp = await fetch(
-      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
-        text.slice(0, 500)
-      )}&langpair=${pair}`
-    );
+    const target = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
+      text.slice(0, 500)
+    )}&langpair=${pair}`;
+
+    // Через Rust-мост, а не из WebView: строгая CSP ограничивает connect-src
+    // локальными адресами, поэтому прямой fetch отсюда был бы заблокирован.
+    let resp: Response;
+    try {
+      resp = await tauriFetch(target);
+    } catch {
+      resp = await fetch(target);
+    }
+
     if (!resp.ok) return null;
     const data = await resp.json();
     const t = data?.responseData?.translatedText;
-    return typeof t === "string" && t.trim() ? t.trim() : null;
+    if (typeof t !== "string" || !t.trim()) return null;
+
+    // MyMemory возвращает исходный текст, когда перевести не удалось.
+    // Отдаём null, чтобы вызывающий код попробовал следующий провайдер
+    // вместо показа непреобразованного текста как «перевода».
+    if (t.trim().toLowerCase() === text.trim().toLowerCase()) return null;
+
+    return t.trim();
   } catch {
     return null;
   }

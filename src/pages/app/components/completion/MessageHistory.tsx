@@ -81,7 +81,7 @@ export const MessageHistory = ({
           </div>
         </div>
 
-        <ScrollArea className="h-[calc(100vh-10rem)]">
+        <ScrollArea className="h-[calc(100vh - var(--bar-chrome) - 64px)]">
           <div className="p-4 space-y-4">
             {conversationHistory
               .sort((a, b) => b?.timestamp - a?.timestamp)

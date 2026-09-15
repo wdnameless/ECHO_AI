@@ -229,7 +229,7 @@ export const Updater = () => {
         className="select-none w-screen p-0 border overflow-hidden border-input/50"
         sideOffset={8}
       >
-        <ScrollArea className="h-[calc(100vh-10rem)]">
+        <ScrollArea className="h-[calc(100vh - var(--bar-chrome) - 64px)]">
           <div className="p-6 space-y-4">
             {/* Update Header */}
             <div className="border-b border-input/50 pb-2">
