@@ -34,39 +34,34 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Prepare Windows runtime resources
+      - name: Verify engine resources
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
           $resourceDir = "src-tauri/resources"
+
+          # The engine binary and its ggml libraries are committed, because they
+          # are embedded into the app at compile time (include_bytes!). Nothing
+          # is downloaded here: a fresh checkout builds offline.
+          #
+          # The speech model is NOT bundled any more. It used to account for
+          # ~751 MB of a 738 MB installer, which ruled out a portable build and
+          # gave the user no choice of model. It is downloaded at runtime into
+          # the directory the user picks, and verified against the SHA-256
+          # published by Hugging Face.
           if (!(Test-Path $resourceDir)) {
-            New-Item -ItemType Directory -Path $resourceDir -Force | Out-Null
+            Write-Error "Resource directory $resourceDir is missing"
+          }
+          if (Test-Path (Join-Path $resourceDir "nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf")) {
+            Write-Error "A model file is present in the resource directory; the installer must not bundle models"
           }
 
-          # Sidecar bundle comes from a public release on this repository, so the
-          # plain download URL works without a token. Pinned by tag + filename;
-          # contents are verified against CHECKSUMS.sha256 below.
-          $sidecarUrl = "https://github.com/wdnameless/ECHO_AI/releases/download/resources-v0.1.0/pluely-asr-windows-x64-v0.1.2.zip"
-          Write-Host "Downloading sidecar from $sidecarUrl..."
-          curl.exe -sS -L -o pluely-asr-windows-x64-v0.1.2.zip $sidecarUrl
-          if (!(Test-Path pluely-asr-windows-x64-v0.1.2.zip)) {
-            Write-Error "Sidecar download produced no file"
-          }
-          Expand-Archive -Path pluely-asr-windows-x64-v0.1.2.zip -DestinationPath $resourceDir -Force
-          Remove-Item -Path pluely-asr-windows-x64-v0.1.2.zip -Force
-          
-          # Download Nemotron model from immutable HuggingFace snapshot
-          $modelUrl = "https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/resolve/6d44e540bc31b0de1dbe174a3cea87f53a7f22fb/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf"
-          $modelDest = Join-Path $resourceDir "nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf"
-          Write-Host "Downloading model from $modelUrl..."
-          Invoke-WebRequest -Uri $modelUrl -OutFile $modelDest -UseBasicParsing
-          
-          # Verify all files against CHECKSUMS.sha256
           $checksumFile = Join-Path $resourceDir "CHECKSUMS.sha256"
           if (!(Test-Path $checksumFile)) {
             Write-Error "CHECKSUMS.sha256 manifest not found at $checksumFile"
           }
-          Write-Host "Verifying checksums against $checksumFile..."
+
+          Write-Host "Verifying engine files against $checksumFile..."
           $lines = Get-Content $checksumFile
           foreach ($line in $lines) {
             $trimmed = $line.Trim()
@@ -76,6 +71,13 @@ jobs:
             $parts = -split $trimmed
             $expectedHash = $parts[0].ToLower()
             $fileName = $parts[1]
+
+            # The model is intentionally absent from the app; its checksum line
+            # is retained as the record of what used to be bundled.
+            if ($fileName -like "*.gguf") {
+              continue
+            }
+
             $filePath = Join-Path $resourceDir $fileName
             if (!(Test-Path $filePath)) {
               Write-Error "Required resource file missing: $fileName"
@@ -86,7 +88,7 @@ jobs:
             }
             Write-Host "Verified $fileName ($actualHash)"
           }
-          Write-Host "All resources verified successfully."
+          Write-Host "All engine resources verified successfully."
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -126,3 +128,44 @@ jobs:
           releaseBody: "Auto-generated release from the latest push."
           releaseDraft: false
           prerelease: false
+
+      - name: Build portable archive
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # A single-file build: the engine and its libraries are embedded in
+          # the executable and extracted on first run, so this archive is just
+          # the exe plus a marker that turns on portable mode. The speech model
+          # is not included — the user picks and downloads one on first launch,
+          # which is what keeps this download around 20 MB instead of 738 MB.
+          $stage = "portable-stage"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+
+          $exe = Get-ChildItem -Path "src-tauri/target/release" -Filter "*.exe" |
+            Where-Object { $_.Name -notmatch "pluely-asr" } |
+            Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "Release executable not found in src-tauri/target/release"
+          }
+          Write-Host "Packaging $($exe.Name) ($([math]::Round($exe.Length / 1MB, 1)) MB)"
+
+          Copy-Item $exe.FullName (Join-Path $stage "Echo AI.exe")
+          # Dropping this file switches the app into portable mode: settings,
+          # engine and downloaded models stay inside the same folder.
+          Set-Content -Path (Join-Path $stage ".portable") -Value "portable" -NoNewline
+
+          $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
+          $archive = "Echo.AI_${version}_portable_x64.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $archive -Force
+          Write-Host "Portable archive: $archive ($([math]::Round((Get-Item $archive).Length / 1MB, 1)) MB)"
+
+      - name: Upload portable archive to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          archive="Echo.AI_${version}_portable_x64.zip"
+          gh release upload "v${version}" "$archive" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Uploaded $archive"

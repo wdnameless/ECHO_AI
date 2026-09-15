@@ -49,7 +49,8 @@
       "info.plist",
       "pluely.desktop",
       "../scripts/handy_stt_server.py",
-      "resources/**/*"
+      "resources/pluely-asr.exe",
+      "resources/*.dll"
     ],
     "macOS": {
       "minimumSystemVersion": "10.13"

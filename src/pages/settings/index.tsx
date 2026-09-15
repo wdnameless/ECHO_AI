@@ -13,12 +13,16 @@ import {
   AutoAskSettings,
   FillerFilterSettings,
   StealthToggle,
+  StorageSettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
 
 const Settings = () => {
   return (
     <PageLayout title="Settings" description="Manage your settings">
+      {/* Storage layout and local speech models */}
+      <StorageSettings />
+
       {/* Prompt Profiles: Interview / General / Self-Evolution / custom */}
       <PromptProfilesSettings />
 

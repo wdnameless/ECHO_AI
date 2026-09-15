@@ -39,6 +39,10 @@ __pycache__/
 *.bin
 src-tauri/resources/nemotron*
 src-tauri/resources/*.gguf
-src-tauri/resources/pluely-asr*
 release-resources/*.zip
 logs.zip
+
+# The ASR engine binary is tracked on purpose: it is embedded into the app at
+# compile time (include_bytes!), so a fresh checkout must build without network
+# access. Only the model is excluded — it is downloaded by the user at runtime.
+!src-tauri/resources/pluely-asr.exe

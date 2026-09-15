@@ -3,7 +3,10 @@ mod activate;
 mod api;
 mod capture;
 mod db;
+mod embedded;
 mod handy_server;
+mod models;
+mod settings;
 mod shortcuts;
 mod tray;
 mod vocab;
@@ -96,6 +99,7 @@ pub fn run() {
             window::move_window,
             handy_server::handy_server_status,
             handy_server::handy_server_status_detailed,
+            handy_server::stt_readiness,
             handy_server::start_handy_server,
             handy_server::speak_text,
             handy_server::read_asr_port_file,
@@ -142,6 +146,19 @@ pub fn run() {
             vocab::get_corrections,
             vocab::add_correction,
             vocab::delete_correction,
+            settings::commands::get_paths,
+            settings::commands::set_paths,
+            settings::commands::pick_directory,
+            settings::commands::enable_portable,
+            settings::commands::disable_portable,
+            settings::commands::get_start_minimized,
+            settings::commands::set_start_minimized,
+            models::list_models,
+            models::model_catalog,
+            models::download_model,
+            models::delete_model,
+            models::select_model,
+            models::selected_model,
         ])
         .setup(|app| {
             // Setup main window positioning
@@ -151,6 +168,15 @@ pub fn run() {
             // Setup System Tray icon & menu
             if let Err(e) = tray::setup_tray(app.handle()) {
                 eprintln!("Failed to setup system tray: {}", e);
+            }
+
+            // Start hidden when the user asked for it: the tray icon is the
+            // entry point, and an overlay dropping onto the screen at login is
+            // exactly what this preference exists to avoid.
+            if settings::load_settings().start_minimized {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
             }
             #[cfg(target_os = "macos")]
             init(app.app_handle());

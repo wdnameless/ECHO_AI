@@ -4,6 +4,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use serde::Serialize;
+
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 #[cfg(target_os = "windows")]
@@ -93,28 +95,51 @@ fn read_bound_asr_port() -> Option<u16> {
 
 /// Locate a usable pluely-asr binary.
 ///
-/// Only portable, install-relative locations are probed. A previously
-/// hardcoded developer-machine path won over the bundled copy and made the
-/// installed app run whatever binary happened to sit in the dev tree - a
-/// different build than the one the installer shipped, which is how stale
-/// watchdog logic kept returning.
+/// The user's chosen directories come first: the engine may live in a portable
+/// root, on another drive, or in a folder extracted by hand. The bundled and
+/// install-relative locations stay as fallbacks so an existing install keeps
+/// working without any configuration.
 fn find_pluely_asr() -> Option<String> {
     let mut candidates: Vec<String> = Vec::new();
+
+    // 1. Engine embedded in the binary: extracted on first use, so a build that
+    //    ships as a single file still has a working recogniser.
+    let paths = crate::settings::resolved_paths();
+    match crate::embedded::ensure_extracted(&paths) {
+        Ok(Some(dir)) => {
+            crate::embedded::cleanup_old_extractions(&paths);
+            candidates.push(
+                crate::embedded::engine_binary(&dir)
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+        Ok(None) => {}
+        Err(e) => eprintln!("[tauri] не удалось распаковать движок: {e}"),
+    }
+
+    // 2. Explicit user layout: <engine_dir>/pluely-asr.exe and portable roots.
+    candidates.push(format!("{}/pluely-asr.exe", paths.engine_dir));
+    candidates.push(format!("{}/resources/pluely-asr.exe", paths.root));
+    candidates.push(format!("{}/pluely-asr.exe", paths.root));
+
+    // 3. Install-relative locations (portable archive and installed bundle).
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            // Bundled resource dir first, then exe dir (dev builds run
-            // target/release -> target/release/pluely-asr.exe does not
-            // exist, so bundle layouts remain authoritative).
             candidates.push(format!("{}/resources/pluely-asr.exe", dir.display()));
             candidates.push(format!("{}/pluely-asr.exe", dir.display()));
         }
     }
+
+    // 4. Development build: source-tree resources and the sibling crate.
     if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        // Dev build (cargo tauri dev): source-tree resources and the
-        // workspace sidecar crate next to the repo.
         candidates.push(format!("{}/resources/pluely-asr.exe", manifest));
-        candidates.push(format!("{}/../../pluely-asr/target/release/pluely-asr.exe", manifest));
+        candidates.push(format!(
+            "{}/../../pluely-asr/target/release/pluely-asr.exe",
+            manifest
+        ));
     }
+
     candidates
         .into_iter()
         .find(|p| std::path::Path::new(p).is_file())
@@ -161,49 +186,96 @@ fn find_script() -> Option<String> {
         .find(|p| std::path::Path::new(p).is_file())
 }
 
-/// Locate the Nemotron GGUF model file.
+/// Model file names shipped by older builds, checked only in an installed
+/// layout so a pre-existing install keeps recognising speech after upgrading.
+const MODEL_FILE_CANDIDATES: &[&str] = &["nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf"];
+
+/// Locate the ASR model file.
+///
+/// Order: the model the user explicitly selected, then any `.gguf` in their
+/// models directory, then the historical bundled/install-relative locations so
+/// an install that still carries the embedded model keeps working.
 fn find_model_path() -> Option<String> {
-    let mut candidates = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(format!("{}/resources/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf", dir.display()));
-            candidates.push(format!("{}/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf", dir.display()));
-            candidates.push(format!("{}/models/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf", dir.display()));
+    let settings = crate::settings::load_settings();
+    let paths = crate::settings::resolve(&settings);
+
+    // 1. Explicit selection wins: the user asked for this exact file.
+    if let Some(selected) = settings.selected_model.as_deref() {
+        let candidate = std::path::Path::new(selected);
+        if candidate.is_file() {
+            return Some(selected.to_string());
         }
+        eprintln!(
+            "[tauri] выбранная модель недоступна ({}), ищу другую",
+            selected
+        );
     }
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    candidates.push(format!("{}/resources/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf", manifest));
-    if let Ok(user_profile) = std::env::var("USERPROFILE") {
-        candidates.push(format!(
-            r"{}\.cache\huggingface\hub\models--handy-computer--nemotron-3.5-asr-streaming-0.6b-gguf\snapshots\6d44e540bc31b0de1dbe174a3cea87f53a7f22fb\nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf",
-            user_profile
-        ));
-    }
-    if let Some(found) = candidates.into_iter().find(|p| std::path::Path::new(p).is_file()) {
+
+    // 2. Any GGUF the user placed in the models directory.
+    if let Some(found) = first_gguf_in(std::path::Path::new(&paths.models_dir)) {
         return Some(found);
     }
-    // Fallback: any GGUF next to the app (lets the user swap models freely).
-    let mut scan_dirs = Vec::new();
+
+    // 3. Bundled model, for installs built before models became a user choice.
+    //    Deliberately no source-tree candidate: the model is no longer bundled,
+    //    and reading it from a build tree would let a stale leftover silently
+    //    become the active model on a developer machine.
+    let mut candidates: Vec<String> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            scan_dirs.push(dir.to_path_buf());
-            scan_dirs.push(dir.join("resources"));
-            scan_dirs.push(dir.join("models"));
-        }
-    }
-    for dir in scan_dirs {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.extension()
-                    .map_or(false, |e| e.eq_ignore_ascii_case("gguf"))
-                {
-                    return Some(p.to_string_lossy().to_string());
+            let installed_layout = dir.join("resources").is_dir();
+            if installed_layout {
+                for name in MODEL_FILE_CANDIDATES {
+                    candidates.push(format!("{}/resources/{name}", dir.display()));
+                    candidates.push(format!("{}/{name}", dir.display()));
+                    candidates.push(format!("{}/models/{name}", dir.display()));
                 }
             }
         }
     }
+    if let Some(found) = candidates
+        .into_iter()
+        .find(|p| std::path::Path::new(p).is_file())
+    {
+        return Some(found);
+    }
+
+    // 4. Last resort: any GGUF shipped alongside the executable.
+    let mut scan_dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            if dir.join("resources").is_dir() {
+                scan_dirs.push(dir.join("resources"));
+                scan_dirs.push(dir.to_path_buf());
+                scan_dirs.push(dir.join("models"));
+            }
+        }
+    }
+    for dir in scan_dirs {
+        if let Some(found) = first_gguf_in(&dir) {
+            return Some(found);
+        }
+    }
+
     None
+}
+
+/// First `.gguf` file inside a directory, if the directory exists.
+fn first_gguf_in(dir: &std::path::Path) -> Option<String> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut candidates: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+        })
+        .collect();
+    // Deterministic pick, so two runs do not load different models.
+    candidates.sort();
+    candidates
+        .first()
+        .map(|path| path.to_string_lossy().to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -261,10 +333,15 @@ fn assign_job_object(child: &Child) {
 fn assign_job_object(_child: &Child) {}
 
 /// Open (create/append) the diagnostic log file for the sidecar.
-/// Location: exe-dir first (portable + installed), then app data dir.
+/// Location: the user's chosen log directory first, then exe dir (portable and
+/// installed layouts), then the app data directory.
 fn open_sidecar_log_file() -> std::fs::File {
     use std::fs::OpenOptions;
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
+
+    let logs_dir = crate::settings::resolved_paths().logs_dir;
+    paths.push(std::path::Path::new(&logs_dir).join("asr-sidecar.log"));
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             paths.push(dir.join("asr-sidecar.log"));
@@ -272,14 +349,11 @@ fn open_sidecar_log_file() -> std::fs::File {
         }
     }
     if let Ok(appdata) = std::env::var("APPDATA") {
-        let dir = std::path::Path::new(&appdata)
-            .join("com.srikanthnani.pluely");
+        let dir = std::path::Path::new(&appdata).join("com.srikanthnani.pluely");
         paths.push(dir.join("asr-sidecar.log"));
     }
     for p in &paths {
-        if let Ok(f) =
-            OpenOptions::new().create(true).append(true).open(p)
-        {
+        if let Ok(f) = OpenOptions::new().create(true).append(true).open(p) {
             return f;
         }
     }
@@ -433,6 +507,95 @@ pub fn stop_server() {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+    // The engine keeps the model in memory, so a model switch only takes effect
+    // after the process actually exits. Without waiting for the port to free up,
+    // the restart would race the old instance and bind a different port.
+    wait_for_shutdown(Duration::from_secs(8));
+}
+
+/// Waits until the ASR port stops responding, up to `timeout`.
+fn wait_for_shutdown(timeout: Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if !is_running() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+}
+
+/// Restarts the ASR engine so it picks up the currently configured model.
+///
+/// Used after the user selects a different model: the engine reads the file
+/// once at startup, so without this the switch would appear to do nothing.
+pub async fn restart_server() -> Result<(), String> {
+    stop_server();
+
+    let started = tauri::async_runtime::spawn_blocking(|| {
+        // Give the OS a moment to release the port before rebinding.
+        std::thread::sleep(Duration::from_millis(400));
+        spawn_pluely_asr()
+    })
+    .await
+    .unwrap_or(false);
+
+    if !started {
+        return Err(
+            "движок распознавания не запустился. Проверьте, что модель скачана, \
+             а каталог движка указан верно."
+                .to_string(),
+        );
+    }
+
+    start_sidecar_watchdog();
+    Ok(())
+}
+
+/// Whether speech recognition can actually run right now.
+#[derive(Debug, Clone, Serialize)]
+pub struct SttReadiness {
+    /// An engine process is answering on its port.
+    pub engine_running: bool,
+    /// A model file was resolved.
+    pub model_found: bool,
+    /// Path of the model that would be loaded, when one was found.
+    pub model_path: Option<String>,
+    /// The resolved models directory, so the UI can point the user at it.
+    pub models_dir: String,
+    /// Why recognition is unavailable, when it is.
+    pub reason: Option<String>,
+}
+
+/// Reports why recognition is or is not available.
+///
+/// The app can now start with no model at all — that is the point of a portable
+/// build — so the UI needs a first-class way to tell the user what is missing
+/// instead of showing a silent "offline" badge.
+#[tauri::command]
+pub fn stt_readiness() -> SttReadiness {
+    let paths = crate::settings::resolved_paths();
+    let model_path = find_model_path();
+    let engine_running = is_running();
+
+    let reason = match (&model_path, engine_running) {
+        (Some(_), true) => None,
+        (None, _) => Some(
+            "Модель распознавания не найдена. Откройте «Настройки → Хранилище и модели» и скачайте подходящую."
+                .to_string(),
+        ),
+        (Some(_), false) => Some(
+            "Движок распознавания не запущен. Проверьте каталог движка в настройках хранилища."
+                .to_string(),
+        ),
+    };
+
+    SttReadiness {
+        engine_running,
+        model_found: model_path.is_some(),
+        model_path,
+        models_dir: paths.models_dir,
+        reason,
     }
 }
 
