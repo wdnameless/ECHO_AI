@@ -25,6 +25,7 @@ export const STORAGE_KEYS = {
   RAG_JOB_ENABLED: "rag_job_enabled",
   JOB_PROFILES: "job_profiles",
   ACTIVE_JOB_PROFILE_ID: "active_job_profile_id",
+  TRUSTED_HOSTS: "trusted_hosts",
 } as const;
 
 // Max number of files that can be attached to a message

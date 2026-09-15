@@ -11,6 +11,7 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
+import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
 import { getResponseSettings, RESPONSE_LENGTHS, LANGUAGES } from "@/lib";
 import { MARKDOWN_FORMATTING_INSTRUCTIONS, STORAGE_KEYS } from "@/config/constants";
 import {
@@ -531,11 +532,24 @@ async function* streamAIResponse(params: {
 
     const fetchFunction = url?.includes("http") ? tauriFetch : fetch;
 
+    // S2: не отправляем учётные данные на хост вне реестра доверенных.
+    const outboundHeaders: Record<string, string> = {};
+    for (const [name, value] of Object.entries(
+      (headers ?? {}) as Record<string, unknown>
+    )) {
+      if (typeof value === "string") outboundHeaders[name] = value;
+    }
+    const trust = await resolveOutboundHeaders(url, outboundHeaders);
+    if (!trust.allowed) {
+      yield "Запрос отменён: хост не входит в список доверенных.";
+      return;
+    }
+
     let response;
     try {
       response = await fetchFunction(url, {
         method: curlJson.method || "POST",
-        headers,
+        headers: trust.headers,
         body: curlJson.method === "GET" ? undefined : JSON.stringify(bodyObj),
         signal,
       });

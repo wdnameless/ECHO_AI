@@ -1,6 +1,7 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import curl2Json from "@bany/curl-to-json";
 import { deepVariableReplacer } from "./common.function";
+import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
 
 export interface FetchModelsOptions {
   headers?: Record<string, string>;
@@ -197,9 +198,15 @@ export async function fetchProviderModels(
     Object.assign(headers, options.headers);
   }
 
+  // S2: ключ не уходит на хост вне реестра доверенных.
+  const trust = await resolveOutboundHeaders(modelsUrl, headers);
+  if (!trust.allowed) {
+    throw new Error("Запрос списка моделей отменён: хост не входит в список доверенных.");
+  }
+
   const response = await tauriFetch(modelsUrl, {
     method: "GET",
-    headers,
+    headers: trust.headers,
     signal: options?.signal,
   });
 

@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import AppRoutes from "./routes";
 import { ErrorBoundary } from "react-error-boundary";
 import { ErrorLayout } from "./layouts";
+import { HostTrustProvider } from "./components";
 const currentWindow = getCurrentWindow();
 const windowLabel = currentWindow.label;
 
@@ -31,6 +32,7 @@ if (windowLabel.startsWith("capture-overlay-")) {
       <ErrorBoundary fallbackRender={() => <ErrorLayout />}>
         <ThemeProvider>
           <AppProvider>
+            <HostTrustProvider />
             <AppRoutes />
           </AppProvider>
         </ThemeProvider>
