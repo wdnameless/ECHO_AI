@@ -85,7 +85,7 @@ def stop_server(srv):
 
 def transcribe_http(port, wav_path):
     """POST a wav to the running server, return (status_code, json_obj)."""
-    boundary = "----PluelyTestBoundary"
+    boundary = "----EchoAITestBoundary"
     with open(wav_path, "rb") as f:
         audio = f.read()
     body = (

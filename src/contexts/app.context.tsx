@@ -309,7 +309,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     safeLocalStorage.setItem(STORAGE_KEYS.SUPPORTS_IMAGES, String(value));
   };
 
-  // Pluely API State
+  // Echo AI API State
   const [pluelyApiEnabled, setPluelyApiEnabledState] = useState<boolean>(
     safeLocalStorage.getItem(STORAGE_KEYS.PLUELY_API_ENABLED) === "true"
   );
@@ -471,7 +471,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
     }
 
-    // Load Pluely API enabled state
+    // Load Echo AI API enabled state
     const savedPluelyApiEnabled = safeLocalStorage.getItem(
       STORAGE_KEYS.PLUELY_API_ENABLED
     );
@@ -667,7 +667,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const checkImageSupport = async () => {
       if (pluelyApiEnabled) {
-        // For Pluely API, check the selected model's modality
+        // For Echo AI API, check the selected model's modality
         try {
           const storage = await invoke<{
             selected_pluely_model?: string;
@@ -858,7 +858,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           setSupportsImages(false);
         }
       } catch (error) {
-        console.debug("Failed to check Pluely model image support:", error);
+        console.debug("Failed to check Echo AI model image support:", error);
         setSupportsImages(false);
       }
     } else {

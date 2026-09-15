@@ -2,6 +2,7 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import curl2Json from "@bany/curl-to-json";
 import { deepVariableReplacer } from "./common.function";
 import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
+import { getSecret, secretKey } from "@/lib/storage/secret-store";
 
 export interface FetchModelsOptions {
   headers?: Record<string, string>;
@@ -177,7 +178,10 @@ export async function fetchProviderModels(
     }
   }
 
-  const apiKey = variables.API_KEY || variables.api_key;
+  const storedKey = providerId
+    ? await getSecret(secretKey.aiProvider(providerId))
+    : null;
+  const apiKey = variables.API_KEY || variables.api_key || storedKey;
   if (apiKey) {
     if (providerId === "claude") {
       if (!headers["x-api-key"]) {

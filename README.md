@@ -1,4 +1,4 @@
-# 🚀 Pluely — AI Copilot & Voice Mock Interview
+# 🚀 Echo AI — AI Copilot & Voice Mock Interview
 
 <p align="center">
   <b>Умный AI-ассистент реального времени для встреч, собеседований и мок-интервью</b><br>
@@ -23,9 +23,14 @@
 - Автоматическое извлечение текста из PDF-документов.
 - Мгновенное подключение/отключение контекста в системный промпт через тумблеры.
 
-### ⚡ 3. Локальный STT (Handy / Whisper) + Облачный Fallback (Groq)
-- **Автозапуск локального STT**: При старте Pluely автоматически поднимается локальный сервер распознавания речи на `127.0.0.1:8000`, использующий установленную в Handy модель.
-- **Cloud Fallback (Groq Whisper)**: Если локальный сервер недоступен, распознавание речи автоматически переключается на облачный Groq (`whisper-large-v3-turbo`).
+### ⚡ 3. Локальный STT (pluely-asr / Nemotron, Whisper)
+- **Автозапуск локального STT**: при старте Echo AI поднимает нативный движок
+  `pluely-asr.exe` и слушает его на `127.0.0.1:9877` (при занятом порту —
+  9878…9882, выбранный порт пишется в `%APPDATA%/pluely/asr-port`).
+- **Только локально**: облачные STT-провайдеры автоматически не вызываются.
+  Если локальный сервер недоступен, запрос завершается явной ошибкой, а не
+  уходит в облако. Python-мост (`handy_stt_server.py`) поднимается лишь как
+  резервный путь, когда нативный движок не найден.
 
 ### 🔄 4. Встроенный модуль автообновлений (Tauri Auto-Updater)
 - Проверка обновлений напрямую через **GitHub Releases** (`wdnameless/ECHO_AI`).
@@ -41,7 +46,7 @@
 | **Frontend** | React 19, TypeScript, Tailwind CSS, Lucide Icons |
 | **Локальная БД** | SQLite (`tauri-plugin-sql`) с автоматическими миграциями |
 | **VAD / Аудио** | Silero VAD (`@ricky0123/vad-web`), Web Audio API |
-| **STT Engine** | Handy Local STT (16 kHz mono WAV) + Groq Whisper API Fallback |
+| **STT Engine** | `pluely-asr` sidecar (Nemotron 3.5 ASR Streaming, Vulkan) + Whisper через Python-мост как резерв |
 | **Автообновления** | `tauri-plugin-updater` с криптографической подписью Minisign |
 
 ---
@@ -51,8 +56,10 @@
 ### Требования
 1. **Node.js**: `v20+`
 2. **Rust & Cargo**: `stable` (`rustup default stable`)
-3. **Python**: `3.10+` (для локального STT моста)
-4. **Handy** (опционально для локального офлайн-распознавания): установлен в `D:\progg\Handy` или системный путь.
+3. **Python**: `3.10+` — необязателен. Нужен только как резервный STT-мост,
+   если нативный `pluely-asr.exe` не найден.
+4. **Модель ASR**: скачивается на этапе сборки (см. `.github/workflows/release.yml`),
+   в рантайме уже лежит внутри бандла.
 
 ### Установка зависимостей
 ```bash
@@ -69,8 +76,11 @@ npm run tauri dev
 npm run tauri build
 ```
 Готовые установщики появятся в:
-- `src-tauri/target/release/bundle/nsis/Pluely_x.x.x_x64-setup.exe`
-- `src-tauri/target/release/bundle/msi/Pluely_x.x.x_x64_en-US.msi`
+- `src-tauri/target/release/bundle/nsis/Echo AI_x.x.x_x64-setup.exe`
+- `src-tauri/target/release/bundle/msi/Echo AI_x.x.x_x64_en-US.msi`
+
+Имя самого бинарника остаётся `pluely.exe` — так установленные копии сохраняют
+данные и канал обновлений.
 
 ---
 
@@ -82,16 +92,20 @@ npm run tauri build
    - Перейдите в **Settings** → блоки **My Resume** и **Job Description**.
    - Нажмите **Upload document** и выберите ваш PDF или текстовый файл.
 3. **STT (Распознавание речи)**:
-   - **Handy Local STT**: используется по умолчанию при наличии Handy.
-   - **Groq Fallback**: введите ключ `gsk_...` в разделе **Dev Space → STT Providers → Cloud fallback key**.
+   - **Локальный движок**: используется по умолчанию, отдельная настройка не нужна.
+   - **Свой облачный STT**: добавьте провайдера в разделе **Dev Space → STT Providers**.
+     Учтите, что конвейер диктовки намеренно работает только локально.
 
 ---
 
 ## 📦 Репозиторий и автообновления
 
 - **GitHub Repository**: [https://github.com/wdnameless/ECHO_AI](https://github.com/wdnameless/ECHO_AI)
-- **CI/CD**: Каждый push в ветку `master` автоматически собирает приложение под Windows, подписывает артефакты и публикует новый GitHub Release с манифестом `latest.json`.
-- **Обновление в приложении**: При появлении нового релиза в окне Pluely отображается кнопка обновления, скачивающая и применяющая апдейт на лету.
+- **CI/CD**: workflow запускается по тегу `v*` (или вручную через
+  `workflow_dispatch`). Он собирает приложение под Windows, подписывает
+  артефакты ключом `TAURI_SIGNING_PRIVATE_KEY` и публикует GitHub Release
+  с манифестом `latest.json`. Push в `master` сам по себе релиз не создаёт.
+- **Обновление в приложении**: При появлении нового релиза в окне Echo AI отображается кнопка обновления, скачивающая и применяющая апдейт на лету.
 
 ---
 

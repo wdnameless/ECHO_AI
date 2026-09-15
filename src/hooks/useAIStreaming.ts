@@ -198,7 +198,7 @@ export function useAIStreaming({
       // a conversational filler/backchannel.
       if (!shouldTriggerAIResponse(question)) {
         console.log(
-          `[Pluely] Skipping AI processing for conversational filler/backchannel: "${question}"`
+          `[Echo AI] Skipping AI processing for conversational filler/backchannel: "${question}"`
         );
         return;
       }
@@ -218,7 +218,7 @@ export function useAIStreaming({
         !isQuestionStart
       ) {
         console.log(
-          `[Pluely] Skipping AI processing during post-answer cooldown (${sinceLastResponse}ms): "${question}"`
+          `[Echo AI] Skipping AI processing during post-answer cooldown (${sinceLastResponse}ms): "${question}"`
         );
         return;
       }

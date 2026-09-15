@@ -18,7 +18,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let mut tray_builder = TrayIconBuilder::new()
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .tooltip("Pluely - AI Meeting & Interview Assistant");
+        .tooltip("Echo AI - AI Meeting & Interview Assistant");
 
     if let Some(icon) = app.default_window_icon() {
         tray_builder = tray_builder.icon(icon.clone());

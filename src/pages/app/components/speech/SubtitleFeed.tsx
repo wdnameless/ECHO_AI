@@ -623,7 +623,7 @@ export const SubtitleFeed = ({
           {appVersion && (
             <span
               className="font-mono text-[0.6em] text-muted-foreground/60 shrink-0"
-              title="Версия приложения Pluely"
+              title="Версия приложения Echo AI"
             >
               v{appVersion}
             </span>

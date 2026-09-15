@@ -2,7 +2,7 @@
 // when the window is hidden/unfocused (down to 1s+ granularity), which
 // delays question emission in meeting mode. Timers inside a dedicated
 // Worker are exempt from that throttling, so deadlines stay precise even
-// when the Pluely window is in the background.
+// when the Echo AI window is in the background.
 
 let worker: Worker | null = null;
 let seq = 0;

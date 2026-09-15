@@ -1,7 +1,7 @@
 # Sidecar Bundle Provenance: pluely-asr-windows-x64-v0.1.0.zip
 
 Release asset source:
-https://github.com/wdnameless/pluely/releases/download/resources-v0.1.0/pluely-asr-windows-x64-v0.1.0.zip
+https://github.com/wdnameless/ECHO_AI/releases/download/resources-v0.1.0/pluely-asr-windows-x64-v0.1.0.zip
 
 SHA-256 Checksum:
 574e10d1e724b3638c649d6f500d2197827832f1daec19a3447aa1f6406b4591

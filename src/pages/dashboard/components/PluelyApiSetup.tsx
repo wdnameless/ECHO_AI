@@ -17,6 +17,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components";
+import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 interface ActivationResponse {
   activated: boolean;
@@ -71,6 +72,13 @@ export const PluelyApiSetup = () => {
   const [selectedModel, setSelectedModel] = useState<Model | null>(null);
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [searchValue, setSearchValue] = useState("");
+
+  // Хостируемый API — Pro-возможность, поэтому доступность берётся из реестра,
+  // а не из состояния лицензии напрямую.
+  const hostedApiAllowed = canUseFeature("hostedApi", {
+    isDevBuild: isDevBuild(),
+    hasLicense: hasActiveLicense,
+  });
   const fetchInitiated = useRef(false);
   const commandListRef = useRef<HTMLDivElement>(null);
 
@@ -176,7 +184,7 @@ export const PluelyApiSetup = () => {
         setSuccess("License activated successfully!");
         setLicenseKey(""); // Clear the input
 
-        // Auto-enable Pluely API when license is activated
+        // Auto-enable Echo AI API when license is activated
         if (!response?.is_dev_license) {
           setPluelyApiEnabled(true);
         }
@@ -212,7 +220,7 @@ export const PluelyApiSetup = () => {
 
       setSuccess("License removed successfully!");
 
-      // Disable Pluely API when license is removed
+      // Disable Echo AI API when license is removed
       setPluelyApiEnabled(false);
 
       await fetchModels();
@@ -284,7 +292,7 @@ export const PluelyApiSetup = () => {
 
   const title = isModelsLoading
     ? "Loading Models..."
-    : `Pluely supports ${models?.length} model${
+    : `Echo AI supports ${models?.length} model${
         models?.length !== 1 ? "s" : ""
       }`;
 
@@ -292,7 +300,7 @@ export const PluelyApiSetup = () => {
     ? "Fetching the list of supported models..."
     : providerList
     ? `Access top models from providers like ${providerList}. and select smaller models for faster responses.`
-    : "Explore all the models Pluely supports.";
+    : "Explore all the models Echo AI supports.";
 
   return (
     <div id="pluely-api" className="space-y-3 -mt-2">
@@ -468,7 +476,7 @@ export const PluelyApiSetup = () => {
                 <div className="-mt-1">
                   <p className="text-sm font-medium text-muted-foreground select-auto">
                     If you need any help or any assistance, contact
-                    support@pluely.com
+                    support@nullform.cv
                   </p>
                 </div>
               ) : null}
@@ -478,19 +486,19 @@ export const PluelyApiSetup = () => {
       </div>
       <div className="flex justify-between items-center">
         <Header
-          title={`${pluelyApiEnabled ? "Disable" : "Enable"} Pluely API`}
+          title={`${pluelyApiEnabled ? "Disable" : "Enable"} Echo AI API`}
           description={
             storedLicenseKey
               ? pluelyApiEnabled
                 ? "Using all pluely APIs for audio, and chat."
                 : "Using all your own AI Providers for audio, and chat."
-              : "A valid license is required to enable Pluely API or you can use your own AI Providers and STT Providers."
+              : "A valid license is required to enable Echo AI API or you can use your own AI Providers and STT Providers."
           }
         />
         <Switch
           checked={pluelyApiEnabled}
           onCheckedChange={setPluelyApiEnabled}
-          disabled={!storedLicenseKey || !hasActiveLicense} // Disable if no license is stored
+          disabled={!storedLicenseKey || !hostedApiAllowed}
         />
       </div>
     </div>

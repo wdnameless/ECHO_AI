@@ -1,5 +1,5 @@
 /**
- * Pluely System Audio Hook
+ * Echo AI System Audio Hook
  *
  * Orchestrator hook for capturing system & mic audio, transcription via STT,
  * assembling interview questions, Russian filler phrasing during generation,

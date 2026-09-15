@@ -1,14 +1,15 @@
 import { Button, Header, Input, Selection, TextInput } from "@/components";
 import { UseSettingsReturn } from "@/types";
 import curl2Json, { ResultJSON } from "@bany/curl-to-json";
-import { KeyIcon, Loader2, RefreshCw, TrashIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Loader2, RefreshCw, TrashIcon } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import {
   buildDynamicMessages,
   deepVariableReplacer,
 } from "@/lib/functions/common.function";
 import { fetchProviderModels } from "@/lib/functions/models.function";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { getSecret, saveSecret, removeSecret, secretKey } from "@/lib/storage/secret-store";
 
 export const Providers = ({
   allAiProviders,
@@ -30,6 +31,44 @@ export const Providers = ({
     | { status: "ok" | "error"; message: string }
   >({ status: "idle" });
 
+  const providerId = selectedAIProvider?.provider || "";
+  const apiKeyVar = variables?.find((v) => v?.key === "api_key");
+
+  /**
+   * Ключ не хранится в настройках провайдера (иначе он уезжает в открытый
+   * localStorage), поэтому поле ввода читает его из защищённого хранилища.
+   */
+  const [apiKey, setApiKey] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (!providerId || !apiKeyVar) {
+        setApiKey("");
+        return;
+      }
+      const stored = await getSecret(secretKey.aiProvider(providerId));
+      if (!cancelled) setApiKey(stored ?? "");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [providerId, apiKeyVar]);
+
+  const persistApiKey = useCallback(
+    async (value: string) => {
+      if (!providerId) return;
+      setApiKey(value);
+      const trimmed = value.trim();
+      if (trimmed) {
+        await saveSecret(secretKey.aiProvider(providerId), trimmed);
+      } else {
+        await removeSecret(secretKey.aiProvider(providerId));
+      }
+    },
+    [providerId]
+  );
+
   useEffect(() => {
     if (selectedAIProvider?.provider) {
       const provider = allAiProviders?.find(
@@ -44,16 +83,6 @@ export const Providers = ({
 
   const findKeyAndValue = (key: string) => {
     return variables?.find((v) => v?.key === key);
-  };
-
-  const getApiKeyValue = () => {
-    const apiKeyVar = findKeyAndValue("api_key");
-    if (!apiKeyVar || !selectedAIProvider?.variables) return "";
-    return selectedAIProvider?.variables?.[apiKeyVar.key] || "";
-  };
-
-  const isApiKeyEmpty = () => {
-    return !getApiKeyValue().trim();
   };
 
   const currentProviderId = selectedAIProvider?.provider || "";
@@ -159,70 +188,19 @@ export const Providers = ({
               <Input
                 type="password"
                 placeholder="**********"
-                value={getApiKeyValue()}
+                value={apiKey}
                 onChange={(value) => {
-                  const apiKeyVar = findKeyAndValue("api_key");
-                  if (!apiKeyVar || !selectedAIProvider) return;
-
-                  onSetSelectedAIProvider({
-                    ...selectedAIProvider,
-                    variables: {
-                      ...selectedAIProvider.variables,
-                      [apiKeyVar.key]:
-                        typeof value === "string" ? value : value.target.value,
-                    },
-                  });
-                }}
-                onKeyDown={(e) => {
-                  const apiKeyVar = findKeyAndValue("api_key");
-                  if (!apiKeyVar || !selectedAIProvider) return;
-
-                  onSetSelectedAIProvider({
-                    ...selectedAIProvider,
-                    variables: {
-                      ...selectedAIProvider.variables,
-                      [apiKeyVar.key]: (e.target as HTMLInputElement).value,
-                    },
-                  });
+                  void persistApiKey(
+                    typeof value === "string" ? value : value.target.value
+                  );
                 }}
                 disabled={false}
                 className="flex-1 h-11 border-1 border-input/50 focus:border-primary/50 transition-colors"
               />
-              {isApiKeyEmpty() ? (
+              {apiKey.trim() ? (
                 <Button
                   onClick={() => {
-                    const apiKeyVar = findKeyAndValue("api_key");
-                    if (!apiKeyVar || !selectedAIProvider || isApiKeyEmpty())
-                      return;
-
-                    onSetSelectedAIProvider({
-                      ...selectedAIProvider,
-                      variables: {
-                        ...selectedAIProvider.variables,
-                        [apiKeyVar.key]: getApiKeyValue(),
-                      },
-                    });
-                  }}
-                  disabled={isApiKeyEmpty()}
-                  size="icon"
-                  className="shrink-0 h-11 w-11"
-                  title="Submit API Key"
-                >
-                  <KeyIcon className="h-4 w-4" />
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => {
-                    const apiKeyVar = findKeyAndValue("api_key");
-                    if (!apiKeyVar || !selectedAIProvider) return;
-
-                    onSetSelectedAIProvider({
-                      ...selectedAIProvider,
-                      variables: {
-                        ...selectedAIProvider.variables,
-                        [apiKeyVar.key]: "",
-                      },
-                    });
+                    void persistApiKey("");
                   }}
                   size="icon"
                   variant="destructive"
@@ -231,8 +209,11 @@ export const Providers = ({
                 >
                   <TrashIcon className="h-4 w-4" />
                 </Button>
-              )}
+              ) : null}
             </div>
+            <p className="text-[10px] text-muted-foreground">
+              Ключ хранится в защищённом хранилище ОС, а не в localStorage.
+            </p>
           </div>
         </div>
       ) : null}
@@ -366,12 +347,24 @@ export const Providers = ({
               const url = json?.url;
               if (!url) throw new Error("Invalid provider URL");
 
-              // Resolve variables from the selected provider config.
+              // Resolve variables from the selected provider config. Ключ в
+              // настройках не хранится — подставляем его из защищённого
+              // хранилища, иначе тест ушёл бы без авторизации.
               const vars: Record<string, string> = {
                 ...(selectedAIProvider?.variables ?? {}),
                 TEXT: "Привет! Это тестовый запрос. Ответь одним коротким предложением.",
                 SYSTEM_PROMPT: "Ты — ассистент. Отвечай кратко.",
               };
+              const keyVar = variables?.find((v) => v?.key === "api_key");
+              if (keyVar?.key) {
+                const storedKey = await getSecret(
+                  secretKey.aiProvider(providerId)
+                );
+                if (storedKey) {
+                  vars[keyVar.key] = storedKey;
+                  vars.API_KEY = storedKey;
+                }
+              }
               const modelVar = Object.keys(vars).find(
                 (k) => k.toLowerCase() === "model"
               );

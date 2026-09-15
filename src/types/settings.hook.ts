@@ -30,4 +30,6 @@ export interface UseSettingsReturn {
   variables: { key: string; value: string }[];
   sttVariables: { key: string; value: string }[];
   hasActiveLicense: boolean;
+  /** Режим выделения области относится к Pro: проверяется через реестр. */
+  selectionModeAllowed: boolean;
 }

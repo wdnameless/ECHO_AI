@@ -1,22 +1,34 @@
 schema: spec-driven
 created: 2026-09-14
 title: "Echo AI 1.0.0 — security hardening, freemium, rebrand"
+status: implemented
+verified: 2026-09-15
 slices:
   - id: s1-csp
     title: "Закрытие XSS-цепочки в WebView"
-    status: in-spec
+    status: implemented
   - id: s2-http-scope
     title: "Контроль исходящих запросов и защита ключей"
-    status: in-spec
+    status: implemented
+    deferred:
+      - "T2.4 — сужение http:default невозможно без форка плагина (см. design.md)"
   - id: s3-entitlement
     title: "Честное состояние лицензии и гейты сборки"
-    status: in-spec
+    status: implemented
   - id: s4-secrets
     title: "Перенос секретов в защищённое хранилище ОС"
-    status: in-spec
+    status: implemented
   - id: s5-rebrand
     title: "Ребрендинг в Echo AI"
-    status: in-spec
+    status: implemented
+    unmet:
+      - "R25 — доставка обновления (репозиторий приватный, манифест 404)"
   - id: s6-freemium
     title: "Freemium: разделение Free и Pro"
-    status: in-spec
+    status: implemented
+notes: >
+  Код всех шести слайсов влит, `npm test` (268) / `cargo test` (10) / `tsc` зелёные.
+  Пост-аудит 2026-09-15 нашёл закрытые фиктивно требования (R03, R09, R11, R13, R20)
+  и регрессию ребрендинга в контракте ошибки STT — исправлено, см. раздел
+  «Пост-аудит» в manifest.md. Изменение не архивировано: ждёт blind-аудит @oracle.
+  R25 остаётся unmet (внешнее решение о приватности репозитория).

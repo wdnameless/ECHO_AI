@@ -12,7 +12,7 @@ import {
   Textarea,
   Badge,
 } from "@/components";
-import { fetchAIResponse, shouldUsePluelyAPI, transcribeWithFallback } from "@/lib";
+import { fetchAIResponse, isSttErrorMessage, shouldUsePluelyAPI, transcribeWithFallback } from "@/lib";
 import { useMicCapture } from "@/hooks/useMicCapture";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -216,7 +216,7 @@ const MockInterview = () => {
           selectedProvider: selectedSttProvider,
           audio,
         });
-        if (text && !text.toLowerCase().startsWith("pluely stt error")) {
+        if (text && !isSttErrorMessage(text)) {
           // Ignore pure fillers/backchannels so "угу"/"мгм" don't pollute the answer.
           const { isFillerOrBackchannel } = await import("@/lib/speech-filter");
           if (isFillerOrBackchannel(text)) {

@@ -26,6 +26,10 @@ export const STORAGE_KEYS = {
   JOB_PROFILES: "job_profiles",
   ACTIVE_JOB_PROFILE_ID: "active_job_profile_id",
   TRUSTED_HOSTS: "trusted_hosts",
+  WEB_SEARCH_SETTINGS: "web_search_settings",
+  // Метка «ключи веб-поиска перенесены в защищённое хранилище»: пока её нет,
+  // диспетчер поиска разово подтягивает ключ из старых настроек.
+  WEB_SEARCH_KEYS_MIGRATED: "web_search_keys_migrated",
 } as const;
 
 // Max number of files that can be attached to a message

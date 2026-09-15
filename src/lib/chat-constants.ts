@@ -31,7 +31,7 @@ export const CONVERSATION_SAVE_DEBOUNCE_MS = 500;
 /**
  * CHUNK_POLL_INTERVAL_MS
  *
- * How frequently to check for new streaming chunks from Pluely API.
+ * How frequently to check for new streaming chunks from Echo AI API.
  *
  * 16ms (~60fps) provides smooth live streaming without excessive CPU usage.
  * Lower = more responsive but higher CPU usage

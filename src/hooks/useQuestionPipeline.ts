@@ -89,7 +89,7 @@ export function useQuestionPipeline({
 
       if (result.kind === "discarded") {
         console.log(
-          `[Pluely] Question fragment discarded (${result.reason}): "${transcription}"`
+          `[Echo AI] Question fragment discarded (${result.reason}): "${transcription}"`
         );
         return;
       }

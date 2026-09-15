@@ -205,7 +205,7 @@ async function buildEnhancedSystemPrompt(
   return prompts.join(" ");
 }
 
-// Pluely AI streaming function
+// Echo AI AI streaming function
 async function* fetchPluelyAIResponse(params: {
   systemPrompt?: string;
   userMessage: string;
@@ -315,7 +315,7 @@ async function* fetchPluelyAIResponse(params: {
   }
 }
 
-// Core streaming implementation (Pluely API or configured provider).
+// Core streaming implementation (Echo AI API or configured provider).
 // Extracted so the parallel-search race can restart it with an enriched
 // system prompt without duplicating the request-building logic.
 async function* streamAIResponse(params: {
@@ -346,7 +346,7 @@ async function* streamAIResponse(params: {
       return;
     }
 
-    // Check if we should use Pluely API instead
+    // Check if we should use Echo AI API instead
     const usePluelyAPI = await shouldUsePluelyAPI();
     if (usePluelyAPI) {
       yield* fetchPluelyAIResponse({

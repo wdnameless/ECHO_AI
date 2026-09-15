@@ -15,7 +15,7 @@ export const ScreenshotConfigs = ({
   handleScreenshotModeChange,
   handleScreenshotPromptChange,
   handleScreenshotEnabledChange,
-  hasActiveLicense,
+  selectionModeAllowed,
 }: UseSettingsReturn) => {
   return (
     <div id="screenshot" className="space-y-3">
@@ -53,13 +53,13 @@ export const ScreenshotConfigs = ({
               </div>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="selection" disabled={!hasActiveLicense}>
+              <SelectItem value="selection" disabled={!selectionModeAllowed}>
                 <div className="flex items-center gap-2">
                   <MousePointer2Icon className="size-4" />
                   <div className="font-medium">Selection Mode</div>
-                  {!hasActiveLicense && (
+                  {!selectionModeAllowed && (
                     <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded">
-                      You need an active license to use Selection Mode.
+                      Selection Mode входит в тариф Pro.
                     </span>
                   )}
                 </div>

@@ -8,7 +8,7 @@ export const StealthToggle = () => {
     <div className="flex flex-row items-center justify-between">
       <Header
         title="Stealth Mode (Скрытность от скриншотов)"
-        description="Скрывает окно приложения от захвата экрана и сторонних скриншотов (SetWindowDisplayAffinity). Выключите, если хотите делать скриншоты самого окна Pluely."
+        description="Скрывает окно приложения от захвата экрана и сторонних скриншотов (SetWindowDisplayAffinity). Выключите, если хотите делать скриншоты самого окна Echo AI."
         isMainTitle
       />
       <Switch

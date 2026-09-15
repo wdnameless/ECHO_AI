@@ -15,13 +15,44 @@ import { getResponseSettings } from "@/lib";
 
 // Cache parsed curl configs: curl2Json is pure, so parsing the same provider
 // curl on every request is wasted CPU on the hot path.
-const curlParseCache = new Map<string, any>();
+const curlParseCache = new Map<string, ParsedSttCurl>();
 const CURL_PARSE_CACHE_MAX = 20;
 
-function parseCurlCached(curl: string): any {
+/**
+ * Форма разобранного curl, которую реально использует STT-конвейер.
+ *
+ * Тип библиотеки (`ResultJSON`) не описывает `form` и объявляет `data` как
+ * `any`, поэтому фиксируем нужный срез явно — иначе каждое обращение к
+ * `curlJson.form` требовало бы приведения на месте использования.
+ */
+interface ParsedSttCurl {
+  url?: string;
+  header?: Record<string, unknown>;
+  form?: Record<string, unknown> | string[];
+  params?: Record<string, string>;
+  data?: Record<string, unknown>;
+  method?: string;
+}
+
+/**
+ * Префикс ошибок STT. Это контракт между производителем строки (`fetchSTT`)
+ * и потребителями, которые отличают ошибку от расшифровки. Раньше он был
+ * продублирован литералом в трёх файлах, и переименование продукта разошлось:
+ * проверки остались на старом тексте и ошибки попадали в ленту как реплики.
+ */
+export const STT_ERROR_PREFIX = "Echo AI STT Error";
+
+/** Отличает сообщение об ошибке STT от реальной расшифровки. */
+export function isSttErrorMessage(text: string | null | undefined): boolean {
+  return !!text && text.trim().toLowerCase().startsWith(STT_ERROR_PREFIX.toLowerCase());
+}
+
+function parseCurlCached(curl: string): ParsedSttCurl {
   const cached = curlParseCache.get(curl);
   if (cached !== undefined) return cached;
-  const parsed = curl2Json(curl);
+  // Проверенное приведение: разборщик принимает только строку curl, а форму
+  // результата мы описываем сами (см. ParsedSttCurl).
+  const parsed = curl2Json(curl) as unknown as ParsedSttCurl;
   if (curlParseCache.size >= CURL_PARSE_CACHE_MAX) {
     const oldest = curlParseCache.keys().next().value;
     if (oldest !== undefined) curlParseCache.delete(oldest);
@@ -30,7 +61,7 @@ function parseCurlCached(curl: string): any {
   return parsed;
 }
 
-// Pluely STT function
+// Echo AI STT function
 async function fetchPluelySTT(audio: File | Blob): Promise<string> {
   try {
     // Convert audio to base64
@@ -52,7 +83,7 @@ async function fetchPluelySTT(audio: File | Blob): Promise<string> {
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    return `Echo AI STT Error: ${errorMessage}`;
+    return `${STT_ERROR_PREFIX}: ${errorMessage}`;
   }
 }
 
@@ -78,7 +109,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
   try {
     const { provider, selectedProvider, audio } = params;
 
-    // Check if we should use Pluely API instead
+    // Check if we should use Echo AI API instead
     const usePluelyAPI = await shouldUsePluelyAPI();
     if (usePluelyAPI) {
       return await fetchPluelySTT(audio);
@@ -88,7 +119,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     if (!selectedProvider) throw new Error("Selected provider not provided");
     if (!audio) throw new Error("Audio file is required");
 
-    let curlJson: any;
+    let curlJson: ParsedSttCurl;
     try {
       curlJson = parseCurlCached(provider.curl);
     } catch (error) {
@@ -125,7 +156,8 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     // Prepare request
     let url = deepVariableReplacer(curlJson.url || "", allVariables);
     const headers = deepVariableReplacer(curlJson.header || {}, allVariables);
-    const formData = deepVariableReplacer(curlJson.form || {}, allVariables);
+    const curlForm = curlJson.form;
+    const formData = deepVariableReplacer(curlForm || {}, allVariables);
 
     // Whisper auto-detects language; only pass it when the user set it explicitly.
     // curl2Json parses -F flags into an array of "key=value" strings, so we must

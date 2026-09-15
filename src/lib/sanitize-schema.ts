@@ -1,5 +1,4 @@
-import type { Root, Element, Parent } from "hast";
-import { visit, SKIP } from "unist-util-visit";
+import type { Root, Element, ElementContent } from "hast";
 import type { Plugin } from "unified";
 
 /**
@@ -124,46 +123,58 @@ function scrubProperties(node: Element): void {
   }
 }
 
-/** Приводит тип свойства из hast (string | number | boolean | array). */
-export const sanitizeSchema: Plugin<[], Root> = () => (tree: Root) => {
-  visit(tree, "element", (node: Element, index, parent: Parent | undefined) => {
-    const tag = node.tagName.toLowerCase();
+/**
+ * Рекурсивно очищает детей узла и выбрасывает всё, что не прошло политику.
+ *
+ * Тег вне allowlist не удаляется вместе с содержимым: текст ответа модели
+ * должен остаться видимым, поэтому «обёртка» снимается, а её дети
+ * поднимаются на уровень выше — но уже проверенные. Именно на этом основан
+ * второй слой: без рекурсивного прохода `<details><img onerror=…>` или
+ * `<svg><foreignObject><img onload=…>` донесли бы живой обработчик до DOM.
+ */
+function sanitizeChildren(parent: Root | Element): void {
+  const kept: ElementContent[] = [];
 
-    if (FORBIDDEN_TAGS[tag] === true) {
-      if (parent && typeof index === "number") {
-        parent.children.splice(index, 1);
-        return [SKIP, index];
-      }
-      return SKIP;
+  for (const child of parent.children as ElementContent[]) {
+    if (child.type !== "element") {
+      kept.push(child);
+      continue;
     }
+
+    const element = child as Element;
+    const tag = element.tagName.toLowerCase();
+
+    // Запрещённый тег вырезается вместе со всем поддеревом.
+    if (FORBIDDEN_TAGS[tag] === true) continue;
 
     // GFM task lists требуют <input type="checkbox" disabled>. Разрешаем
     // исключительно эту форму: интерактивные поля ввода остаются недоступны.
     if (tag === "input") {
-      const props = node.properties ?? {};
-      const isCheckbox =
-        props.type === "checkbox" && props.disabled !== undefined;
-      if (!isCheckbox) {
-        if (parent && typeof index === "number") {
-          parent.children.splice(index, 1);
-          return [SKIP, index];
-        }
-        return SKIP;
-      }
-      scrubProperties(node);
-      return undefined;
+      const props = element.properties ?? {};
+      if (props.type !== "checkbox" || props.disabled === undefined) continue;
+      scrubProperties(element);
+      kept.push(element);
+      continue;
     }
 
-    // Тег вне allowlist: снимаем сам тег, но сохраняем текстовое содержимое,
-    // чтобы пользователь видел ответ модели, а не пустоту.
+    // Обёртка вне allowlist: тег снимаем, детей поднимаем наверх.
     if (ALLOWED_TAGS[tag] !== true) {
-      scrubProperties(node);
-      return SKIP;
+      sanitizeChildren(element);
+      kept.push(...(element.children as ElementContent[]));
+      continue;
     }
 
-    scrubProperties(node);
-    return undefined;
-  });
+    scrubProperties(element);
+    sanitizeChildren(element);
+    kept.push(element);
+  }
+
+  parent.children = kept as typeof parent.children;
+}
+
+/** Приводит тип свойства из hast (string | number | boolean | array). */
+export const sanitizeSchema: Plugin<[], Root> = () => (tree: Root) => {
+  sanitizeChildren(tree);
 };
 
 export { FORBIDDEN_TAGS, ALLOWED_TAGS, isSafeUrl };

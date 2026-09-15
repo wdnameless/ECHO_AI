@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { safeLocalStorage, shouldUsePluelyAPI } from "@/lib";
 import { buildInitialPrompt } from "@/lib/vocab";
-import { transcribeWithFallback } from "@/lib/functions";
+import { isSttErrorMessage, transcribeWithFallback } from "@/lib/functions";
 import type { TYPE_PROVIDER } from "@/types";
 import { micStateStore } from "@/stores/mic-state";
 
@@ -305,7 +305,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
               priority: "low",
               prompt,
             });
-            if (text && !text.toLowerCase().startsWith("pluely stt error")) {
+            if (text && !isSttErrorMessage(text)) {
               const trimmed = text.trim();
               latestPartialThemRef.current.text = trimmed;
               latestPartialThemRef.current.timestamp = Date.now();

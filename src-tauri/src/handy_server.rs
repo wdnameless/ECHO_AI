@@ -341,7 +341,7 @@ fn spawn_pluely_asr() -> bool {
     match spawn {
         Ok(child) => {
             eprintln!(
-                "[tauri] Pluely ASR native GPU server started (pid {})",
+                "[tauri] Echo AI ASR native GPU server started (pid {})",
                 child.id()
             );
             assign_job_object(&child);

@@ -33,7 +33,7 @@ export const AuthorBanner = () => {
           size="sm"
           variant="outline"
           className="h-8 text-xs gap-1.5"
-          onClick={() => window.open("https://github.com/wdnameless/pluely", "_blank")}
+          onClick={() => window.open("https://github.com/wdnameless/ECHO_AI", "_blank")}
         >
           <GithubIcon className="w-3.5 h-3.5" />
           <span>GitHub Repo</span>

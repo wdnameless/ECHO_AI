@@ -1,8 +1,9 @@
 import { Button, Header, Input, Selection, TextInput } from "@/components";
 import { UseSettingsReturn } from "@/types";
 import curl2Json, { ResultJSON } from "@bany/curl-to-json";
-import { KeyIcon, TrashIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { TrashIcon } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { getSecret, saveSecret, removeSecret, secretKey } from "@/lib/storage/secret-store";
 
 export const Providers = ({
   allSttProviders,
@@ -12,6 +13,41 @@ export const Providers = ({
 }: UseSettingsReturn) => {
   const [localSelectedProvider, setLocalSelectedProvider] =
     useState<ResultJSON | null>(null);
+
+  const sttProviderId = selectedSttProvider?.provider || "";
+  const apiKeyVar = sttVariables?.find((v) => v?.key === "api_key");
+
+  /** Ключ живёт в защищённом хранилище, а не в настройках провайдера. */
+  const [apiKey, setApiKey] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (!sttProviderId || !apiKeyVar) {
+        setApiKey("");
+        return;
+      }
+      const stored = await getSecret(secretKey.sttProvider(sttProviderId));
+      if (!cancelled) setApiKey(stored ?? "");
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sttProviderId, apiKeyVar]);
+
+  const persistApiKey = useCallback(
+    async (value: string) => {
+      if (!sttProviderId) return;
+      setApiKey(value);
+      const trimmed = value.trim();
+      if (trimmed) {
+        await saveSecret(secretKey.sttProvider(sttProviderId), trimmed);
+      } else {
+        await removeSecret(secretKey.sttProvider(sttProviderId));
+      }
+    },
+    [sttProviderId]
+  );
 
   useEffect(() => {
     if (selectedSttProvider?.provider) {
@@ -27,16 +63,6 @@ export const Providers = ({
 
   const findKeyAndValue = (key: string) => {
     return sttVariables?.find((v) => v?.key === key);
-  };
-
-  const getApiKeyValue = () => {
-    const apiKeyVar = findKeyAndValue("api_key");
-    if (!apiKeyVar || !selectedSttProvider?.variables) return "";
-    return selectedSttProvider?.variables?.[apiKeyVar.key] || "";
-  };
-
-  const isApiKeyEmpty = () => {
-    return !getApiKeyValue().trim();
   };
 
   return (
@@ -95,70 +121,19 @@ export const Providers = ({
               <Input
                 type="password"
                 placeholder="**********"
-                value={getApiKeyValue()}
+                value={apiKey}
                 onChange={(value) => {
-                  const apiKeyVar = findKeyAndValue("api_key");
-                  if (!apiKeyVar || !selectedSttProvider) return;
-
-                  onSetSelectedSttProvider({
-                    ...selectedSttProvider,
-                    variables: {
-                      ...selectedSttProvider.variables,
-                      [apiKeyVar.key]:
-                        typeof value === "string" ? value : value.target.value,
-                    },
-                  });
-                }}
-                onKeyDown={(e) => {
-                  const apiKeyVar = findKeyAndValue("api_key");
-                  if (!apiKeyVar || !selectedSttProvider) return;
-
-                  onSetSelectedSttProvider({
-                    ...selectedSttProvider,
-                    variables: {
-                      ...selectedSttProvider.variables,
-                      [apiKeyVar.key]: (e.target as HTMLInputElement).value,
-                    },
-                  });
+                  void persistApiKey(
+                    typeof value === "string" ? value : value.target.value
+                  );
                 }}
                 disabled={false}
                 className="flex-1 h-11 border-1 border-input/50 focus:border-primary/50 transition-colors"
               />
-              {isApiKeyEmpty() ? (
+              {apiKey.trim() ? (
                 <Button
                   onClick={() => {
-                    const apiKeyVar = findKeyAndValue("api_key");
-                    if (!apiKeyVar || !selectedSttProvider || isApiKeyEmpty())
-                      return;
-
-                    onSetSelectedSttProvider({
-                      ...selectedSttProvider,
-                      variables: {
-                        ...selectedSttProvider.variables,
-                        [apiKeyVar.key]: getApiKeyValue(),
-                      },
-                    });
-                  }}
-                  disabled={isApiKeyEmpty()}
-                  size="icon"
-                  className="shrink-0 h-11 w-11"
-                  title="Submit API Key"
-                >
-                  <KeyIcon className="h-4 w-4" />
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => {
-                    const apiKeyVar = findKeyAndValue("api_key");
-                    if (!apiKeyVar || !selectedSttProvider) return;
-
-                    onSetSelectedSttProvider({
-                      ...selectedSttProvider,
-                      variables: {
-                        ...selectedSttProvider.variables,
-                        [apiKeyVar.key]: "",
-                      },
-                    });
+                    void persistApiKey("");
                   }}
                   size="icon"
                   variant="destructive"
@@ -167,8 +142,11 @@ export const Providers = ({
                 >
                   <TrashIcon className="h-4 w-4" />
                 </Button>
-              )}
+              ) : null}
             </div>
+            <p className="text-[10px] text-muted-foreground">
+              Ключ хранится в защищённом хранилище ОС, а не в localStorage.
+            </p>
           </div>
         </div>
       ) : null}

@@ -309,6 +309,58 @@ pub fn get_registered_shortcuts<R: Runtime>(
     Ok(registered.clone())
 }
 
+/// Разворачивает конфигурацию привязок в список шорткатов для регистрации.
+///
+/// Чистая функция: ни состояния лицензии, ни доступа к окнам. Именно поэтому
+/// тривиально проверяется тестом, что базовая функция (перемещение окна) не
+/// зависит от тарифа — гейт здесь стоял раньше и ломал Free-сборку.
+///
+/// Планировщик возвращает также «намерения» — пары (action_id, key) с
+/// исходным идентификатором из конфигурации, чтобы вызывающая сторона могла
+/// сопоставить результат с тем, что запросил фронтенд.
+fn plan_shortcut_registrations(
+    config: &ShortcutsConfig,
+) -> Result<Vec<(String, String, Shortcut)>, String> {
+    let mut planned = Vec::new();
+
+    for (action_id, binding) in &config.bindings {
+        if !binding.enabled || binding.key.is_empty() {
+            continue;
+        }
+
+        if action_id == "move_window" {
+            let modifiers = binding.key.trim();
+            if modifiers.is_empty() {
+                continue;
+            }
+
+            for arrow in ["up", "down", "left", "right"] {
+                let full_key = format!("{}+{}", modifiers, arrow);
+                let shortcut = full_key.parse::<Shortcut>().map_err(|e| {
+                    eprintln!("Invalid shortcut '{}' for move_window: {}", full_key, e);
+                    format!("Invalid shortcut '{}' for move_window: {}", full_key, e)
+                })?;
+                planned.push((format!("move_window_{}", arrow), full_key, shortcut));
+            }
+            continue;
+        }
+
+        let shortcut = binding.key.parse::<Shortcut>().map_err(|e| {
+            eprintln!(
+                "Invalid shortcut '{}' for action '{}': {}",
+                binding.key, action_id, e
+            );
+            format!(
+                "Invalid shortcut '{}' for action '{}': {}",
+                binding.key, action_id, e
+            )
+        })?;
+        planned.push((action_id.clone(), binding.key.clone(), shortcut));
+    }
+
+    Ok(planned)
+}
+
 /// Tauri command to update shortcuts dynamically
 #[tauri::command]
 pub fn update_shortcuts<R: Runtime>(
@@ -317,64 +369,7 @@ pub fn update_shortcuts<R: Runtime>(
 ) -> Result<(), String> {
     eprintln!("Updating shortcuts with {} bindings", config.bindings.len());
 
-    let mut shortcuts_to_register = Vec::new();
-
-    let has_license = {
-        let license_state = app.state::<LicenseState>();
-        license_state.is_active()
-    };
-
-    for (action_id, binding) in &config.bindings {
-        if binding.enabled && !binding.key.is_empty() {
-            if action_id == "move_window" {
-                if !has_license {
-                    eprintln!("Skipping move_window registration - license inactive");
-                    continue;
-                }
-
-                let modifiers = binding.key.trim();
-                if modifiers.is_empty() {
-                    continue;
-                }
-
-                let arrow_keys = vec!["up", "down", "left", "right"];
-                for arrow in arrow_keys {
-                    let full_key = format!("{}+{}", modifiers, arrow);
-                    match full_key.parse::<Shortcut>() {
-                        Ok(shortcut) => {
-                            let direction_action_id = format!("move_window_{}", arrow);
-                            shortcuts_to_register.push((direction_action_id, full_key, shortcut));
-                        }
-                        Err(e) => {
-                            eprintln!("Invalid shortcut '{}' for move_window: {}", full_key, e);
-                            return Err(format!(
-                                "Invalid shortcut '{}' for move_window: {}",
-                                full_key, e
-                            ));
-                        }
-                    }
-                }
-
-                continue;
-            }
-
-            match binding.key.parse::<Shortcut>() {
-                Ok(shortcut) => {
-                    shortcuts_to_register.push((action_id.clone(), binding.key.clone(), shortcut));
-                }
-                Err(e) => {
-                    eprintln!(
-                        "Invalid shortcut '{}' for action '{}': {}",
-                        binding.key, action_id, e
-                    );
-                    return Err(format!(
-                        "Invalid shortcut '{}' for action '{}': {}",
-                        binding.key, action_id, e
-                    ));
-                }
-            }
-        }
-    }
+    let shortcuts_to_register = plan_shortcut_registrations(&config)?;
 
     // First, stop any ongoing window movement
     stop_all_move_windows(&app);
@@ -678,5 +673,73 @@ mod license_state_tests {
         assert!(state.is_active());
         state.set_active(false);
         assert!(!state.is_active());
+    }
+}
+
+#[cfg(test)]
+mod shortcut_planning_tests {
+    use super::{plan_shortcut_registrations, ShortcutBinding, ShortcutsConfig};
+    use std::collections::HashMap;
+
+    fn binding(key: &str, enabled: bool) -> ShortcutBinding {
+        ShortcutBinding {
+            action: String::new(),
+            key: key.to_string(),
+            enabled,
+        }
+    }
+
+    fn config(entries: Vec<(&str, ShortcutBinding)>) -> ShortcutsConfig {
+        ShortcutsConfig {
+            bindings: entries
+                .into_iter()
+                .map(|(id, b)| (id.to_string(), b))
+                .collect::<HashMap<_, _>>(),
+        }
+    }
+
+    /// Перемещение окна — базовая функция: она обязана попасть в план
+    /// регистрации независимо от тарифа. Регрессия: здесь стоял гейт
+    /// лицензии, и в release-сборке окно не двигалось с клавиатуры.
+    #[test]
+    fn move_window_is_planned_without_any_license() {
+        let planned = plan_shortcut_registrations(&config(vec![(
+            "move_window",
+            binding("ctrl", true),
+        )]))
+        .expect("move_window must be a valid binding");
+
+        let ids: Vec<&str> = planned.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "move_window_up",
+                "move_window_down",
+                "move_window_left",
+                "move_window_right"
+            ],
+            "все четыре направления должны регистрироваться без лицензии"
+        );
+    }
+
+    #[test]
+    fn disabled_bindings_are_left_out() {
+        let planned = plan_shortcut_registrations(&config(vec![
+            ("move_window", binding("ctrl", false)),
+            ("screenshot", binding("ctrl+shift+s", false)),
+        ]))
+        .expect("disabled bindings are not errors");
+
+        assert!(planned.is_empty());
+    }
+
+    #[test]
+    fn an_invalid_key_is_reported_instead_of_silently_skipped() {
+        let err = plan_shortcut_registrations(&config(vec![
+            ("screenshot", binding("not-a-real-key", true)),
+        ]))
+        .expect_err("invalid key must surface an error");
+
+        assert!(err.contains("not-a-real-key"), "got: {err}");
     }
 }

@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { STORAGE_KEYS } from "@/config";
-import { WEB_SEARCH_SETTINGS_KEY } from "@/lib/web-search";
 import { safeLocalStorage } from "./helper";
 
 /**
@@ -162,7 +161,7 @@ async function migrateSelectedProvider(
 }
 
 async function migrateWebSearch(): Promise<number> {
-  const raw = safeLocalStorage.getItem(WEB_SEARCH_SETTINGS_KEY);
+  const raw = safeLocalStorage.getItem(STORAGE_KEYS.WEB_SEARCH_SETTINGS);
   if (!raw) return 0;
 
   let parsed: Record<string, unknown>;
@@ -194,10 +193,15 @@ async function migrateWebSearch(): Promise<number> {
 
   if (changed) {
     safeLocalStorage.setItem(
-      WEB_SEARCH_SETTINGS_KEY,
+      STORAGE_KEYS.WEB_SEARCH_SETTINGS,
       JSON.stringify(cleaned)
     );
   }
+
+  // Ключи поиска больше не живут в localStorage, поэтому помечаем перенос
+  // даже когда переносить было нечего: иначе диспетчер поиска будет заново
+  // сканировать настройки на каждом запросе.
+  safeLocalStorage.setItem(STORAGE_KEYS.WEB_SEARCH_KEYS_MIGRATED, "true");
   return migrated;
 }
 

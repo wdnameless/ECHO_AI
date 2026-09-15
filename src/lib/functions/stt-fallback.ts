@@ -1,4 +1,4 @@
-import { fetchSTT } from "./stt.function";
+import { fetchSTT, isSttErrorMessage } from "./stt.function";
 import { shouldUsePluelyAPI } from "./pluely.api";
 import { TYPE_PROVIDER } from "@/types";
 
@@ -46,7 +46,7 @@ export async function transcribeWithFallback({
   priority = "high",
   prompt,
 }: TranscribeWithFallbackParams): Promise<string> {
-  // If the cloud Pluely API is enabled, use it directly (explicit user choice).
+  // If the cloud Echo AI API is enabled, use it directly (explicit user choice).
   const usePluelyAPI = await shouldUsePluelyAPI();
   if (usePluelyAPI) {
     return fetchSTT({ provider: undefined, selectedProvider, audio, priority, prompt });
@@ -82,7 +82,7 @@ export async function transcribeWithFallback({
 
   if (
     result &&
-    !result.startsWith("Echo AI STT Error") &&
+    !isSttErrorMessage(result) &&
     !/HTTP \d+/.test(result) &&
     !result.startsWith("Network error")
   ) {

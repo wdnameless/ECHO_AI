@@ -17,11 +17,14 @@ dist-ssr
 !.vscode/extensions.json
 .idea
 .DS_Store
-*.suo
+.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# Local tooling caches
+.opencode/
 
 
 # Signing keys (never commit!)

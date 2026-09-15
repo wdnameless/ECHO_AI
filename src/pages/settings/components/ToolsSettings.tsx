@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Header, Button, Label, Input, Switch } from "@/components";
 import {
   GlobeIcon,
@@ -10,11 +10,16 @@ import {
 import {
   getWebSearchSettings,
   saveWebSearchSettings,
+  getWebSearchKey,
+  setWebSearchKey,
   WebSearchSettings,
   performWebSearch,
   SearchProvider,
+  type KeyedSearchProvider,
 } from "@/lib/web-search";
 import { cn } from "@/lib/utils";
+
+const KEYED_PROVIDER_IDS: SearchProvider[] = ["brave", "exa", "tavily"];
 
 export const ToolsSettings = () => {
   const [settings, setSettings] = useState<WebSearchSettings>(() => getWebSearchSettings());
@@ -22,6 +27,24 @@ export const ToolsSettings = () => {
   const [testResults, setTestResults] = useState<{ title: string; url: string; snippet: string }[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [saved, setSaved] = useState(false);
+  // Ключи живут в защищённом хранилище, поэтому подтягиваются асинхронно и
+  // только для показа в поле ввода — в настройках они не сохраняются.
+  const [searchKeys, setSearchKeys] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const loaded: Record<string, string> = {};
+      for (const id of KEYED_PROVIDER_IDS) {
+        const value = await getWebSearchKey(id as KeyedSearchProvider);
+        if (value) loaded[id] = value;
+      }
+      if (!cancelled) setSearchKeys(loaded);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const updateSetting = useCallback(<K extends keyof WebSearchSettings>(key: K, value: WebSearchSettings[K]) => {
     setSettings((prev) => {
@@ -31,6 +54,13 @@ export const ToolsSettings = () => {
       setTimeout(() => setSaved(false), 2000);
       return next;
     });
+  }, []);
+
+  const handleKeyChange = useCallback((id: SearchProvider, value: string) => {
+    setSearchKeys((prev) => ({ ...prev, [id]: value }));
+    void setWebSearchKey(id as KeyedSearchProvider, value);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
   }, []);
 
   const handleTestSearch = useCallback(async () => {
@@ -46,7 +76,7 @@ export const ToolsSettings = () => {
     }
   }, [testQuery]);
 
-  const providers: { id: SearchProvider; name: string; desc: string; requiresKey: boolean; keyField?: keyof WebSearchSettings }[] = [
+  const providers: { id: SearchProvider; name: string; desc: string; requiresKey: boolean }[] = [
     {
       id: "duckduckgo",
       name: "DuckDuckGo (Free / No Key)",
@@ -58,21 +88,18 @@ export const ToolsSettings = () => {
       name: "Brave Search API",
       desc: "Fast, independent web search index with rich snippets",
       requiresKey: true,
-      keyField: "braveApiKey",
     },
     {
       id: "exa",
       name: "Exa.ai Neural Search",
       desc: "Semantic AI web search designed for LLM research agents",
       requiresKey: true,
-      keyField: "exaApiKey",
     },
     {
       id: "tavily",
       name: "Tavily AI Research",
       desc: "Optimized for factual extraction and real-time knowledge retrieval",
       requiresKey: true,
-      keyField: "tavilyApiKey",
     },
   ];
 
@@ -147,8 +174,8 @@ export const ToolsSettings = () => {
                 <Label className="text-xs font-medium">Brave Search API Key</Label>
                 <Input
                   type="password"
-                  value={settings.braveApiKey || ""}
-                  onChange={(e) => updateSetting("braveApiKey", e.target.value)}
+                  value={searchKeys.brave || ""}
+                  onChange={(e) => handleKeyChange("brave", e.target.value)}
                   placeholder="BSA..."
                   className="h-8 text-xs font-mono"
                 />
@@ -160,8 +187,8 @@ export const ToolsSettings = () => {
                 <Label className="text-xs font-medium">Exa.ai API Key</Label>
                 <Input
                   type="password"
-                  value={settings.exaApiKey || ""}
-                  onChange={(e) => updateSetting("exaApiKey", e.target.value)}
+                  value={searchKeys.exa || ""}
+                  onChange={(e) => handleKeyChange("exa", e.target.value)}
                   placeholder="exa_..."
                   className="h-8 text-xs font-mono"
                 />
@@ -173,12 +200,18 @@ export const ToolsSettings = () => {
                 <Label className="text-xs font-medium">Tavily API Key</Label>
                 <Input
                   type="password"
-                  value={settings.tavilyApiKey || ""}
-                  onChange={(e) => updateSetting("tavilyApiKey", e.target.value)}
+                  value={searchKeys.tavily || ""}
+                  onChange={(e) => handleKeyChange("tavily", e.target.value)}
                   placeholder="tvly-..."
                   className="h-8 text-xs font-mono"
                 />
               </div>
+            )}
+
+            {settings.provider !== "duckduckgo" && (
+              <p className="text-[10px] text-muted-foreground">
+                Ключ хранится в защищённом хранилище ОС, а не в localStorage.
+              </p>
             )}
 
             {/* Test Search Area */}

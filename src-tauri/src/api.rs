@@ -141,7 +141,7 @@ pub struct SystemPromptResponse {
     system_prompt: String,
 }
 
-// Pluely Prompts API
+// Echo AI Prompts API
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PluelyPrompt {
     title: String,
@@ -904,7 +904,15 @@ async fn report_api_error(
     let error_url = format!("{}/api/error", app_endpoint.trim_end_matches('/'));
     let client = http_client();
 
-    tracing::debug!("Reporting API error: {:?}", payload);
+    // R11: ключ лицензии уходит на сервер, но не в лог. Payload печатать
+    // целиком нельзя — в нём лежит секрет пользователя.
+    tracing::debug!(
+        "Reporting API error: endpoint={}, model={}, provider={}, instance={}",
+        endpoint,
+        final_model,
+        final_provider,
+        instance_id
+    );
 
     if let Err(e) = client
         .post(&error_url)
@@ -994,7 +1002,7 @@ pub async fn fetch_models(app: AppHandle) -> Result<Vec<Model>, String> {
     Ok(models_response.models)
 }
 
-// Fetch Pluely Prompts API
+// Fetch Echo AI Prompts API
 #[tauri::command]
 pub async fn fetch_prompts() -> Result<PluelyPromptsResponse, String> {
     let app_endpoint = get_app_endpoint()?;

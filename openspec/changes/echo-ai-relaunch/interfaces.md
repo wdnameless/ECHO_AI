@@ -56,7 +56,11 @@ interface TrustHostDialogProps {
 |---|---|
 | `src/lib/trusted-hosts.ts` | S2 |
 | `src/components/TrustHostDialog/` | S2 |
-| `src/lib/functions/ai-response.function.ts` (только проверка хоста) | S2 (конфликт с S4 — согласовать) |
+| `src/lib/functions/ai-response.function.ts` (только проверка хоста) | S2, затем S4 (согласовано, S2 первым) |
+| `src/lib/functions/models.function.ts` | S2 |
+| `src/lib/host-trust-gate.ts` | S2 |
+| `src/lib/storage/secret-store.ts` | S4 |
+| `src/lib/web-search.ts` | S4 |
 | `src-tauri/capabilities/*.json` → `http:default` | S2 |
 | `src-tauri/src/lib.rs` → runtime scope | S2 |
 

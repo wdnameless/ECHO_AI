@@ -54,7 +54,7 @@ export const useMenuItems = () => {
     {
       icon: BugIcon,
       label: "Report a bug",
-      href: "https://github.com/wdnameless/pluely/issues/new",
+      href: "https://github.com/wdnameless/ECHO_AI/issues/new",
     },
     {
       icon: PowerIcon,
@@ -73,7 +73,7 @@ export const useMenuItems = () => {
     {
       title: "Github",
       icon: GithubIcon,
-      link: "https://github.com/wdnameless/pluely",
+      link: "https://github.com/wdnameless/ECHO_AI",
     },
   ];
 

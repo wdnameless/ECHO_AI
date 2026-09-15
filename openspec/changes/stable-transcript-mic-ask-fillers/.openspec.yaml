@@ -1,2 +1,17 @@
 schema: spec-driven
 created: 2026-08-30
+title: "Стабильные субтитры, микрофон без авто-ask, ручной Ask AI, филлеры"
+status: superseded
+superseded_by: fix-v0182-startup-streaming
+branch: fix/stable-transcript-mic-ask-fillers
+implemented_in: v0.1.81
+notes: >
+  Работа выполнена и влита (вершина ветки — ac2d09c, v0.1.81), но сопровождающие
+  артефакты изменения (proposal/tasks/specs) не были написаны: в каталоге лежал
+  только этот файл. Область полностью покрыта описанием в
+  openspec/changes/fix-v0182-startup-streaming/specs/speech-interaction/spec.md
+  (Stable Streaming Transcripts, Microphone AI Isolation, Explicit Manual Ask AI,
+  Russian Filler Lifecycle) — оно помечено выполненным и опирается на тот же код:
+  src/lib/transcript-stabilizer.ts, src/hooks/useQuestionPipeline.ts,
+  src/hooks/useAIStreaming.ts, src/hooks/useSystemAudioCapture.ts.
+  Каталог сохранён как запись о происхождении ветки, а не как активное изменение.

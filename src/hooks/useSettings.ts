@@ -119,5 +119,11 @@ export const useSettings = () => {
     variables,
     sttVariables,
     hasActiveLicense,
+    // Доступность режима выделения определяется реестром возможностей, а не
+    // состоянием лицензии напрямую — иначе правило тарифа размазывается по UI.
+    selectionModeAllowed: canUseFeature("selectionMode", {
+      isDevBuild: isDevBuild(),
+      hasLicense: hasActiveLicense,
+    }),
   };
 };

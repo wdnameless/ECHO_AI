@@ -139,19 +139,6 @@ export const ShortcutManager = () => {
           </p>
         </div>
         <div className="flex gap-2">
-          {/* COMMENTED OUT: Custom shortcut creation */}
-          {/* {hasActiveLicense && (
-            <Button
-              size="sm"
-              variant="default"
-              onClick={() => setIsCreatingNew(!isCreatingNew)}
-              disabled={isApplying}
-              title="Create custom shortcut"
-            >
-              <Plus className="h-4 w-4" />
-              New
-            </Button>
-          )} */}
           <Button
             size="sm"
             variant="outline"

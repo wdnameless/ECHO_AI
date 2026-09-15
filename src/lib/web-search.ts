@@ -1,18 +1,35 @@
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { safeLocalStorage } from "./storage/helper";
+import { getSecret, saveSecret, removeSecret, secretKey } from "./storage/secret-store";
+import { STORAGE_KEYS } from "@/config/constants";
 
-export const WEB_SEARCH_SETTINGS_KEY = "web_search_settings";
+export const WEB_SEARCH_SETTINGS_KEY = STORAGE_KEYS.WEB_SEARCH_SETTINGS;
 
 export type SearchProvider = "duckduckgo" | "brave" | "exa" | "tavily";
 
+/**
+ * Публичные настройки поиска. Ключей здесь нет: они живут в защищённом
+ * хранилище бэкенда (`secret-store`), а не в открытом localStorage.
+ */
 export interface WebSearchSettings {
   enabled: boolean;
   provider: SearchProvider;
-  braveApiKey?: string;
-  exaApiKey?: string;
-  tavilyApiKey?: string;
   maxResults: number;
 }
+
+/** Сервисы поиска, для которых существует слот в защищённом хранилище. */
+export type KeyedSearchProvider = "brave" | "exa" | "tavily";
+
+/**
+ * Legacy-имена полей с ключами в `web_search_settings`. Существовали до
+ * переноса секретов в хранилище; нужны один раз — забрать ключ у пользователя,
+ * который обновляется со старой версии, и стереть поле.
+ */
+const LEGACY_KEY_FIELD: Record<KeyedSearchProvider, string> = {
+  brave: "braveApiKey",
+  exa: "exaApiKey",
+  tavily: "tavilyApiKey",
+};
 
 export const DEFAULT_SEARCH_SETTINGS: WebSearchSettings = {
   enabled: false,
@@ -31,8 +48,92 @@ export function getWebSearchSettings(): WebSearchSettings {
   }
 }
 
+/**
+ * Сохраняет настройки. Ключи в localStorage не попадают по построению —
+ * запись секрета идёт только через {@link setWebSearchKey}.
+ */
 export function saveWebSearchSettings(settings: WebSearchSettings): void {
-  safeLocalStorage.setItem(WEB_SEARCH_SETTINGS_KEY, JSON.stringify(settings));
+  const publicPart: WebSearchSettings = {
+    enabled: settings.enabled,
+    provider: settings.provider,
+    maxResults: settings.maxResults,
+  };
+  safeLocalStorage.setItem(
+    WEB_SEARCH_SETTINGS_KEY,
+    JSON.stringify(publicPart)
+  );
+}
+
+/**
+ * Возвращает ключ поискового сервиса из защищённого хранилища.
+ *
+ * Если ключа там нет, но в localStorage остался ключ старого формата, он
+ * переносится в хранилище и стирается из localStorage: иначе секрет остался
+ * бы читаемым для любого инжектированного скрипта.
+ */
+export async function getWebSearchKey(
+  service: KeyedSearchProvider
+): Promise<string | null> {
+  const stored = await getSecret(secretKey.webSearch(service));
+  if (stored) return stored;
+
+  const raw = safeLocalStorage.getItem(WEB_SEARCH_SETTINGS_KEY);
+  if (!raw) return null;
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+
+  const field = LEGACY_KEY_FIELD[service];
+  const legacy = parsed[field];
+  if (typeof legacy !== "string" || !legacy) return null;
+
+  await saveSecret(secretKey.webSearch(service), legacy);
+  delete parsed[field];
+  safeLocalStorage.setItem(WEB_SEARCH_SETTINGS_KEY, JSON.stringify(parsed));
+  return legacy;
+}
+
+/**
+ * Записывает ключ поискового сервиса в защищённое хранилище и гарантирует,
+ * что его копии нет в localStorage.
+ */
+export async function setWebSearchKey(
+  service: KeyedSearchProvider,
+  value: string
+): Promise<void> {
+  const trimmed = value.trim();
+  if (trimmed) {
+    await saveSecret(secretKey.webSearch(service), trimmed);
+  } else {
+    await removeSecret(secretKey.webSearch(service));
+  }
+  clearLegacyKeyField(service);
+}
+
+/** Стирает одно legacy-поле ключа из localStorage. */
+function clearLegacyKeyField(service: KeyedSearchProvider): void {
+  const raw = safeLocalStorage.getItem(WEB_SEARCH_SETTINGS_KEY);
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const field = LEGACY_KEY_FIELD[service];
+    if (!(field in parsed)) return;
+    delete parsed[field];
+    safeLocalStorage.setItem(WEB_SEARCH_SETTINGS_KEY, JSON.stringify(parsed));
+  } catch {
+    /* повреждённые настройки перезапишутся при следующем сохранении */
+  }
+}
+
+/** Стирает все legacy-поля ключей из localStorage. */
+export function stripLegacyWebSearchKeys(): void {
+  for (const service of Object.keys(LEGACY_KEY_FIELD) as KeyedSearchProvider[]) {
+    clearLegacyKeyField(service);
+  }
 }
 
 export interface SearchResultItem {
@@ -196,7 +297,11 @@ async function searchTavily(query: string, apiKey: string, maxResults: number = 
 }
 
 /**
- * Main Web Search & Research Dispatcher
+ * Основной диспетчер поиска.
+ *
+ * Ключ берётся из защищённого хранилища, а не из настроек. Пока метка о
+ * переносе не выставлена, выполняется разовая зачистка legacy-полей в
+ * localStorage — на случай, если пользователь до этого не открывал настройки.
  */
 export async function performWebSearch(query: string): Promise<SearchResultItem[]> {
   const settings = getWebSearchSettings();
@@ -204,24 +309,28 @@ export async function performWebSearch(query: string): Promise<SearchResultItem[
 
   const count = settings.maxResults || 3;
 
-  switch (settings.provider) {
+  if (settings.provider === "duckduckgo") {
+    return searchDuckDuckGo(query, count);
+  }
+
+  if (safeLocalStorage.getItem(STORAGE_KEYS.WEB_SEARCH_KEYS_MIGRATED) !== "true") {
+    stripLegacyWebSearchKeys();
+    safeLocalStorage.setItem(STORAGE_KEYS.WEB_SEARCH_KEYS_MIGRATED, "true");
+  }
+
+  const service = settings.provider as KeyedSearchProvider;
+  const apiKey = await getWebSearchKey(service);
+  if (!apiKey) {
+    // Ключ не задан: бесплатный поиск остаётся рабочим дефолтом.
+    return searchDuckDuckGo(query, count);
+  }
+
+  switch (service) {
     case "brave":
-      if (settings.braveApiKey) {
-        return searchBrave(query, settings.braveApiKey, count);
-      }
-      return searchDuckDuckGo(query, count);
+      return searchBrave(query, apiKey, count);
     case "exa":
-      if (settings.exaApiKey) {
-        return searchExa(query, settings.exaApiKey, count);
-      }
-      return searchDuckDuckGo(query, count);
+      return searchExa(query, apiKey, count);
     case "tavily":
-      if (settings.tavilyApiKey) {
-        return searchTavily(query, settings.tavilyApiKey, count);
-      }
-      return searchDuckDuckGo(query, count);
-    case "duckduckgo":
-    default:
-      return searchDuckDuckGo(query, count);
+      return searchTavily(query, apiKey, count);
   }
 }

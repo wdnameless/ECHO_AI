@@ -59,7 +59,7 @@ export const STTProviders = (settings: UseSettingsReturn) => {
         <p className="text-xs text-muted-foreground">
           {handy.online
             ? "Local Nemotron 3.5 ASR Streaming на Vulkan GPU (RTX 3060). Распознавание ~40x real-time, живые субтитры."
-            : "Сервер не запущен — распознавание недоступно. Перезапустите Pluely, сервер стартует автоматически."}
+            : "Сервер не запущен — распознавание недоступно. Перезапустите Echo AI, сервер стартует автоматически."}
         </p>
         {handy.online && handyModelShort && (
           <div className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-2 py-1 font-mono">

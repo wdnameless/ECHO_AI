@@ -133,4 +133,32 @@ describe("sanitizeSchema", () => {
     const html = render(`- [x] done`);
     expect(html).toMatch(/<input[^>]*type="checkbox"[^>]*disabled/);
   });
+
+  describe("allowlist wrappers cannot hide handlers", () => {
+    it("strips handlers inside a tag that is not allowed", () => {
+      const html = render(`<details open><img src="x" onerror="alert(1)"></details>`);
+      expect(html).not.toContain("onerror");
+      expect(collectAttributes(html).filter((n) => n.startsWith("on"))).toEqual([]);
+    });
+
+    it("strips handlers inside a disallowed tag nested in an allowed one", () => {
+      const html = render(
+        `<svg><foreignObject><img src="x" onload="alert(2)"></foreignObject></svg>`
+      );
+      expect(html).not.toContain("onload");
+      expect(collectAttributes(html).filter((n) => n.startsWith("on"))).toEqual([]);
+    });
+
+    it("strips handlers several wrappers deep", () => {
+      const html = render(
+        `<details><summary><video><track onloadstart="alert(3)"></video></summary></details>`
+      );
+      expect(collectAttributes(html).filter((n) => n.startsWith("on"))).toEqual([]);
+    });
+
+    it("keeps the text of a stripped wrapper instead of dropping it", () => {
+      const html = render(`<details><summary>Ответ модели</summary></details>`);
+      expect(html).toContain("Ответ модели");
+    });
+  });
 });

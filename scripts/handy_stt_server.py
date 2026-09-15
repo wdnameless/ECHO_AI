@@ -1,7 +1,7 @@
 """
 Handy Local STT Server
 OpenAI-compatible transcription endpoint at http://127.0.0.1:8000
-that Pluely's "Handy Local STT (Local Whisper)" provider uses.
+that Echo AI's "Handy Local STT (Local Whisper)" provider uses.
 
 Engine priority (all local, no cloud):
   0. Nemotron 3.5 ASR 0.6B (sherpa-onnx, CUDA) - the model the user has
