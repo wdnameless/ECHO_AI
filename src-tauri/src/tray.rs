@@ -5,10 +5,10 @@ use tauri::{
 };
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let toggle_main = MenuItem::with_id(app, "toggle_main", "Показать / Скрыть Pluely", true, None::<&str>)?;
+    let toggle_main = MenuItem::with_id(app, "toggle_main", "Показать / Скрыть Echo AI", true, None::<&str>)?;
     let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Дашборд / Чаты", true, None::<&str>)?;
     let open_settings = MenuItem::with_id(app, "open_settings", "Настройки", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Выход из Pluely", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Выход из Echo AI", true, None::<&str>)?;
 
     let menu = Menu::with_items(
         app,

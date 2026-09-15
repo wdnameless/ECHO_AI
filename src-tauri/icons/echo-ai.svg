@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Echo AI placeholder mark: concentric echo arcs radiating from a core. -->
+  <rect width="512" height="512" rx="112" fill="#0B0F19"/>
+  <g fill="none" stroke-linecap="round">
+    <circle cx="256" cy="256" r="34" fill="#22D3A7" stroke="none"/>
+    <path d="M150 168a126 126 0 0 0 0 176" stroke="#22D3A7" stroke-width="26" opacity="0.95"/>
+    <path d="M362 168a126 126 0 0 1 0 176" stroke="#22D3A7" stroke-width="26" opacity="0.95"/>
+    <path d="M104 122a190 190 0 0 0 0 268" stroke="#3B82F6" stroke-width="22" opacity="0.80"/>
+    <path d="M408 122a190 190 0 0 1 0 268" stroke="#3B82F6" stroke-width="22" opacity="0.80"/>
+    <path d="M58 78a254 254 0 0 0 0 356" stroke="#8B5CF6" stroke-width="18" opacity="0.60"/>
+    <path d="M454 78a254 254 0 0 1 0 356" stroke="#8B5CF6" stroke-width="18" opacity="0.60"/>
+  </g>
+</svg>

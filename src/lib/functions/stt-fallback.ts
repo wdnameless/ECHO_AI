@@ -82,7 +82,7 @@ export async function transcribeWithFallback({
 
   if (
     result &&
-    !result.startsWith("Pluely STT Error") &&
+    !result.startsWith("Echo AI STT Error") &&
     !/HTTP \d+/.test(result) &&
     !result.startsWith("Network error")
   ) {
@@ -91,7 +91,7 @@ export async function transcribeWithFallback({
 
   // Local server is offline or failed - clear error, NO cloud fallback.
   throw new Error(
-    "Local STT server is not running. Starting it automatically or restart Pluely. " +
+    "Local STT server is not running. Starting it automatically or restart Echo AI. " +
       "Cloud STT has been fully disabled - everything runs on local models."
   );
 }

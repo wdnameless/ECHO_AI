@@ -1,8 +1,8 @@
 {
   "name": "pluely",
   "private": false,
-  "version": "0.1.90",
-  "description": "The Open Source Alternative to Cluely - A lightning-fast, privacy-first AI assistant that works seamlessly during meetings, interviews, and conversations without anyone knowing.",
+  "version": "1.0.0",
+  "description": "Echo AI — lightning-fast, privacy-first AI assistant for meetings, interviews and conversations. Echoes what matters, keeps everything else local.",
   "author": {
     "name": "Srikanth Nani",
     "email": "mail@srikanthnani.com",
