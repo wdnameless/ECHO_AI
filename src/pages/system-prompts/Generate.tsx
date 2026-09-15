@@ -3,13 +3,14 @@ import {
   PopoverContent,
   PopoverTrigger,
   Button,
-  GetLicense,
   Textarea,
 } from "@/components";
 import { SparklesIcon } from "lucide-react";
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useApp } from "@/contexts";
+import { canUseFeature, isDevBuild } from "@/lib/entitlements";
+import { UpgradePrompt } from "@/components";
 
 interface GenerateSystemPromptProps {
   onGenerate: (prompt: string, promptName: string) => void;
@@ -100,7 +101,10 @@ export const GenerateSystemPrompt = ({
 
           {error && <p className="text-xs text-destructive">{error}</p>}
 
-          {hasActiveLicense ? (
+          {canUseFeature("promptGeneration", {
+            isDevBuild: isDevBuild(),
+            hasLicense: hasActiveLicense,
+          }) ? (
             <Button
               className="w-full"
               onClick={handleGenerate}
@@ -119,17 +123,7 @@ export const GenerateSystemPrompt = ({
               )}
             </Button>
           ) : (
-            <div className="w-full flex flex-col gap-3">
-              <p className="text-sm font-medium text-muted-foreground">
-                You need an active license to use this feature. Click the button
-                below to get a license.
-              </p>
-              <GetLicense
-                buttonText="Get License"
-                buttonClassName="w-full"
-                setState={setIsOpen}
-              />
-            </div>
+            <UpgradePrompt feature="Генерация промптов" />
           )}
         </div>
       </PopoverContent>

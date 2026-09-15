@@ -1,6 +1,7 @@
 import { Card, Header } from "@/components";
 import { RESPONSE_LENGTHS } from "@/lib";
 import { useApp } from "@/contexts";
+import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import { updateResponseLength } from "@/lib/storage/response-settings.storage";
 import { useState, useEffect } from "react";
 import { getResponseSettings } from "@/lib";
@@ -8,6 +9,10 @@ import { CheckCircle2 } from "lucide-react";
 
 export const ResponseLength = () => {
   const { hasActiveLicense } = useApp();
+  const allowed = canUseFeature("responseLength", {
+    isDevBuild: isDevBuild(),
+    hasLicense: hasActiveLicense,
+  });
   const [selectedLength, setSelectedLength] = useState<string>("auto");
 
   useEffect(() => {
@@ -16,7 +21,7 @@ export const ResponseLength = () => {
   }, []);
 
   const handleLengthChange = (lengthId: string) => {
-    if (!hasActiveLicense) {
+    if (!allowed) {
       return;
     }
     setSelectedLength(lengthId);
@@ -39,7 +44,7 @@ export const ResponseLength = () => {
               selectedLength === length.id
                 ? "border-primary"
                 : "border-border hover:border-primary/50"
-            } ${!hasActiveLicense ? "opacity-50 cursor-not-allowed" : ""}`}
+            } ${!allowed ? "opacity-50 cursor-not-allowed" : ""}`}
             onClick={() => handleLengthChange(length.id)}
           >
             <div className="space-y-1">

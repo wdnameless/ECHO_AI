@@ -6,6 +6,7 @@ import {
   deleteAllConversations,
 } from "@/lib";
 import { STORAGE_KEYS } from "@/config";
+import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 export const useSettings = () => {
   const {
@@ -50,7 +51,13 @@ export const useSettings = () => {
   };
 
   const handleScreenshotEnabledChange = (enabled: boolean) => {
-    if (!enabled && !hasActiveLicense) {
+    if (
+      !enabled &&
+      !canUseFeature("screenshot", {
+        isDevBuild: isDevBuild(),
+        hasLicense: hasActiveLicense,
+      })
+    ) {
       return;
     }
     const newConfig = { ...screenshotConfiguration, enabled };

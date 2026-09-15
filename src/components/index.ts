@@ -12,4 +12,5 @@ export * from "./Empty";
 export * from "./Markdown/copy-button";
 export * from "./TrustHostDialog";
 export * from "./HostTrustProvider";
+export * from "./UpgradePrompt";
 export * from "./Icons";

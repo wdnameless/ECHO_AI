@@ -5,6 +5,7 @@ import { GetLicense, Button, Card, CardContent } from "@/components";
 import { PluelyApiSetup, Usage } from "./components";
 import { PageLayout } from "@/layouts";
 import { useApp } from "@/contexts";
+import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import { GraduationCap, ArrowRight } from "lucide-react";
 
 const Dashboard = () => {
@@ -12,9 +13,13 @@ const Dashboard = () => {
   const navigate = useNavigate();
   const [activity, setActivity] = useState<any>(null);
   const [loadingActivity, setLoadingActivity] = useState(false);
+  const analyticsAllowed = canUseFeature("analytics", {
+    isDevBuild: isDevBuild(),
+    hasLicense: hasActiveLicense,
+  });
 
   const fetchActivity = useCallback(async () => {
-    if (!hasActiveLicense) {
+    if (!analyticsAllowed) {
       setActivity({ data: [], total_tokens_used: 0 });
       return;
     }
@@ -32,15 +37,15 @@ const Dashboard = () => {
     } finally {
       setLoadingActivity(false);
     }
-  }, [hasActiveLicense]);
+  }, [analyticsAllowed]);
 
   useEffect(() => {
-    if (hasActiveLicense) {
+    if (analyticsAllowed) {
       fetchActivity();
     } else {
       setActivity(null);
     }
-  }, [fetchActivity, hasActiveLicense]);
+  }, [fetchActivity, analyticsAllowed]);
 
   const activityData =
     activity && Array.isArray(activity.data) ? activity.data : [];

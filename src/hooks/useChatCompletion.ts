@@ -14,6 +14,7 @@ import {
 } from "@/lib";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 // Types for completion
 interface AttachedFile {
@@ -743,11 +744,16 @@ export const useChatCompletion = (
         screenshotInitiatedByThisContext.current = false;
       } else {
         // Selection Mode: Open overlay to select an area
-        // Only allow if user has active license
-        if (!hasActiveLicense) {
+        if (
+          !canUseFeature("selectionMode", {
+            isDevBuild: isDevBuild(),
+            hasLicense: hasActiveLicense,
+          })
+        ) {
           setState((prev) => ({
             ...prev,
-            error: "Selection mode requires an active license",
+            error:
+              "Режим выделения области входит в тариф Pro. Оплата пока недоступна.",
           }));
           setIsScreenshotLoading(false);
           screenshotInitiatedByThisContext.current = false;
