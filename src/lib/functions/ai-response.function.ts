@@ -305,11 +305,11 @@ async function* fetchPluelyAIResponse(params: {
     }
 
     if (streamError) {
-      yield `Pluely API Error: ${streamError}`;
+      yield `Echo AI API Error: ${streamError}`;
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    yield `Pluely API Error: ${errorMessage}`;
+    yield `Echo AI API Error: ${errorMessage}`;
   }
 }
 

@@ -7,7 +7,7 @@ export const AuthorBanner = () => {
     <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm select-none">
       <div className="space-y-1">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-bold text-foreground">Pluely Fork</span>
+          <span className="text-sm font-bold text-foreground">Echo AI</span>
           <span className="text-[10px] font-medium bg-primary/20 text-primary px-1.5 py-0.5 rounded-full">
             nullform.cv edition
           </span>

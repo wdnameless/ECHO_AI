@@ -1,8 +1,8 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=Pluely
-Comment=The Open Source Alternative to Cluely - Lightning-fast, privacy-first AI assistant for meetings and conversations
+Name=Echo AI
+Comment=Echo AI - lightning-fast, privacy-first assistant for meetings, interviews and conversations
 Exec=pluely
 Icon=pluely
 Terminal=false
