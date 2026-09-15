@@ -10,6 +10,7 @@ import { getAsrBaseUrl } from "@/lib/asr-discovery";
 import { TYPE_PROVIDER } from "@/types";
 import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
+import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
 import { getResponseSettings } from "@/lib";
 
 // Cache parsed curl configs: curl2Json is pure, so parsing the same provider
@@ -258,6 +259,18 @@ export async function fetchSTT(params: STTParams): Promise<string> {
         .catch(() => window.fetch(input, init));
     };
 
+    // S2: не отправляем учётные данные на хост вне реестра доверенных.
+    const outboundHeaders: Record<string, string> = {};
+    for (const [name, value] of Object.entries(
+      finalHeaders as Record<string, unknown>
+    )) {
+      if (typeof value === "string") outboundHeaders[name] = value;
+    }
+    const trust = await resolveOutboundHeaders(url, outboundHeaders);
+    if (!trust.allowed) {
+      throw new Error("STT request cancelled: host is not in the trusted list.");
+    }
+
     // Send request — one automatic retry on transient server errors
     // (502/503/429): the local STT queue or a busy gateway should never
     // lose a speech segment.
@@ -267,7 +280,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
       try {
         response = await fetchFunction(url, {
           method: curlJson.method || "POST",
-          headers: finalHeaders,
+          headers: trust.headers,
           body: curlJson.method === "GET" ? undefined : body,
         });
       } catch (e) {
