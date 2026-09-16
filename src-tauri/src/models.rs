@@ -12,7 +12,7 @@
 //! to ship inside the installer. A download is only accepted once its hash
 //! matches, so a truncated or substituted file can never reach the engine.
 
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -203,18 +203,23 @@ pub fn default_file_of(model: &ModelEntry) -> Option<&ModelFile> {
         .or_else(|| model.files.first())
 }
 
-/// Streams a response body to disk, reporting progress.
+/// Streams a response body to disk, reporting progress and resuming.
 ///
-/// Written to a temporary file and renamed on success so an interrupted
-/// download can never leave a half-file that the engine would try to load.
+/// Writes into `<file>.part` and renames on success, so an interrupted download
+/// can never leave a half-file the engine would try to load. The partial file is
+/// kept between attempts and reused: a 2.5 GB model over a flaky link should not
+/// start from zero because the connection dropped at 90%.
 struct DownloadTarget {
     temp: PathBuf,
     final_path: PathBuf,
     file: std::fs::File,
+    /// Bytes already on disk before this attempt.
+    written: u64,
 }
 
 impl DownloadTarget {
-    fn new(final_path: PathBuf) -> Result<Self, String> {
+    /// Opens the partial file, resuming when it already has content.
+    fn open(final_path: PathBuf) -> Result<Self, String> {
         let dir = final_path
             .parent()
             .ok_or("некорректный путь к модели")?
@@ -223,55 +228,144 @@ impl DownloadTarget {
             .map_err(|e| format!("не удалось создать {}: {e}", dir.display()))?;
 
         let temp = final_path.with_extension("gguf.part");
-        let file = std::fs::File::create(&temp)
+        let existing = std::fs::metadata(&temp).map(|m| m.len()).unwrap_or(0);
+
+        // Append when resuming, truncate when starting over.
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&temp)
             .map_err(|e| format!("не удалось создать {}: {e}", temp.display()))?;
+        if existing > 0 {
+            file.seek(std::io::SeekFrom::End(0))
+                .map_err(|e| format!("ошибка доступа к {temp:?}: {e}"))?;
+        }
 
         Ok(Self {
             temp,
             final_path,
             file,
+            written: existing,
         })
+    }
+
+    /// Restarts from an empty file.
+    ///
+    /// Needed when the server ignores a range request: appending to a partial
+    /// file would otherwise splice two copies of the model together.
+    fn restart(final_path: PathBuf) -> Result<Self, String> {
+        let temp = final_path.with_extension("gguf.part");
+        let _ = std::fs::remove_file(&temp);
+        Self::open(final_path)
     }
 
     fn write(&mut self, chunk: &[u8]) -> Result<(), String> {
         self.file
             .write_all(chunk)
-            .map_err(|e| format!("ошибка записи: {e}"))
+            .map_err(|e| format!("ошибка записи: {e}"))?;
+        self.written += chunk.len() as u64;
+        Ok(())
     }
 
-    /// Flushes, discards the partial file on failure, renames on success.
+    /// Flushes and renames the completed file into place.
     fn finish(mut self) -> Result<PathBuf, String> {
+        self.file.flush().map_err(|e| format!("ошибка записи: {e}"))?;
         self.file
-            .flush()
+            .sync_all()
             .map_err(|e| format!("ошибка записи: {e}"))?;
         drop(self.file);
         std::fs::rename(&self.temp, &self.final_path).map_err(|e| {
-            let _ = std::fs::remove_file(&self.temp);
             format!("не удалось сохранить модель: {e}")
         })?;
         Ok(self.final_path)
     }
 
-    fn discard(&self) {
-        let _ = std::fs::remove_file(&self.temp);
+    /// Keeps the partial file, so the next attempt can resume.
+    fn keep_partial(&self) -> u64 {
+        self.written
     }
 }
 
 /// Progress reported while downloading.
 pub type ProgressFn<'a> = &'a mut dyn FnMut(u64, u64);
 
+/// How many times a failed transfer is retried before giving up.
+const DOWNLOAD_ATTEMPTS: usize = 5;
+
+/// Runs one HTTP attempt, resuming from whatever is already on disk.
+///
+/// Returns the number of bytes now on disk. `Ok(None)` means the server does not
+/// honour range requests, so the caller should restart from scratch.
+fn attempt(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    target: &mut DownloadTarget,
+    total: u64,
+    progress: ProgressFn<'_>,
+) -> Result<u64, String> {
+    let have = target.written;
+    let mut request = client.get(url);
+
+    if have > 0 {
+        request = request.header("Range", format!("bytes={have}-"));
+    }
+
+    let mut response = request
+        .send()
+        .map_err(|e| format!("не удалось начать загрузку: {e}"))?;
+
+    let status = response.status();
+
+    // 416 means the partial file is already the whole thing; treat it as done
+    // and let the caller verify the hash.
+    if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        return Ok(have);
+    }
+
+    if !status.is_success() {
+        return Err(format!("сервер вернул {status}"));
+    }
+
+    // A 200 to a range request means the server ignored it and is resending
+    // everything. Appending would corrupt the file, so start over.
+    let resuming = have > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT;
+    if have > 0 && !resuming {
+        let restart = DownloadTarget::restart(target.final_path.clone())?;
+        *target = restart;
+        progress(0, total);
+    }
+
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        match response.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                target.write(&buffer[..n])?;
+                progress(target.written, total);
+            }
+            Err(e) => {
+                // Keep what arrived: the next attempt resumes from here.
+                return Err(format!("{e}"));
+            }
+        }
+    }
+
+    Ok(target.written)
+}
+
 /// Downloads one catalogue file into the resolved models directory.
 ///
 /// Blocks the calling thread; callers run this on a worker thread so the UI
-/// stays responsive.
+/// stays responsive. Interrupted transfers resume instead of restarting, which
+/// matters for the multi-gigabyte models.
 pub fn download(
     model: &ModelEntry,
     file: &ModelFile,
     progress: ProgressFn<'_>,
 ) -> Result<PathBuf, String> {
-    let target = target_path(file);
-    if target.is_file() {
-        return Ok(target);
+    let target_path = target_path(file);
+    if target_path.is_file() {
+        return Ok(target_path);
     }
 
     let client = reqwest::blocking::Client::builder()
@@ -279,65 +373,74 @@ pub fn download(
         .build()
         .map_err(|e| format!("не удалось создать HTTP-клиент: {e}"))?;
 
-    let mut response = client
-        .get(download_url(model, file))
-        .send()
-        .map_err(|e| format!("не удалось начать загрузку: {e}"))?;
+    let url = download_url(model, file);
+    let total = file.size_bytes;
+    let mut last_error = String::new();
 
-    if !response.status().is_success() {
-        return Err(format!(
-            "сервер вернул {} при загрузке {}",
-            response.status(),
-            file.filename
-        ));
-    }
+    for attempt_index in 0..DOWNLOAD_ATTEMPTS {
+        let mut sink = DownloadTarget::open(target_path.clone())?;
+        let before = sink.written;
 
-    // Prefer the advertised length, but fall back to the catalogued size so the
-    // progress bar is meaningful even when the server omits Content-Length.
-    let total = response
-        .content_length()
-        .filter(|n| *n > 0)
-        .unwrap_or(file.size_bytes);
+        match attempt(&client, &url, &mut sink, total, progress) {
+            Ok(written) => {
+                // Nothing arrived and nothing was there before: the server is
+                // answering but sending no body.
+                if written == 0 {
+                    last_error = "загрузка вернула пустой файл".to_string();
+                    continue;
+                }
 
-    let mut sink = DownloadTarget::new(target)?;
-    let mut buffer = vec![0u8; 1 << 20];
-    let mut written: u64 = 0;
+                // The transfer ran to completion only when the size matches what
+                // the catalogue declared; a short read means the connection
+                // dropped and the next attempt should continue.
+                if written < total {
+                    last_error = format!(
+                        "получено {written} из {total} байт, продолжаю загрузку"
+                    );
+                    continue;
+                }
 
-    loop {
-        match response.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(n) => {
-                sink.write(&buffer[..n])?;
-                written += n as u64;
-                progress(written, total);
+                let saved = sink.finish()?;
+
+                // Hash the result and refuse anything that does not match the
+                // published digest: a corrupted model would otherwise fail deep
+                // inside the engine with an error nobody can interpret.
+                let actual = sha256_file(&saved)?;
+                if actual.eq_ignore_ascii_case(&file.sha256) {
+                    return Ok(saved);
+                }
+
+                // A mismatch means the bytes are wrong, not merely incomplete.
+                // Keeping them would make every retry fail the same way.
+                let _ = std::fs::remove_file(&saved);
+                last_error = format!(
+                    "файл повреждён: ожидался SHA-256 {}, получен {actual}",
+                    file.sha256
+                );
             }
             Err(e) => {
-                sink.discard();
-                return Err(format!("загрузка прервана: {e}"));
+                last_error = e;
+                if sink.keep_partial() == before {
+                    // No progress at all this round; a short pause keeps a broken
+                    // link from being hammered.
+                    std::thread::sleep(std::time::Duration::from_millis(700));
+                }
             }
+        }
+
+        if attempt_index + 1 < DOWNLOAD_ATTEMPTS {
+            eprintln!(
+                "[models] попытка {} не удалась ({}), повторяю",
+                attempt_index + 1,
+                last_error
+            );
         }
     }
 
-    if written == 0 {
-        sink.discard();
-        return Err("загрузка вернула пустой файл".to_string());
-    }
-
-    let saved = sink.finish()?;
-
-    // Hash the result and refuse anything that does not match the published
-    // digest: a corrupted model would otherwise fail deep inside the engine
-    // with an error nobody can interpret.
-    let actual = sha256_file(&saved)?;
-    if !actual.eq_ignore_ascii_case(&file.sha256) {
-        let _ = std::fs::remove_file(&saved);
-        return Err(format!(
-            "файл повреждён: ожидался SHA-256 {}, получен {actual}",
-            file.sha256
-        ));
-    }
-
-    Ok(saved)
+    Err(format!(
+        "не удалось скачать {} после {DOWNLOAD_ATTEMPTS} попыток: {last_error}",
+        file.filename
+    ))
 }
 
 /// SHA-256 of a file, streamed so a 2.5 GB variant does not need that much RAM.

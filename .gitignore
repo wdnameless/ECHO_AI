@@ -50,3 +50,7 @@ logs.zip
 # Runtime leftovers: the sidecar writes its bound port next to its binary.
 src-tauri/resources/asr-port
 asr-port
+
+# Generated architecture reports (tooling output)
+.archmap/
+src/.archmap/
