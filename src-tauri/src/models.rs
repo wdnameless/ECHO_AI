@@ -26,121 +26,102 @@ const MODEL_REPO: &str = "handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf";
 /// `main` keeps a re-download byte-identical to the hashes below.
 const MODEL_REVISION: &str = "8139c4ec14bdc45c361adf8d57c27c28e7478272";
 
-/// A selectable speech-recognition model.
-#[derive(Debug, Clone, Serialize)]
-pub struct ModelVariant {
-    /// Stable identifier used by the UI and stored in settings.
-    pub id: &'static str,
+/// The generated catalogue, embedded at compile time.
+///
+/// Regenerate with `python scripts/gen_catalog.py`. It is produced from the
+/// Hugging Face API — sizes, digests, capabilities and benchmarks all come from
+/// the published repository — so it cannot drift from what is actually
+/// available, and a newly published model appears on the next regeneration.
+const CATALOG_JSON: &str = include_str!("model_catalog.json");
+
+/// Capabilities reported by the model card.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct Capabilities {
+    pub streaming: bool,
+    pub translate: bool,
+    pub lang_detect: bool,
+    pub timestamps: String,
+}
+
+/// One downloadable quantisation of a model.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct ModelFile {
+    pub filename: String,
     /// Quantisation label (`Q5_K_M`, `F16`, …).
-    pub quantisation: &'static str,
-    /// File name inside the repository; also the name on disk.
-    pub file_name: &'static str,
-    /// Expected size in bytes, for the progress bar before the download starts.
+    pub quant: String,
     pub size_bytes: u64,
-    /// SHA-256 of the file contents.
-    pub sha256: &'static str,
-    /// Human-readable summary of the quality/size trade-off.
-    pub note: &'static str,
-    /// Word error rate on LibriSpeech test-clean, when published.
-    pub wer_librispeech: Option<f32>,
-    /// Russian word error rate on FLEURS, when published.
-    pub wer_fleurs_ru: Option<f32>,
-    /// Whether this is the quantisation that used to be bundled.
+    /// SHA-256 of the file contents; the trust anchor for a download.
+    pub sha256: String,
+}
+
+/// A selectable speech-recognition model.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct ModelEntry {
+    pub id: String,
+    /// Hugging Face repository the files come from.
+    pub repo: String,
+    /// Commit the download URLs are pinned to, so a re-download is identical.
+    pub revision: String,
+    /// Model family (`whisper`, `parakeet`, `canary`, …).
+    pub family: String,
+    pub name: String,
+    pub description: String,
+    pub parameters: String,
+    pub language_count: usize,
+    pub languages: Vec<String>,
+    pub capabilities: Capabilities,
+    /// 0-100, derived from the published real-time factor.
+    pub speed_score: Option<i64>,
+    /// 0-100, derived from the published word error rate.
+    pub accuracy_score: Option<i64>,
+    /// Published word error rate, when the card reports one.
+    pub wer: Option<f64>,
+    pub wer_set: Option<String>,
+    pub files: Vec<ModelFile>,
+    /// Quantisation chosen by default for this model.
+    pub default_file: String,
     pub recommended: bool,
 }
 
-/// Everything the engine can be pointed at, smallest first.
-///
-/// Sizes and hashes come from the repository's file listing; the WER figures
-/// are the ones the model card publishes, so the UI can justify the trade-off
-/// instead of ranking by file size alone.
-pub const VARIANTS: &[ModelVariant] = &[
-    ModelVariant {
-        id: "q4_k_m",
-        quantisation: "Q4_K_M",
-        file_name: "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf",
-        size_bytes: 495_831_520,
-        sha256: "41c99fa5fb6f3d35f68e79adc3e755eca2232a8d921178bd647b71194792b8fd",
-        note: "Самый компактный: меньше места, но заметнее ошибок.",
-        wer_librispeech: Some(3.30),
-        wer_fleurs_ru: None,
-        recommended: false,
-    },
-    ModelVariant {
-        id: "q5_k_m",
-        quantisation: "Q5_K_M",
-        file_name: "nemotron-3.5-asr-streaming-0.6b-Q5_K_M.gguf",
-        size_bytes: 559_647_200,
-        sha256: "86429e8c4f7fdcf9b3312269ad1ca6669478ba7805331c4aea7a2e33e9910d65",
-        note: "Близко к Q8 по качеству, чуть меньше места.",
-        wer_librispeech: Some(3.10),
-        wer_fleurs_ru: None,
-        recommended: false,
-    },
-    ModelVariant {
-        id: "q6_k",
-        quantisation: "Q6_K",
-        file_name: "nemotron-3.5-asr-streaming-0.6b-Q6_K.gguf",
-        size_bytes: 621_356_512,
-        sha256: "4ff802c6207c4a7df23242003fd2aa849a1ab02bba6bc80c3db02e7e82606c28",
-        note: "Компромисс между размером и точностью.",
-        wer_librispeech: Some(3.08),
-        wer_fleurs_ru: None,
-        recommended: false,
-    },
-    ModelVariant {
-        id: "q8_0",
-        quantisation: "Q8_0",
-        file_name: "nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf",
-        size_bytes: 751_094_240,
-        sha256: "b94545b313b3223fda7b2857a52681da813935c2127643d1e9ff0c23d988089c",
-        note: "Та же модель, что раньше шла внутри установщика.",
-        wer_librispeech: Some(3.05),
-        wer_fleurs_ru: Some(12.61),
-        recommended: true,
-    },
-    ModelVariant {
-        id: "f16",
-        quantisation: "F16",
-        file_name: "nemotron-3.5-asr-streaming-0.6b-F16.gguf",
-        size_bytes: 1_277_750_240,
-        sha256: "f21a0cea64d232981def7f8f2b7ab322459703a2e89359962c042c57159755b1",
-        note: "Без потерь по точности, заметно больше места.",
-        wer_librispeech: Some(3.04),
-        wer_fleurs_ru: None,
-        recommended: false,
-    },
-    ModelVariant {
-        id: "f32",
-        quantisation: "F32",
-        file_name: "nemotron-3.5-asr-streaming-0.6b-F32.gguf",
-        size_bytes: 2_552_277_984,
-        sha256: "fbbc82e8e1084301a670fbc4d79c69c0c8980da506352fd83e74a182f38f5b78",
-        note: "Полная точность. Требует много места и памяти.",
-        wer_librispeech: Some(3.04),
-        wer_fleurs_ru: None,
-        recommended: false,
-    },
-];
-
-/// Finds a variant by id.
-pub fn variant(id: &str) -> Option<&'static ModelVariant> {
-    VARIANTS.iter().find(|v| v.id == id)
+/// The catalogue file as a whole.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Catalog {
+    #[allow(dead_code)]
+    catalog_version: u32,
+    #[allow(dead_code)]
+    generated_at: String,
+    #[allow(dead_code)]
+    source: String,
+    models: Vec<ModelEntry>,
 }
 
-/// The variant that used to be bundled, used as the default suggestion.
-pub fn default_variant() -> &'static ModelVariant {
-    VARIANTS
-        .iter()
-        .find(|v| v.recommended)
-        .unwrap_or(&VARIANTS[0])
+/// Parsed once: the file is a compile-time constant, so re-parsing per call
+/// would waste work on every catalog request from the UI.
+fn catalog() -> &'static Catalog {
+    use std::sync::OnceLock;
+
+    static PARSED: OnceLock<Catalog> = OnceLock::new();
+    PARSED.get_or_init(|| {
+        serde_json::from_str(CATALOG_JSON)
+            .expect("model_catalog.json is generated and must parse")
+    })
 }
 
-/// Download URL for a variant, pinned to an immutable revision.
-pub fn download_url(variant: &ModelVariant) -> String {
+/// Every model the engine can load.
+pub fn entries() -> &'static [ModelEntry] {
+    &catalog().models
+}
+
+/// Finds a model by its catalogue id.
+pub fn entry(id: &str) -> Option<&'static ModelEntry> {
+    entries().iter().find(|e| e.id == id)
+}
+
+/// Download URL for one file, pinned to the model's revision.
+pub fn download_url(model: &ModelEntry, file: &ModelFile) -> String {
     format!(
-        "https://huggingface.co/{MODEL_REPO}/resolve/{MODEL_REVISION}/{}",
-        variant.file_name
+        "https://huggingface.co/{}/resolve/{}/{}",
+        model.repo, model.revision, file.filename
     )
 }
 
@@ -150,8 +131,10 @@ pub struct InstalledModel {
     pub file_name: String,
     pub path: String,
     pub size_bytes: u64,
-    /// Catalogue id when the file matches a known variant.
-    pub variant_id: Option<String>,
+    /// Catalogue id when the file belongs to a known model.
+    pub model_id: Option<String>,
+    /// Quantisation label when the catalogue knows this file.
+    pub quant: Option<String>,
 }
 
 /// Lists model files in the resolved models directory.
@@ -161,11 +144,12 @@ pub struct InstalledModel {
 /// selectable too.
 pub fn list_installed() -> Vec<InstalledModel> {
     let dir = PathBuf::from(settings::resolved_paths().models_dir);
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    // Named to avoid shadowing `entries()`, the catalogue accessor.
+    let Ok(dir_entries) = std::fs::read_dir(&dir) else {
         return Vec::new();
     };
 
-    let mut found: Vec<InstalledModel> = entries
+    let mut found: Vec<InstalledModel> = dir_entries
         .flatten()
         .map(|entry| entry.path())
         .filter(|path| {
@@ -175,11 +159,20 @@ pub fn list_installed() -> Vec<InstalledModel> {
         .filter_map(|path| {
             let meta = std::fs::metadata(&path).ok()?;
             let file_name = path.file_name()?.to_string_lossy().to_string();
-            Some(InstalledModel {
-                variant_id: VARIANTS
+            let known = entries().iter().find_map(|model| {
+                model
+                    .files
                     .iter()
-                    .find(|v| v.file_name == file_name)
-                    .map(|v| v.id.to_string()),
+                    .find(|f| f.filename == file_name)
+                    .map(|f| (model.id.clone(), f.quant.clone()))
+            });
+            let (model_id, quant) = match known {
+                Some((id, quant)) => (Some(id), Some(quant)),
+                None => (None, None),
+            };
+            Some(InstalledModel {
+                model_id,
+                quant,
                 path: path.to_string_lossy().to_string(),
                 size_bytes: meta.len(),
                 file_name,
@@ -191,14 +184,23 @@ pub fn list_installed() -> Vec<InstalledModel> {
     found
 }
 
-/// Where a variant would be stored given the current settings.
-pub fn target_path(variant: &ModelVariant) -> PathBuf {
-    PathBuf::from(settings::resolved_paths().models_dir).join(variant.file_name)
+/// Where a catalogue file would be stored given the current settings.
+pub fn target_path(file: &ModelFile) -> PathBuf {
+    PathBuf::from(settings::resolved_paths().models_dir).join(&file.filename)
 }
 
-/// Whether the variant is already present.
-pub fn is_installed(variant: &ModelVariant) -> bool {
-    target_path(variant).is_file()
+/// Whether the file is already present.
+pub fn is_installed(file: &ModelFile) -> bool {
+    target_path(file).is_file()
+}
+
+/// Finds the file entry a model's default quantisation refers to.
+pub fn default_file_of(model: &ModelEntry) -> Option<&ModelFile> {
+    model
+        .files
+        .iter()
+        .find(|f| f.filename == model.default_file)
+        .or_else(|| model.files.first())
 }
 
 /// Streams a response body to disk, reporting progress.
@@ -258,12 +260,16 @@ impl DownloadTarget {
 /// Progress reported while downloading.
 pub type ProgressFn<'a> = &'a mut dyn FnMut(u64, u64);
 
-/// Downloads a variant into the resolved models directory.
+/// Downloads one catalogue file into the resolved models directory.
 ///
 /// Blocks the calling thread; callers run this on a worker thread so the UI
 /// stays responsive.
-pub fn download(variant: &ModelVariant, progress: ProgressFn<'_>) -> Result<PathBuf, String> {
-    let target = target_path(variant);
+pub fn download(
+    model: &ModelEntry,
+    file: &ModelFile,
+    progress: ProgressFn<'_>,
+) -> Result<PathBuf, String> {
+    let target = target_path(file);
     if target.is_file() {
         return Ok(target);
     }
@@ -274,7 +280,7 @@ pub fn download(variant: &ModelVariant, progress: ProgressFn<'_>) -> Result<Path
         .map_err(|e| format!("не удалось создать HTTP-клиент: {e}"))?;
 
     let mut response = client
-        .get(download_url(variant))
+        .get(download_url(model, file))
         .send()
         .map_err(|e| format!("не удалось начать загрузку: {e}"))?;
 
@@ -282,7 +288,7 @@ pub fn download(variant: &ModelVariant, progress: ProgressFn<'_>) -> Result<Path
         return Err(format!(
             "сервер вернул {} при загрузке {}",
             response.status(),
-            variant.file_name
+            file.filename
         ));
     }
 
@@ -291,7 +297,7 @@ pub fn download(variant: &ModelVariant, progress: ProgressFn<'_>) -> Result<Path
     let total = response
         .content_length()
         .filter(|n| *n > 0)
-        .unwrap_or(variant.size_bytes);
+        .unwrap_or(file.size_bytes);
 
     let mut sink = DownloadTarget::new(target)?;
     let mut buffer = vec![0u8; 1 << 20];
@@ -323,11 +329,11 @@ pub fn download(variant: &ModelVariant, progress: ProgressFn<'_>) -> Result<Path
     // digest: a corrupted model would otherwise fail deep inside the engine
     // with an error nobody can interpret.
     let actual = sha256_file(&saved)?;
-    if !actual.eq_ignore_ascii_case(variant.sha256) {
+    if !actual.eq_ignore_ascii_case(&file.sha256) {
         let _ = std::fs::remove_file(&saved);
         return Err(format!(
             "файл повреждён: ожидался SHA-256 {}, получен {actual}",
-            variant.sha256
+            file.sha256
         ));
     }
 
@@ -381,8 +387,8 @@ pub fn delete(file_name: &str) -> Result<(), String> {
 
 /// Tauri commands for browsing, downloading and selecting models.
 #[tauri::command]
-pub fn model_catalog() -> Vec<ModelVariant> {
-    VARIANTS.to_vec()
+pub fn model_catalog() -> Vec<ModelEntry> {
+    entries().to_vec()
 }
 
 /// Models already present in the models directory.
@@ -395,17 +401,27 @@ pub fn list_models() -> Vec<InstalledModel> {
 #[tauri::command]
 pub fn selected_model() -> Option<InstalledModel> {
     let settings = settings::load_settings();
-    let path = settings.selected_model?;
-    let path = PathBuf::from(path);
+    let path = PathBuf::from(settings.selected_model?);
     if !path.is_file() {
         return None;
     }
     let file_name = path.file_name()?.to_string_lossy().to_string();
-    Some(InstalledModel {
-        variant_id: VARIANTS
+
+    let known = entries().iter().find_map(|model| {
+        model
+            .files
             .iter()
-            .find(|v| v.file_name == file_name)
-            .map(|v| v.id.to_string()),
+            .find(|f| f.filename == file_name)
+            .map(|f| (model.id.clone(), f.quant.clone()))
+    });
+    let (model_id, quant) = match known {
+        Some((id, quant)) => (Some(id), Some(quant)),
+        None => (None, None),
+    };
+
+    Some(InstalledModel {
+        model_id,
+        quant,
         size_bytes: std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0),
         path: path.to_string_lossy().to_string(),
         file_name,
@@ -423,18 +439,37 @@ pub async fn select_model(id_or_path: String) -> Result<InstalledModel, String> 
         return Err("не указана модель".to_string());
     }
 
-    let path = match variant(selector) {
-        Some(entry) => {
-            let target = target_path(entry);
+    let path = match entry(selector) {
+        Some(model) => {
+            let file = default_file_of(model)
+                .ok_or_else(|| format!("у модели {} нет файлов", model.name))?;
+            let target = target_path(file);
             if !target.is_file() {
-                return Err(format!(
-                    "модель {} ещё не скачана",
-                    entry.file_name
-                ));
+                return Err(format!("модель {} ещё не скачана", file.filename));
             }
             target
         }
         None => {
+            // A catalogue id that is really a quantisation of some model, so
+            // "select q5_k_m" works the way the old flat list allowed.
+            if let Some((model, file)) = entries().iter().find_map(|m| {
+                m.files
+                    .iter()
+                    .find(|f| f.quant.eq_ignore_ascii_case(selector))
+                    .map(|f| (m, f))
+            }) {
+                let target = target_path(file);
+                if target.is_file() {
+                    let mut settings = settings::load_settings();
+                    settings.selected_model = Some(target.to_string_lossy().to_string());
+                    settings::save_settings(&settings)?;
+                    crate::handy_server::restart_server().await?;
+                    return selected_model()
+                        .ok_or_else(|| "модель не найдена после выбора".to_string());
+                }
+                return Err(format!("модель {} ещё не скачана", file.filename));
+            }
+            // A selector that is not a model id may be a file the user supplied.
             let candidate = PathBuf::from(selector);
             if !candidate.is_file() {
                 return Err(format!("файл модели не найден: {selector}"));
@@ -471,18 +506,32 @@ struct DownloadProgress {
 pub async fn download_model(
     app: tauri::AppHandle,
     id: String,
+    quant: Option<String>,
 ) -> Result<InstalledModel, String> {
     use tauri::Emitter;
 
-    let entry = variant(id.trim()).ok_or_else(|| format!("неизвестная модель: {id}"))?;
+    let model = entry(id.trim()).ok_or_else(|| format!("неизвестная модель: {id}"))?;
+
+    // An explicit quantisation lets the UI offer the size/quality choice per
+    // model; otherwise the catalogue's default is used.
+    let file = match quant.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+        Some(wanted) => model
+            .files
+            .iter()
+            .find(|f| f.quant.eq_ignore_ascii_case(wanted))
+            .ok_or_else(|| format!("у модели {} нет варианта {wanted}", model.name))?,
+        None => default_file_of(model)
+            .ok_or_else(|| format!("у модели {} нет файлов", model.name))?,
+    };
+
     let app_handle = app.clone();
-    // Cloned into the worker closure: the command still needs the name to
-    // report progress through the error path.
-    let progress_name = entry.file_name.to_string();
+    let progress_name = file.filename.clone();
+    let model_id = model.id.clone();
+    let quant_label = file.quant.clone();
 
     let saved = tauri::async_runtime::spawn_blocking(move || {
         let mut last_emit = std::time::Instant::now();
-        let result = download(entry, &mut |downloaded, total| {
+        let result = download(model, file, &mut |downloaded, total| {
             // Throttle to ~10 Hz: emitting per 1 MB chunk would flood the
             // WebView with events the UI cannot render faster than this.
             if last_emit.elapsed() < std::time::Duration::from_millis(100) {
@@ -506,10 +555,11 @@ pub async fn download_model(
     let saved_name = saved
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| entry.file_name.to_string());
+        .unwrap_or_else(|| file.filename.clone());
 
     Ok(InstalledModel {
-        variant_id: Some(entry.id.to_string()),
+        model_id: Some(model_id),
+        quant: Some(quant_label),
         size_bytes: std::fs::metadata(&saved).map(|m| m.len()).unwrap_or(0),
         path: saved.to_string_lossy().to_string(),
         file_name: saved_name,
@@ -541,52 +591,149 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_variant_is_reachable_by_its_id() {
-        for entry in VARIANTS {
-            assert!(variant(entry.id).is_some(), "id {} не находится", entry.id);
-        }
+    fn the_catalogue_parses_and_is_not_empty() {
+        // The file is embedded at compile time and parsed on first use; a
+        // malformed entry would otherwise panic at runtime inside the app.
+        let all = entries();
+        assert!(all.len() > 20, "catalogue looks truncated: {}", all.len());
     }
 
     #[test]
-    fn catalogue_sizes_and_hashes_are_plausible() {
-        for entry in VARIANTS {
+    fn every_entry_is_complete_enough_to_offer_and_download() {
+        for model in entries() {
+            assert!(!model.id.is_empty(), "entry without id: {model:?}");
+            assert!(!model.family.is_empty(), "{}: no family", model.id);
             assert!(
-                entry.size_bytes > 100_000_000,
-                "{} подозрительно мал",
-                entry.id
+                !model.revision.is_empty(),
+                "{}: no pinned revision",
+                model.id
             );
-            assert_eq!(entry.sha256.len(), 64, "{}: хэш не SHA-256", entry.id);
-            assert!(entry.file_name.ends_with(".gguf"));
+            assert!(!model.files.is_empty(), "{}: no files", model.id);
+            assert!(
+                model.files.iter().any(|f| f.filename == model.default_file),
+                "{}: default file {} is not in the file list",
+                model.id,
+                model.default_file
+            );
         }
     }
 
     #[test]
-    fn quantisations_are_ordered_by_size_ascending() {
-        // The UI presents them in catalogue order; a mis-sorted entry would
-        // make the size/quality trade-off read as nonsense.
-        let sizes: Vec<u64> = VARIANTS.iter().map(|v| v.size_bytes).collect();
-        let mut sorted = sizes.clone();
-        sorted.sort_unstable();
-        assert_eq!(sizes, sorted);
+    fn every_file_has_a_size_and_a_sha256() {
+        // Both are mandatory: the size drives the progress bar and the digest
+        // is the only thing standing between the user and a corrupt download.
+        for model in entries() {
+            for file in &model.files {
+                assert!(
+                    file.size_bytes > 1_000_000,
+                    "{}/{}: implausible size {}",
+                    model.id,
+                    file.filename,
+                    file.size_bytes
+                );
+                assert_eq!(
+                    file.sha256.len(),
+                    64,
+                    "{}/{}: not a SHA-256",
+                    model.id,
+                    file.filename
+                );
+                assert!(file.sha256.chars().all(|c| c.is_ascii_hexdigit()));
+                assert!(file.filename.ends_with(".gguf"));
+            }
+        }
     }
 
     #[test]
-    fn the_recommended_variant_is_the_historical_bundled_one() {
-        let default = default_variant();
-        assert_eq!(default.id, "q8_0");
-        // Must match the hash that shipped inside the installer, so an existing
-        // install recognises its own model instead of re-downloading it.
+    fn quantisations_are_ordered_smallest_first() {
+        // The UI lists them in order; a mis-sorted list makes the size/quality
+        // trade-off unreadable.
+        for model in entries() {
+            let sizes: Vec<u64> = model.files.iter().map(|f| f.size_bytes).collect();
+            let mut sorted = sizes.clone();
+            sorted.sort_unstable();
+            assert_eq!(sizes, sorted, "{}: files not sorted", model.id);
+        }
+    }
+
+    #[test]
+    fn the_model_that_used_to_ship_is_still_offered() {
+        // An existing install already has this exact file on disk; it must be
+        // recognised rather than re-downloaded, and it must stay selectable.
+        let model = entry("nemotron-3.5-asr-streaming-0.6b").expect("model must exist");
+        assert!(model.recommended, "it should still be the default suggestion");
+        let file = model
+            .files
+            .iter()
+            .find(|f| f.quant == "Q8_0")
+            .expect("Q8_0 must be offered");
         assert_eq!(
-            default.sha256,
+            file.sha256,
             "b94545b313b3223fda7b2857a52681da813935c2127643d1e9ff0c23d988089c"
         );
     }
 
     #[test]
-    fn download_urls_are_pinned_to_a_revision_not_a_branch() {
-        let url = download_url(default_variant());
-        assert!(url.contains(MODEL_REVISION), "url must pin the revision: {url}");
-        assert!(!url.contains("/main/"), "branch urls are not reproducible");
+    fn download_urls_are_pinned_to_a_commit_not_a_branch() {
+        for model in entries() {
+            let file = default_file_of(model).expect("default file");
+            let url = download_url(model, file);
+            assert!(
+                url.contains(&model.revision),
+                "{}: url does not pin the revision: {url}",
+                model.id
+            );
+            assert!(
+                !url.contains("/main/"),
+                "{}: branch urls are not reproducible",
+                model.id
+            );
+            assert!(url.starts_with("https://huggingface.co/"));
+        }
+    }
+
+    #[test]
+    fn recommended_models_come_first() {
+        // The ordering is what the UI leans on for its default presentation.
+        let recommended: Vec<bool> = entries().iter().map(|m| m.recommended).collect();
+        let first_non_recommended = recommended.iter().position(|r| !r);
+        if let Some(index) = first_non_recommended {
+            assert!(
+                !recommended[index..].iter().any(|r| *r),
+                "recommended models must not be scattered after the others"
+            );
+        }
+    }
+
+    #[test]
+    fn families_are_among_the_ones_the_engine_loads() {
+        // Offering a model the engine cannot load would download gigabytes and
+        // then fail with "unsupported architecture".
+        const SUPPORTED: &[&str] = &[
+            "whisper",
+            "parakeet",
+            "canary",
+            "cohere",
+            "voxtral",
+            "moonshine",
+            "granite",
+            "qwen3",
+            "gigaam",
+            "sensevoice",
+            "medasr",
+            "moss",
+            "nemotron",
+            "fun-asr",
+            "breeze",
+        ];
+        for model in entries() {
+            assert!(
+                SUPPORTED.contains(&model.family.as_str()),
+                "{}: family {} is not loadable by the engine",
+                model.id,
+                model.family
+            );
+        }
     }
 
     #[test]

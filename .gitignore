@@ -46,3 +46,7 @@ logs.zip
 # compile time (include_bytes!), so a fresh checkout must build without network
 # access. Only the model is excluded — it is downloaded by the user at runtime.
 !src-tauri/resources/pluely-asr.exe
+
+# Runtime leftovers: the sidecar writes its bound port next to its binary.
+src-tauri/resources/asr-port
+asr-port

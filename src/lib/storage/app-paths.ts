@@ -17,16 +17,42 @@ export interface ResolvedPaths {
   writable: boolean;
 }
 
-/** A model the user can download, with the published quality figures. */
-export interface ModelVariant {
-  id: string;
-  quantisation: string;
-  file_name: string;
+/** Capabilities reported by the model card. */
+export interface ModelCapabilities {
+  streaming: boolean;
+  translate: boolean;
+  lang_detect: boolean;
+  timestamps: string;
+}
+
+/** One downloadable quantisation of a model. */
+export interface ModelFile {
+  filename: string;
+  quant: string;
   size_bytes: number;
   sha256: string;
-  note: string;
-  wer_librispeech: number | null;
-  wer_fleurs_ru: number | null;
+}
+
+/** A model the user can download, with the published quality figures. */
+export interface ModelEntry {
+  id: string;
+  repo: string;
+  revision: string;
+  family: string;
+  name: string;
+  description: string;
+  parameters: string;
+  language_count: number;
+  languages: string[];
+  capabilities: ModelCapabilities;
+  /** 0-100, derived from the published real-time factor. */
+  speed_score: number | null;
+  /** 0-100, derived from the published word error rate. */
+  accuracy_score: number | null;
+  wer: number | null;
+  wer_set: string | null;
+  files: ModelFile[];
+  default_file: string;
   recommended: boolean;
 }
 
@@ -35,7 +61,8 @@ export interface InstalledModel {
   file_name: string;
   path: string;
   size_bytes: number;
-  variant_id: string | null;
+  model_id: string | null;
+  quant: string | null;
 }
 
 /** Progress payload emitted while a model downloads. */
@@ -79,8 +106,8 @@ export const getStartMinimized = () => invoke<boolean>("get_start_minimized");
 export const setStartMinimized = (enabled: boolean) =>
   invoke<void>("set_start_minimized", { enabled });
 
-/** Catalogue entries with their sizes, hashes and quality figures. */
-export const modelCatalog = () => invoke<ModelVariant[]>("model_catalog");
+/** Catalogue entries with their files, sizes, hashes and quality figures. */
+export const modelCatalog = () => invoke<ModelEntry[]>("model_catalog");
 
 /** Model files currently on disk. */
 export const listModels = () => invoke<InstalledModel[]>("list_models");
@@ -90,11 +117,12 @@ export const selectedModel = () =>
   invoke<InstalledModel | null>("selected_model");
 
 /**
- * Downloads a catalogue model. Progress arrives as `model-download-progress`
- * events; the promise settles when the file is on disk and hash-verified.
+ * Downloads a model. Progress arrives as `model-download-progress` events; the
+ * promise settles when the file is on disk and hash-verified. `quant` picks a
+ * specific quantisation, otherwise the catalogue default is used.
  */
-export const downloadModel = (id: string) =>
-  invoke<InstalledModel>("download_model", { id });
+export const downloadModel = (id: string, quant?: string) =>
+  invoke<InstalledModel>("download_model", { id, quant: quant ?? null });
 
 /** Selects a model by catalogue id or by absolute path, then restarts the engine. */
 export const selectModel = (idOrPath: string) =>
