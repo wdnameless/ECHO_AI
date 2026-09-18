@@ -23,7 +23,6 @@ import { DashboardLayout } from "@/layouts";
  */
 // Each page barrel has a default export, so the dynamic imports can be handed
 // straight to `lazy` without a mapping wrapper.
-const Dashboard = lazy(() => import("@/pages/dashboard"));
 const Chats = lazy(() => import("@/pages/chats"));
 const ViewChat = lazy(() => import("@/pages/chats/components/View"));
 const SystemPrompts = lazy(() => import("@/pages/system-prompts"));
@@ -34,6 +33,7 @@ const Audio = lazy(() => import("@/pages/audio"));
 const Screenshot = lazy(() => import("@/pages/screenshot"));
 const Responses = lazy(() => import("@/pages/responses"));
 const MockInterview = lazy(() => import("@/pages/mock-interview"));
+const Models = lazy(() => import("@/pages/models"));
 
 /** Shown while a page chunk loads. Deliberately minimal and non-blocking. */
 const RouteFallback = () => (
@@ -52,10 +52,10 @@ export default function AppRoutes() {
         <Routes>
           <Route
             path="/"
-            element={isDashboard ? <Navigate to="/chats" replace /> : <App />}
+            element={isDashboard ? <Navigate to="/settings" replace /> : <App />}
           />
           <Route element={<DashboardLayout />}>
-            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/dashboard" element={<Navigate to="/settings" replace />} />
             <Route path="/chats" element={<Chats />} />
             <Route path="/system-prompts" element={<SystemPrompts />} />
             <Route path="/chats/view/:conversationId" element={<ViewChat />} />
@@ -64,6 +64,7 @@ export default function AppRoutes() {
             <Route path="/settings" element={<Settings />} />
             <Route path="/audio" element={<Audio />} />
             <Route path="/responses" element={<Responses />} />
+            <Route path="/models" element={<Models />} />
             <Route path="/dev-space" element={<DevSpace />} />
             <Route path="/mock-interview" element={<MockInterview />} />
           </Route>

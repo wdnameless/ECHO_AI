@@ -11,6 +11,11 @@ import { HostTrustProvider } from "./components";
 const currentWindow = getCurrentWindow();
 const windowLabel = currentWindow.label;
 
+if (windowLabel === "main") {
+  document.body.style.backgroundColor = "transparent";
+} else {
+  document.body.style.backgroundColor = "hsl(var(--background))";
+}
 window.addEventListener("error", (e) => {
   console.error("[CRITICAL WINDOW ERROR]", windowLabel, e.error || e.message);
 });

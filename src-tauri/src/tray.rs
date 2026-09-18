@@ -6,13 +6,13 @@ use tauri::{
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let toggle_main = MenuItem::with_id(app, "toggle_main", "Показать / Скрыть Echo AI", true, None::<&str>)?;
-    let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Дашборд / Чаты", true, None::<&str>)?;
-    let open_settings = MenuItem::with_id(app, "open_settings", "Настройки", true, None::<&str>)?;
+    let open_dashboard = MenuItem::with_id(app, "open_dashboard", "Настройки", true, None::<&str>)?;
+    let open_models = MenuItem::with_id(app, "open_models", "Модели распознавания", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Выход из Echo AI", true, None::<&str>)?;
 
     let menu = Menu::with_items(
         app,
-        &[&toggle_main, &open_dashboard, &open_settings, &quit],
+        &[&toggle_main, &open_dashboard, &open_models, &quit],
     )?;
 
     let mut tray_builder = TrayIconBuilder::new()
@@ -39,8 +39,8 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             "open_dashboard" => {
                 let _ = crate::window::show_dashboard_window(app);
             }
-            "open_settings" => {
-                let _ = crate::window::open_dashboard_page(app.clone(), "/settings".to_string());
+            "open_models" => {
+                let _ = crate::window::open_dashboard_page(app.clone(), "/models".to_string());
             }
             "quit" => {
                 app.exit(0);

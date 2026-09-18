@@ -198,6 +198,7 @@ pub fn open_dashboard_page(app: tauri::AppHandle, route: String) -> Result<(), S
     const ALLOWED_ROUTES: &[&str] = &[
         "/dashboard",
         "/chats",
+        "/models",
         "/system-prompts",
         "/shortcuts",
         "/screenshot",
@@ -207,7 +208,6 @@ pub fn open_dashboard_page(app: tauri::AppHandle, route: String) -> Result<(), S
         "/dev-space",
         "/mock-interview",
     ];
-
     let normalized = if route.starts_with('/') {
         route
     } else {
@@ -297,7 +297,7 @@ pub fn create_dashboard_window<R: Runtime>(
 
     #[cfg(target_os = "macos")]
     let base_builder = base_builder
-        .title("Echo AI - Dashboard")
+        .title("Echo AI - Настройки")
         .center()
         .decorations(true)
         .inner_size(1200.0, 800.0)
@@ -305,12 +305,12 @@ pub fn create_dashboard_window<R: Runtime>(
         .hidden_title(true)
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .content_protected(true)
-        .visible(true)
+        .visible(false)
         .traffic_light_position(LogicalPosition::new(14.0, 18.0));
 
     #[cfg(not(target_os = "macos"))]
     let base_builder = base_builder
-        .title("Echo AI - Dashboard")
+        .title("Echo AI - Настройки")
         .center()
         .decorations(true)
         .inner_size(800.0, 600.0)

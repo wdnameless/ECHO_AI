@@ -7,6 +7,7 @@ import {
   PowerIcon,
   BugIcon,
   GraduationCap,
+  MicIcon,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { GithubIcon } from "@/components";
@@ -32,6 +33,11 @@ export const useMenuItems = () => {
       icon: Settings,
       label: "Settings",
       href: "/settings",
+    },
+    {
+      icon: MicIcon,
+      label: "Models",
+      href: "/models",
     },
     {
       icon: AudioLinesIcon,
