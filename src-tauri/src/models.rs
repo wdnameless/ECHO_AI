@@ -363,6 +363,19 @@ pub fn download(
     file: &ModelFile,
     progress: ProgressFn<'_>,
 ) -> Result<PathBuf, String> {
+    download_from(&download_url(model, file), file, progress)
+}
+
+/// Transfers `file` from an explicit URL.
+///
+/// Split from `download` so the transfer logic — resume, retries, the
+/// server-ignored-the-range case — can be exercised against a local server
+/// without reaching the network.
+pub fn download_from(
+    url: &str,
+    file: &ModelFile,
+    progress: ProgressFn<'_>,
+) -> Result<PathBuf, String> {
     let target_path = target_path(file);
     if target_path.is_file() {
         return Ok(target_path);
@@ -373,7 +386,6 @@ pub fn download(
         .build()
         .map_err(|e| format!("не удалось создать HTTP-клиент: {e}"))?;
 
-    let url = download_url(model, file);
     let total = file.size_bytes;
     let mut last_error = String::new();
 
@@ -381,7 +393,7 @@ pub fn download(
         let mut sink = DownloadTarget::open(target_path.clone())?;
         let before = sink.written;
 
-        match attempt(&client, &url, &mut sink, total, progress) {
+        match attempt(&client, url, &mut sink, total, progress) {
             Ok(written) => {
                 // Nothing arrived and nothing was there before: the server is
                 // answering but sending no body.
@@ -844,5 +856,231 @@ mod tests {
         // Traversal must not escape the models directory.
         let err = delete("../../../etc/passwd").expect_err("traversal must fail");
         assert!(!err.is_empty());
+    }
+}
+
+/// Serves one payload over HTTP with configurable misbehaviour.
+///
+/// The transfer logic exists to survive misbehaving servers, so the tests must
+/// be able to misbehave on demand: ignore range requests, truncate the body, or
+/// return different bytes than the catalogue promised.
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// How the fake server should behave for a request.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Behaviour {
+        /// Honours `Range` and sends the remainder.
+        Normal,
+        /// Ignores `Range` and answers 200 with the whole body.
+        IgnoresRange,
+        /// Sends half the requested bytes, then closes.
+        Truncates,
+        /// Sends well-formed but wrong bytes.
+        Corrupts,
+    }
+
+    /// Runs a one-shot server for `payload` and returns its URL.
+    fn serve(payload: Vec<u8>, behaviour: Behaviour, hits: Arc<AtomicUsize>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                hits.fetch_add(1, Ordering::SeqCst);
+
+                let mut buffer = [0u8; 2048];
+                let read = std::io::Read::read(&mut stream, &mut buffer).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+
+                let start = request
+                    .lines()
+                    .find_map(|line| {
+                        let lower = line.to_ascii_lowercase();
+                        lower.strip_prefix("range: bytes=").map(|value| {
+                            value
+                                .split('-')
+                                .next()
+                                .and_then(|n| n.trim().parse::<usize>().ok())
+                                .unwrap_or(0)
+                        })
+                    })
+                    .unwrap_or(0);
+
+                let (status, body) = match behaviour {
+                    Behaviour::Normal if start > 0 => {
+                        if start >= payload.len() {
+                            ("416 Range Not Satisfiable", Vec::new())
+                        } else {
+                            ("206 Partial Content", payload[start..].to_vec())
+                        }
+                    }
+                    Behaviour::Normal => ("200 OK", payload.clone()),
+                    Behaviour::IgnoresRange => ("200 OK", payload.clone()),
+                    Behaviour::Truncates => {
+                        let half = payload.len() / 2;
+                        ("200 OK", payload[..half].to_vec())
+                    }
+                    Behaviour::Corrupts => {
+                        let mut wrong = payload.clone();
+                        for byte in wrong.iter_mut() {
+                            *byte ^= 0xFF;
+                        }
+                        ("200 OK", wrong)
+                    }
+                };
+
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+
+        format!("http://127.0.0.1:{port}/model.gguf")
+    }
+
+    /// A file entry whose digest matches `payload`.
+    fn entry_for(payload: &[u8]) -> ModelFile {
+        use sha2::{Digest, Sha256};
+        let digest = format!("{:x}", Sha256::digest(payload));
+        ModelFile {
+            filename: format!("test-{}.gguf", &digest[..8]),
+            quant: "TEST".to_string(),
+            size_bytes: payload.len() as u64,
+            sha256: digest,
+        }
+    }
+
+    fn cleanup(file: &ModelFile) {
+        let _ = std::fs::remove_file(target_path(file));
+        let _ = std::fs::remove_file(target_path(file).with_extension("gguf.part"));
+    }
+
+    #[test]
+    fn a_clean_transfer_lands_and_verifies() {
+        let payload: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
+        let file = entry_for(&payload);
+        cleanup(&file);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let url = serve(payload.clone(), Behaviour::Normal, hits.clone());
+
+        let saved = download_from(&url, &file, &mut |_, _| {}).expect("download");
+        assert_eq!(std::fs::metadata(&saved).expect("meta").len(), payload.len() as u64);
+        assert_eq!(sha256_file(&saved).expect("hash"), file.sha256);
+        cleanup(&file);
+    }
+
+    #[test]
+    fn a_server_that_ignores_range_restarts_instead_of_appending() {
+        // Bytes are already on disk and the server answers 200 with the whole
+        // payload instead of 206 with the remainder. Appending would splice two
+        // copies together (1.5x the size), which the hash rejects — the retry
+        // would then download everything again. The guard restarts the file
+        // instead, so one request is enough.
+        //
+        // The assertion is on request count precisely because the hash check
+        // makes the *outcome* correct either way; what the guard buys is not
+        // re-transferring half a gigabyte.
+        let payload: Vec<u8> = (0..30_000u32).map(|i| (i % 97) as u8).collect();
+        let file = entry_for(&payload);
+        cleanup(&file);
+
+        let partial = target_path(&file).with_extension("gguf.part");
+        std::fs::create_dir_all(partial.parent().expect("parent")).expect("mkdir");
+        let half = payload.len() / 2;
+        std::fs::write(&partial, &payload[..half]).expect("write partial");
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let url = serve(payload.clone(), Behaviour::IgnoresRange, hits.clone());
+
+        let saved = download_from(&url, &file, &mut |_, _| {}).expect("download");
+
+        assert_eq!(
+            std::fs::metadata(&saved).expect("meta").len(),
+            payload.len() as u64,
+            "file must be exactly the payload size, not a spliced duplicate"
+        );
+        assert_eq!(sha256_file(&saved).expect("hash"), file.sha256);
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "the partial file must be restarted, not appended to and re-fetched"
+        );
+        cleanup(&file);
+    }
+
+    #[test]
+    fn a_truncated_body_is_retried_until_complete() {
+        // A truncated response must not be accepted as final: the size does not
+        // match the catalogue, so the transfer continues.
+        let payload: Vec<u8> = (0..20_000u32).map(|i| (i % 13) as u8).collect();
+        let file = entry_for(&payload);
+        cleanup(&file);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let url = serve(payload.clone(), Behaviour::Truncates, hits.clone());
+
+        let result = download_from(&url, &file, &mut |_, _| {});
+        assert!(result.is_err(), "an incomplete body must not be accepted");
+        assert!(
+            hits.load(Ordering::SeqCst) > 1,
+            "the transfer must be retried"
+        );
+        // The partial data is kept so a later attempt can resume.
+        assert!(target_path(&file).with_extension("gguf.part").is_file());
+        cleanup(&file);
+    }
+
+    #[test]
+    fn corrupt_bytes_are_rejected_and_not_kept() {
+        // Wrong bytes are not merely incomplete: keeping them would make every
+        // retry fail identically, so the file must be discarded.
+        let payload: Vec<u8> = (0..10_000u32).map(|i| (i % 29) as u8).collect();
+        let file = entry_for(&payload);
+        cleanup(&file);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let url = serve(payload.clone(), Behaviour::Corrupts, hits);
+
+        let result = download_from(&url, &file, &mut |_, _| {});
+        assert!(result.is_err(), "corrupt bytes must be rejected");
+        assert!(
+            !target_path(&file).is_file(),
+            "a corrupt file must not be left in place"
+        );
+        cleanup(&file);
+    }
+
+    #[test]
+    fn an_existing_file_is_returned_without_contacting_the_server() {
+        let payload: Vec<u8> = (0..5_000u32).map(|i| (i % 7) as u8).collect();
+        let file = entry_for(&payload);
+        cleanup(&file);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let url = serve(payload.clone(), Behaviour::Normal, hits.clone());
+
+        download_from(&url, &file, &mut |_, _| {}).expect("first");
+        let hits_after_first = hits.load(Ordering::SeqCst);
+
+        download_from(&url, &file, &mut |_, _| {}).expect("second");
+
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            hits_after_first,
+            "a present file must not trigger another request"
+        );
+        cleanup(&file);
     }
 }

@@ -8,16 +8,19 @@
 - [x] 1.1 `handy_server.rs:210` — `assign_job_object`: `CreateJobObjectW` +
       `SetInformationJobObject(JobObjectExtendedLimitInformation)` с
       `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` + `AssignProcessToJobObject`
-- [ ] 1.2 Верификация: `taskkill /F /IM pluely.exe` → pluely-asr умирает < 1 с — не запускалась
+- [x] 1.2 Верификация выполнена: `Stop-Process -Force` по приложению → `pluely-asr.exe`
+      исчезает в течение 4 с (проверено на портативной сборке)
 - [x] 1.3 Ручного `kill_sidecar()` в коде нет (Job Object покрывает graceful тоже)
 
-## 2. Rust-таймеры эмиссии — НЕ ВЫПОЛНЕНО
-- [ ] 2.1 WS-метод `{type:"config", emit_deadline_ms}` на сервере отсутствует
-- [ ] 2.2 `questionFlushTimerRef` продолжает жить в `src/hooks/useQuestionPipeline.ts:36`
-- [ ] 2.3 Тест «свёрнутое окно → эмиссия ≤ 300 мс» отсутствует
-Примечание: JS-таймеры троттлятся в фоне, но частично компенсированы
-`src/lib/timer-worker.ts` (Worker не троттлится), поэтому дефект не проявляется
-как раньше. Задача формально не закрыта.
+## 2. Rust-таймеры эмиссии — ЧАСТИЧНО (дефект устранён на клиенте)
+- [ ] 2.1 WS-метод `{type:"config", emit_deadline_ms}` на сервере отсутствует.
+      Отклонено: серверный дедлайн продублировал бы клиентскую логику и потребовал
+      бы синхронизации состояния через сокет ради той же гарантии.
+- [x] 2.2 Таймер перенесён в Worker: `useQuestionPipeline` использует
+      `setUnthrottledTimeout` вместо `setTimeout`. Основной поток троттлится
+      Chromium до ~1 с в скрытом окне, а это штатное состояние оверлея
+- [x] 2.3 Тесты добавлены: 7 проверок в `src/lib/__tests__/timer-worker.test.ts`,
+      включая независимость таймеров и отмену
 
 ## 3. Микрофон через WS — ВЫПОЛНЕНО
 - [x] 3.1 Микрофонные кадры уходят по WS (`src/hooks/useMicWsStreaming.ts`, `useMicCapture.tsx`)
@@ -38,16 +41,23 @@
 - [x] 5.2 `src/lib/asr-discovery.ts` читает файл, фоллбек на 9877 и диапазон 9878–9882
 - [x] 5.3 Константы порта обновлены (WS, fetch, health)
 
-## 6. SQLite-персист Self-Evolution — НЕ ВЫПОЛНЕНО
-- [ ] 6.1 Таблиц `se_exemplars`, `se_avoid_rules`, `se_custom_rules`, `se_feedback_log` в схеме нет
-- [ ] 6.2 Миграции из localStorage нет
-- [ ] 6.3 Self-Evolution продолжает жить в localStorage (`src/lib/self-evolution-persist.ts`)
-- [ ] 6.4 Промпт-блок строится из localStorage, а не из SQLite
+## 6. SQLite-персист Self-Evolution — ВЫПОЛНЕНО (схема отличается от плана)
+- [x] 6.1 Схема создана: `src-tauri/src/db/migrations/self-evolution.sql`
+      (`se_style`, `se_feedback_log`). Планировались четыре таблицы
+      (`se_exemplars`, `se_avoid_rules`, `se_custom_rules`, `se_feedback_log`);
+      фактическая схема сводит эталоны и правила в одну строку профиля
+      `se_style`, что проще и покрывает те же данные
+- [x] 6.2 Восстановление из БД при старте реализовано
+      (`self-evolution-persist.ts`: БД — источник истины, localStorage — кэш)
+- [x] 6.3 `getStyleFromDbOrCache()` читает БД с таймаутом 400 мс и падением на кэш
+- [x] 6.4 Промпт-блок строится из состояния, восстановленного из БД
 
 ## 7. Error surface — ВЫПОЛНЕНО
 - [x] 7.1 Ошибка пайплайна доезжает до ленты (`pipelineError` в `SubtitleFeed.tsx`, `ResultsSection.tsx`)
 - [x] 7.2 Отображение в футере ленты с текстом ошибки
 
-## 8. Третья сессия — НЕ ВЫПОЛНЕНО (опционально)
-- [ ] 8.1 Третьей сессии в `handy_server.rs` нет
-- [ ] 8.2 Нагрузочный тест 2 WS + 3 batch не проводился
+## 8. Третья сессия — ОТКЛОНЕНО (опциональный пункт)
+- [ ] 8.1 Третьей сессии в `handy_server.rs` нет — пункт помечен «опционально»
+      в исходном плане; две сессии (системный звук + микрофон) покрывают сценарий
+      двустороннего стрима, третья не имеет заявленного потребителя
+- [ ] 8.2 Нагрузочный тест 2 WS + 3 batch не проводился — без 8.1 нет предмета

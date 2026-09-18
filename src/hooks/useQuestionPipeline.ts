@@ -15,6 +15,7 @@ import {
   ASR_TIMING_PRESETS,
 } from "@/lib/question-assembler";
 import { selectRussianFiller } from "@/lib/transcript-stabilizer";
+import { setUnthrottledTimeout } from "@/lib/timer-worker";
 import { LiveSegment } from "./useConversationStore";
 
 export interface UseQuestionPipelineProps {
@@ -33,7 +34,8 @@ export function useQuestionPipeline({
   const activeAskUtteranceIdRef = useRef<string | null>(null);
 
   const questionAssemblerRef = useRef<QuestionAssembler | null>(null);
-  const questionFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
+  /** Cancels the pending gap timer. The timer itself lives in a Worker. */
+  const cancelGapTimerRef = useRef<(() => void) | null>(null);
   const asrTimingConfig = ASR_TIMING_PRESETS[ACTIVE_ASR_MODE];
 
   if (!questionAssemblerRef.current) {
@@ -74,8 +76,8 @@ export function useQuestionPipeline({
 
   const resetQuestionAssembly = useCallback(() => {
     questionAssemblerRef.current?.reset();
-    clearTimeout(questionFlushTimerRef.current ?? undefined);
-    questionFlushTimerRef.current = null;
+    cancelGapTimerRef.current?.();
+    cancelGapTimerRef.current = null;
   }, []);
 
   const handleInterviewerTranscription = useCallback(
@@ -103,11 +105,16 @@ export function useQuestionPipeline({
       // continuation punctuation is not enough — when flush returns "pending"
       // (or the text clearly reads unfinished: no terminal .!?), we re-arm the
       // timer with an EXTENDED window instead of dispatching early.
-      clearTimeout(questionFlushTimerRef.current ?? undefined);
+      //
+      // The timer runs in a Worker, not on the main thread: Chromium throttles
+      // setTimeout to ~1s granularity once the window is hidden, which is the
+      // normal state for an overlay during a call. A sub-second gap threshold
+      // is meaningless on a throttled timer, so questions would emit late.
+      cancelGapTimerRef.current?.();
       const gapMs = asrTimingConfig.flushGapMs;
       const arm = (delay: number) => {
-        questionFlushTimerRef.current = setTimeout(() => {
-          questionFlushTimerRef.current = null;
+        cancelGapTimerRef.current = setUnthrottledTimeout(() => {
+          cancelGapTimerRef.current = null;
           const emitted = questionAssemblerRef.current?.flush("them");
           if (emitted?.kind === "emitted") {
             void onTriggerAI(emitted.question, "them");
@@ -121,8 +128,8 @@ export function useQuestionPipeline({
       arm(gapMs);
 
       if (result.kind === "emitted") {
-        clearTimeout(questionFlushTimerRef.current ?? undefined);
-        questionFlushTimerRef.current = null;
+        cancelGapTimerRef.current?.();
+        cancelGapTimerRef.current = null;
         await onTriggerAI(result.question, "them");
       }
     },
