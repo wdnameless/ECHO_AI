@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getVersion } from "@tauri-apps/api/app";
 import {
   CaptionsIcon,
   CheckIcon,
@@ -191,7 +190,6 @@ export const SubtitleFeed = ({
   const [evoStats, setEvoStats] = useState<SelfEvolutionStats>(() =>
     getSelfEvolutionStats()
   );
-  const [appVersion, setAppVersion] = useState<string>("");
 
   // Word-correction overrides keyed by a STABLE text key (first 40
   // normalized chars) so a correction survives the live-to-final id change.
@@ -278,11 +276,6 @@ export const SubtitleFeed = ({
     }
   }, [editingRowId]);
 
-  useEffect(() => {
-    getVersion()
-      .then(setAppVersion)
-      .catch(() => {});
-  }, []);
 
   // Reading freeze: while paused the feed shows a snapshot so the user can
   // read in peace; new content keeps accumulating and appears on resume.
@@ -617,17 +610,6 @@ export const SubtitleFeed = ({
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <span className="text-[0.65em] font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1 shrink-0">
-            <CaptionsIcon className="w-3 h-3 hidden" />
-          </span>
-          {appVersion && (
-            <span
-              className="font-mono text-[0.6em] text-muted-foreground/60 shrink-0"
-              title="Версия приложения Echo AI"
-            >
-              v{appVersion}
-            </span>
-          )}
         </div>
         <div className="flex items-center gap-2 min-w-0">
           {pendingQuestion && (

@@ -14,6 +14,7 @@ import {
   FillerFilterSettings,
   StealthToggle,
   StorageSettings,
+  UpdateSettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
 
@@ -22,6 +23,9 @@ const Settings = () => {
     <PageLayout title="Settings" description="Manage your settings">
       {/* Storage layout and local speech models */}
       <StorageSettings />
+
+      {/* Software Updates */}
+      <UpdateSettings />
 
       {/* Prompt Profiles: Interview / General / Self-Evolution / custom */}
       <PromptProfilesSettings />

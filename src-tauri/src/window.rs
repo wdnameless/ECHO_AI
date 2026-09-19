@@ -153,29 +153,7 @@ pub fn set_window_height(window: tauri::WebviewWindow, height: u32) -> Result<()
 
     let target_width = if current_width < 400.0 { 600.0 } else { current_width };
 
-    // Smart height: only expand from a collapsed state. If the user has
-    // manually resized the window taller, never override their size.
-    let current_height = if let Ok(size) = window.outer_size() {
-        if let Ok(scale_factor) = window.scale_factor() {
-            (size.height as f64) / scale_factor
-        } else {
-            size.height as f64
-        }
-    } else {
-        54.0
-    };
-
-    let target_height = if height > 100 {
-        // Expanding: keep the user's custom height if they already stretched it
-        if current_height > 120.0 {
-            current_height
-        } else {
-            height as f64
-        }
-    } else {
-        // Collapsing to the compact bar
-        height as f64
-    };
+    let target_height = height as f64;
 
     let new_size = LogicalSize::new(target_width, target_height);
     window

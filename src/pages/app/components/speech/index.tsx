@@ -152,7 +152,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
           align="start"
           side="bottom"
           className="select-none w-[calc(100vw-16px)] max-w-full min-w-0 p-0 border shadow-lg overflow-hidden border-input/50 rounded-xl"
-          sideOffset={8}
+          sideOffset={14}
         >
           <div className="flex flex-col h-[calc(100vh - var(--bar-chrome))] max-w-full min-w-0 overflow-hidden">
             {/* Header - Top Control Toolbar (All actions consolidated at top!) */}
@@ -423,9 +423,9 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                 )}
               </div>
             </ScrollArea>
-            {/* Bottom resize handle */}
+            {/* Bottom resize handle with native startResizeDragging and manual mouse drag fallback */}
             <div
-              className="flex-shrink-0 h-2 w-full cursor-ns-resize flex items-center justify-center hover:bg-primary/20 transition-colors select-none group"
+              className="flex-shrink-0 h-3 w-full cursor-ns-resize flex items-center justify-center hover:bg-primary/20 transition-colors select-none group touch-none"
               title="Потяните, чтобы изменить высоту окна"
               onMouseDown={async (e) => {
                 if (e.button !== 0) return;
@@ -434,11 +434,26 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                 try {
                   await getCurrentWindow().startResizeDragging("South");
                 } catch (err) {
-                  console.debug("Failed to start bottom resize:", err);
+                  console.debug("Native resize failed, using fallback:", err);
+                  const startY = e.screenY;
+                  const startH = window.innerHeight;
+                  const onMouseMove = (moveEv: MouseEvent) => {
+                    const newH = Math.max(200, Math.round(startH + (moveEv.screenY - startY)));
+                    invoke("set_window_height", {
+                      window: getCurrentWindow(),
+                      height: newH,
+                    }).catch(console.error);
+                  };
+                  const onMouseUp = () => {
+                    window.removeEventListener("mousemove", onMouseMove);
+                    window.removeEventListener("mouseup", onMouseUp);
+                  };
+                  window.addEventListener("mousemove", onMouseMove);
+                  window.addEventListener("mouseup", onMouseUp);
                 }
               }}
             >
-              <div className="w-8 h-1 rounded-full bg-border group-hover:bg-primary/50 transition-colors" />
+              <div className="w-10 h-1 rounded-full bg-muted-foreground/40 group-hover:bg-primary transition-colors" />
             </div>
           </div>
         </PopoverContent>

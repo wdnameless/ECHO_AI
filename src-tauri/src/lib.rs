@@ -187,12 +187,8 @@ pub fn run() {
             }
             #[cfg(target_os = "macos")]
             init(app.app_handle());
-            let app_handle = app.handle();
-            if app_handle.get_webview_window("dashboard").is_none() {
-                if let Err(e) = window::create_dashboard_window(&app_handle) {
-                    eprintln!("Failed to pre-create dashboard window on startup: {}", e);
-                }
-            }
+
+            // Dashboard/Settings window is created lazily on demand (when user opens settings)
 
             #[cfg(desktop)]
             {
