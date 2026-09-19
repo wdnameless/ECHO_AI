@@ -218,9 +218,9 @@ export const Models = () => {
     <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden">
       {/* Header */}
       <header className="pt-6 pb-2 shrink-0">
-        <h1 className="text-2xl font-bold text-foreground">Transcription Models</h1>
+        <h1 className="text-2xl font-bold text-foreground">SST Models</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Select a transcription model or download additional models. Different models offer varying levels of accuracy and speed.
+          Select a speech-to-text model or download local models for offline transcription.
         </p>
 
         {/* Search bar */}
@@ -256,8 +256,6 @@ export const Models = () => {
               >
                 <RotateCcw className={cn("w-3.5 h-3.5", isLoading && "animate-spin")} />
               </Button>
-
-              <div className="h-4 w-px bg-border mx-0.5" />
 
               <Button
                 variant={sortBy === "speed" ? "secondary" : "ghost"}
@@ -313,7 +311,7 @@ export const Models = () => {
                     className={cn(
                       "rounded-xl border p-4 transition-all",
                       isActive
-                        ? "border-[#f472b6] bg-[#f472b6]/5 shadow-sm"
+                        ? "border-primary bg-primary/10 shadow-sm"
                         : "border-border/60 bg-card hover:border-border"
                     )}
                   >
@@ -324,7 +322,7 @@ export const Models = () => {
                             {model?.name ?? file.file_name}
                           </h3>
                           {isActive && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-[#f472b6] px-2 py-0.5 text-[11px] font-medium text-white shadow-xs">
+                            <span className="inline-flex items-center gap-1 rounded-full bg-foreground px-2.5 py-0.5 text-[11px] font-semibold text-background shadow-xs">
                               ✓ Active
                             </span>
                           )}
@@ -351,7 +349,7 @@ export const Models = () => {
                             <span className="text-muted-foreground text-[10px]">accuracy</span>
                             <div className="h-1.5 w-20 rounded-full bg-muted overflow-hidden">
                               <div
-                                className="h-full rounded-full bg-[#f472b6]"
+                                className="h-full rounded-full bg-foreground"
                                 style={{ width: `${model.accuracy_score ?? 70}%` }}
                               />
                             </div>
@@ -360,7 +358,7 @@ export const Models = () => {
                             <span className="text-muted-foreground text-[10px]">speed</span>
                             <div className="h-1.5 w-20 rounded-full bg-muted overflow-hidden">
                               <div
-                                className="h-full rounded-full bg-[#f472b6]"
+                                className="h-full rounded-full bg-foreground"
                                 style={{ width: `${model.speed_score ?? 70}%` }}
                               />
                             </div>
@@ -448,7 +446,7 @@ export const Models = () => {
                           <span className="text-muted-foreground text-[10px]">accuracy</span>
                           <div className="h-1.5 w-20 rounded-full bg-muted overflow-hidden">
                             <div
-                              className="h-full rounded-full bg-[#f472b6]"
+                              className="h-full rounded-full bg-foreground"
                               style={{ width: `${model.accuracy_score ?? 70}%` }}
                             />
                           </div>
@@ -457,7 +455,7 @@ export const Models = () => {
                           <span className="text-muted-foreground text-[10px]">speed</span>
                           <div className="h-1.5 w-20 rounded-full bg-muted overflow-hidden">
                             <div
-                              className="h-full rounded-full bg-[#f472b6]"
+                              className="h-full rounded-full bg-foreground"
                               style={{ width: `${model.speed_score ?? 70}%` }}
                             />
                           </div>
@@ -470,7 +468,11 @@ export const Models = () => {
                       <div className="flex items-center gap-3">
                         <span className="flex items-center gap-1">
                           <Languages className="w-3.5 h-3.5" />
-                          {model.language_count === 1 ? "English only" : `${model.language_count} languages`}
+                          {model.languages && model.languages.length === 1 && model.languages[0] === "ru"
+                            ? "Russian only"
+                            : model.language_count === 1
+                            ? "English only"
+                            : `${model.language_count || model.languages?.length || 1} languages`}
                         </span>
                         {model.capabilities.streaming && (
                           <span className="flex items-center gap-1">

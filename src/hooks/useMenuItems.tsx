@@ -1,13 +1,12 @@
 import {
   Settings,
-  Code,
   MessagesSquare,
   AudioLinesIcon,
   SquareSlashIcon,
   PowerIcon,
   BugIcon,
-  GraduationCap,
   MicIcon,
+  Sparkles,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { GithubIcon } from "@/components";
@@ -20,23 +19,18 @@ export const useMenuItems = () => {
     count?: number;
   }[] = [
     {
-      icon: GraduationCap,
-      label: "Mock Interview",
-      href: "/mock-interview",
-    },
-    {
       icon: MessagesSquare,
       label: "Chats",
       href: "/chats",
     },
     {
-      icon: Settings,
-      label: "Settings",
-      href: "/settings",
+      icon: Sparkles,
+      label: "AI",
+      href: "/dev-space",
     },
     {
       icon: MicIcon,
-      label: "Models",
+      label: "SST Models",
       href: "/models",
     },
     {
@@ -50,9 +44,9 @@ export const useMenuItems = () => {
       href: "/shortcuts",
     },
     {
-      icon: Code,
-      label: "AI & STT Providers",
-      href: "/dev-space",
+      icon: Settings,
+      label: "Settings",
+      href: "/settings",
     },
   ];
 
