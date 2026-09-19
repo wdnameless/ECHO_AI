@@ -7,7 +7,7 @@ import {
 } from "./components";
 import { useApp } from "@/hooks";
 import { useApp as useAppContext } from "@/contexts";
-import { HeadphonesIcon, SparklesIcon, MicIcon, Eye, EyeOff } from "lucide-react";
+import { HeadphonesIcon, MicIcon, Eye, EyeOff, Settings } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ErrorBoundary } from "react-error-boundary";
@@ -181,15 +181,18 @@ const App = () => {
             }`}
           >
             <Completion isHidden={isHidden} suppressAutoVAD={systemAudio?.capturing} />
-            <Button
-              size={"icon"}
-              className="cursor-pointer"
-              title="Open Dev Space"
-              onClick={openDashboard}
-            >
-              <SparklesIcon className="h-4 w-4" />
-            </Button>
           </div>
+
+          {/* Settings button - always available */}
+          <Button
+            size="icon"
+            variant="ghost"
+            className="cursor-pointer shrink-0 h-8 w-8 hover:bg-muted text-muted-foreground hover:text-foreground"
+            title="Настройки (нажмите, чтобы открыть)"
+            onClick={openDashboard}
+          >
+            <Settings className="h-4 w-4" />
+          </Button>
           {/* Stealth Mode toggle button */}
           <Button
             size="icon"

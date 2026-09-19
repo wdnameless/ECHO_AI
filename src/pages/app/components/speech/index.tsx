@@ -14,6 +14,7 @@ import {
   PlusIcon,
   LoaderIcon,
   Settings2Icon,
+  SettingsIcon,
   ZapIcon,
 } from "lucide-react";
 import { ModeSwitcher } from "./ModeSwitcher";
@@ -228,6 +229,17 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                     title="Audio & AI Context Settings"
                   >
                     <Settings2Icon className="w-3.5 h-3.5" />
+                  </Button>
+
+                  {/* App Settings Window Button */}
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => invoke("open_dashboard").catch(console.error)}
+                    className="h-6 w-6"
+                    title="Открыть общие настройки"
+                  >
+                    <SettingsIcon className="w-3.5 h-3.5" />
                   </Button>
 
                   {/* Start New Conversation Button */}

@@ -293,9 +293,8 @@ pub fn create_dashboard_window<R: Runtime>(
         .decorations(true)
         .inner_size(1020.0, 720.0)
         .min_inner_size(880.0, 600.0)
-        .content_protected(true)
-        .visible(false);
-
+        .visible(false)
+        .content_protected(true);
     let window = base_builder.build()?;
     setup_dashboard_close_handler(&window);
     #[cfg(target_os = "windows")]
@@ -323,24 +322,18 @@ fn setup_dashboard_close_handler<R: Runtime>(window: &WebviewWindow<R>) {
 
 /// Shows the dashboard window and brings it to focus
 pub fn show_dashboard_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    if let Some(dashboard_window) = app.get_webview_window("dashboard") {
-        // Window exists, show and focus it
-        dashboard_window
-            .show()
-            .map_err(|e| format!("Failed to show dashboard window: {}", e))?;
-        dashboard_window
-            .set_focus()
-            .map_err(|e| format!("Failed to focus dashboard window: {}", e))?;
-    } else {
-        // Window doesn't exist, create it and then show it
-        let window = create_dashboard_window(app)
-            .map_err(|e| format!("Failed to create dashboard window: {}", e))?;
-        window
-            .show()
-            .map_err(|e| format!("Failed to show new dashboard window: {}", e))?;
-        window
-            .set_focus()
-            .map_err(|e| format!("Failed to focus new dashboard window: {}", e))?;
-    }
+    let dashboard_window = match app.get_webview_window("dashboard") {
+        Some(win) => win,
+        None => create_dashboard_window(app)
+            .map_err(|e| format!("Failed to create dashboard window: {}", e))?,
+    };
+
+    dashboard_window
+        .show()
+        .map_err(|e| format!("Failed to show dashboard window: {}", e))?;
+    let _ = dashboard_window.unminimize();
+    dashboard_window
+        .set_focus()
+        .map_err(|e| format!("Failed to focus dashboard window: {}", e))?;
     Ok(())
 }
