@@ -1,28 +1,54 @@
-import {
-  Card,
-  Button,
-  Header,
-  TextInput,
-  Switch,
-  Textarea,
-  Selection,
-} from "@/components";
-import { PlusIcon, SaveIcon } from "lucide-react";
-import { useCustomAiProviders } from "@/hooks";
-import { useApp } from "@/contexts";
+import { useState } from "react";
+import { Header, Button, Selection, Card, Switch, Input, Label } from "@/components";
+import { PlusIcon, SaveIcon, CodeIcon, SlidersIcon, CheckIcon, AlertCircleIcon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Textarea } from "@/components/ui/textarea";
+import { fetchProviderModels } from "@/lib/functions/models.function";
 
-interface CreateEditProviderProps {
-  customProviderHook?: ReturnType<typeof useCustomAiProviders>;
+interface EasyFormState {
+  preset: string;
+  name: string;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  maxTokens: string;
+  streaming: boolean;
+  responseContentPath: string;
 }
+
+const PRESET_DEFAULTS: Record<string, { name: string; baseUrl: string; defaultModel: string }> = {
+  openai: {
+    name: "OpenAI Compatible",
+    baseUrl: "https://api.openai.com/v1",
+    defaultModel: "gpt-4o",
+  },
+  openrouter: {
+    name: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    defaultModel: "openai/gpt-4o-mini",
+  },
+  nullform: {
+    name: "Nullform Gateway",
+    baseUrl: "https://ai-gateway.nullform.cv/v1",
+    defaultModel: "gemini-3.8-flash-tiered",
+  },
+  ollama: {
+    name: "Ollama (Local)",
+    baseUrl: "http://localhost:11434/v1",
+    defaultModel: "llama3",
+  },
+  custom: {
+    name: "Custom Provider",
+    baseUrl: "",
+    defaultModel: "",
+  },
+};
 
 export const CreateEditProvider = ({
   customProviderHook,
-}: CreateEditProviderProps) => {
-  const { allAiProviders } = useApp();
-  // Use the provided hook instance or create a new one
-  const hookInstance = customProviderHook || useCustomAiProviders();
-
+}: {
+  customProviderHook: any;
+}) => {
   const {
     showForm,
     setShowForm,
@@ -32,8 +58,118 @@ export const CreateEditProvider = ({
     errors,
     handleSave,
     setErrors,
-    handleAutoFill,
-  } = hookInstance;
+  } = customProviderHook;
+
+  const [mode, setMode] = useState<"visual" | "raw">("visual");
+
+  const [easyState, setEasyState] = useState<EasyFormState>({
+    preset: "openai",
+    name: "Custom AI Provider",
+    apiKey: "",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o",
+    maxTokens: "",
+    streaming: true,
+    responseContentPath: "choices[0].message.content",
+  });
+
+  const [testState, setTestState] = useState<{
+    status: "idle" | "testing" | "ok" | "error";
+    message: string;
+  }>({ status: "idle", message: "" });
+
+  const [fetchedModels, setFetchedModels] = useState<string[]>([]);
+  const [showKey, setShowKey] = useState(false);
+
+  const generateCurlFromEasy = (state: EasyFormState): string => {
+    const cleanBase = state.baseUrl.trim().replace(/\/+$/, "");
+    const fullUrl = cleanBase.endsWith("/chat/completions")
+      ? cleanBase
+      : `${cleanBase}/chat/completions`;
+
+    const modelVal = state.model.trim() || "{{MODEL}}";
+    const authHeader = state.apiKey.trim()
+      ? `  -H "Authorization: Bearer ${state.apiKey.trim()}" \\\n`
+      : `  -H "Authorization: Bearer {{API_KEY}}" \\\n`;
+
+    let dataObj: any = {
+      model: modelVal,
+      messages: [
+        { role: "system", content: "{{SYSTEM_PROMPT}}" },
+        { role: "user", content: "{{TEXT}}" },
+      ],
+      stream: state.streaming,
+    };
+
+    if (state.maxTokens && !isNaN(Number(state.maxTokens))) {
+      dataObj.max_tokens = Number(state.maxTokens);
+    }
+
+    return `curl ${fullUrl} \\\n  -H "Content-Type: application/json" \\\n${authHeader}  -d '${JSON.stringify(dataObj, null, 2)}'`;
+  };
+
+  const handleEasyChange = (updates: Partial<EasyFormState>) => {
+    setEasyState((prev) => {
+      const next = { ...prev, ...updates };
+      const newCurl = generateCurlFromEasy(next);
+      setFormData((f: any) => ({
+        ...f,
+        curl: newCurl,
+        streaming: next.streaming,
+        responseContentPath: next.responseContentPath || "choices[0].message.content",
+      }));
+      return next;
+    });
+  };
+
+  const handleTestConnection = async () => {
+    if (!easyState.baseUrl.trim()) {
+      setTestState({ status: "error", message: "Укажите Base URL" });
+      return;
+    }
+
+    setTestState({ status: "testing", message: "Тестирование подключения..." });
+    try {
+      const curl = generateCurlFromEasy(easyState);
+      const vars: Record<string, string> = {};
+      if (easyState.apiKey.trim()) {
+        vars.API_KEY = easyState.apiKey.trim();
+      }
+      if (easyState.model.trim()) {
+        vars.MODEL = easyState.model.trim();
+      }
+
+      const models = await fetchProviderModels(
+        easyState.name || "custom",
+        curl,
+        vars
+      );
+
+      setFetchedModels(models);
+      setTestState({
+        status: "ok",
+        message: `✓ Подключено! Загружено моделей: ${models.length}`,
+      });
+      if (models.length > 0 && !easyState.model.trim()) {
+        handleEasyChange({ model: models[0] });
+      }
+    } catch (err) {
+      setTestState({
+        status: "error",
+        message: err instanceof Error ? err.message : "Не удалось подключиться к провайдеру",
+      });
+    }
+  };
+
+  const handlePresetSelect = (presetKey: string) => {
+    const config = PRESET_DEFAULTS[presetKey] || PRESET_DEFAULTS.custom;
+    handleEasyChange({
+      preset: presetKey,
+      name: config.name,
+      baseUrl: config.baseUrl,
+      model: config.defaultModel,
+    });
+  };
 
   return (
     <>
@@ -42,236 +178,274 @@ export const CreateEditProvider = ({
           onClick={() => {
             setShowForm(true);
             setErrors({});
+            const initialCurl = generateCurlFromEasy(easyState);
+            setFormData((prev: any) => ({
+              ...prev,
+              curl: prev.curl?.trim() ? prev.curl : initialCurl,
+              responseContentPath: prev.responseContentPath || "choices[0].message.content",
+            }));
           }}
           variant="outline"
-          className="w-full h-11 border-1 border-input/50 focus:border-primary/50 transition-colors"
+          className="w-full h-11 border border-input/50 focus:border-primary/50 transition-colors"
         >
           <PlusIcon className="h-4 w-4 mr-2" />
-          Add Custom Provider
+          Добавить кастомный AI-провайдер
         </Button>
       ) : (
-        <Card className="p-4 border !bg-transparent border-input/50 ">
-          <div className="flex justify-between items-center">
-            <Header
-              title={editingProvider ? `Edit Provider` : "Add Custom Provider"}
-              description="Create a custom AI provider to use with your AI-powered applications."
-            />
-
-            <div className="w-[120px]">
-              <Selection
-                options={allAiProviders
-                  ?.filter((provider) => !provider?.isCustom)
-                  .map((provider) => {
-                    return {
-                      label: provider?.id || "AI Provider",
-                      value: provider?.id || "AI Provider",
-                    };
-                  })}
-                placeholder={"Auto-fill"}
-                onChange={(value) => {
-                  handleAutoFill(value);
-                }}
-              />
+        <Card className="p-6 border bg-card/40 border-border/80 rounded-xl space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/50 pb-4">
+            <div>
+              <h3 className="text-base font-semibold text-foreground">
+                {editingProvider ? "Редактирование провайдера" : "Подключение AI-провайдера"}
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Настройте endpoint, API-ключ и выберите поддерживаемую модель
+              </p>
             </div>
-          </div>
 
-          <div className="">
-            {/* Basic Configuration */}
-            <div className="space-y-1">
-              <Header
-                title="Curl Command *"
-                description="The curl command to use with the AI provider."
-              />
-              <Textarea
-                className={cn(
-                  "h-74 font-mono text-sm",
-                  errors.curl && "border-red-500"
-                )}
-                placeholder={`curl --location 'http://127.0.0.1:1337/v1/chat/completions' \
---header 'Content-Type: application/json' \
---header 'Authorization: Bearer YOUR_API_KEY or {{API_KEY}}' \
---data '{
-        "model": "your-model-name or {{MODEL}}",
-        "messages": [
-            {
-                "role": "system",
-                "content": "{{SYSTEM_PROMPT}}"
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "{{TEXT}}"
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": "data:image/jpeg;base64,{{IMAGE}}"
-                        }
-                    }
-                ]
-            }
-        ]
-    }'`}
-                value={formData.curl}
-                onChange={(e) =>
-                  setFormData((prev) => ({ ...prev, curl: e.target.value }))
-                }
-              />
-              {errors.curl && (
-                <p className="text-xs text-red-500 mt-1">{errors.curl}</p>
-              )}
-
-              {/* Variable Instructions */}
-              <div className="bg-muted/50 p-4 rounded-lg space-y-4">
-                <div className="bg-card border p-3 rounded-lg">
-                  <p className="text-sm font-medium text-primary mb-2">
-                    💡 Important: You can add custom variables or directly
-                    include your API keys/values
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    No need to enter variables separately when selecting the
-                    provider - you can embed them directly in the curl command
-                    (e.g., replace YOUR_API_KEY with your actual key or use{" "}
-                    <code className="bg-muted px-1 rounded text-xs">
-                      {"{{MODEL}}"}
-                    </code>{" "}
-                    for model name).
-                  </p>
-                </div>
-
-                <h4 className="text-sm font-semibold text-foreground">
-                  ⚠️ Required Variables for AI Providers:
-                </h4>
-                <div className="grid grid-cols-1 gap-3 text-sm">
-                  <div className="flex items-center gap-3 p-3 bg-card border rounded-lg">
-                    <code className="bg-muted px-2 py-1 rounded font-mono text-xs">
-                      {"{{TEXT}}"}
-                    </code>
-                    <span className="text-foreground font-medium">
-                      → REQUIRED: User's text input
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 p-3 bg-card border rounded-lg">
-                    <code className="bg-muted px-2 py-1 rounded font-mono text-xs">
-                      {"{{IMAGE}}"}
-                    </code>
-                    <span className="text-muted-foreground">
-                      → Base64 image data (without data:image/jpeg;base64
-                      prefix)
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-3 p-3 bg-card border rounded-lg">
-                    <code className="bg-muted px-2 py-1 rounded font-mono text-xs">
-                      {"{{SYSTEM_PROMPT}}"}
-                    </code>
-                    <span className="text-muted-foreground">
-                      → System prompt/instructions(optional)
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <p className="text-sm text-muted-foreground">
-                    <strong className="text-foreground">Quick Setup:</strong>{" "}
-                    Replace{" "}
-                    <code className="bg-muted px-1 rounded text-xs">
-                      YOUR_API_KEY
-                    </code>{" "}
-                    with your actual API key directly in the curl command.
-                  </p>
-                  <p className="text-sm text-muted-foreground">
-                    <strong className="text-foreground">
-                      Custom Variables:
-                    </strong>{" "}
-                    You can add your own variables using the same{" "}
-                    <code className="bg-muted px-1 rounded text-xs">
-                      {"{{VARIABLE_NAME}}"}
-                    </code>{" "}
-                    format and they'll be available for configuration when you
-                    select this provider.
-                  </p>
-                  <p className="text-xs text-muted-foreground italic">
-                    💡 Tip: Use the required variables (
-                    <code className="bg-muted px-1 rounded text-xs">
-                      {"{{TEXT}}"}
-                    </code>
-                    ,{" "}
-                    <code className="bg-muted px-1 rounded text-xs">
-                      {"{{SYSTEM_PROMPT}}"}
-                    </code>
-                    ) for basic functionality. Add{" "}
-                    <code className="bg-muted px-1 rounded text-xs">
-                      {"{{IMAGE}}"}
-                    </code>{" "}
-                    only if your provider supports image input.
-                  </p>
-                </div>
+            <div className="flex items-center gap-2">
+              <div className="inline-flex rounded-lg border border-border/60 p-0.5 bg-muted/40">
+                <button
+                  type="button"
+                  onClick={() => setMode("visual")}
+                  className={cn(
+                    "flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md font-medium transition-colors",
+                    mode === "visual"
+                      ? "bg-background text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <SlidersIcon className="w-3.5 h-3.5" />
+                  Удобная форма
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode("raw")}
+                  className={cn(
+                    "flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md font-medium transition-colors",
+                    mode === "raw"
+                      ? "bg-background text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <CodeIcon className="w-3.5 h-3.5" />
+                  cURL
+                </button>
               </div>
             </div>
           </div>
 
-          <div className="flex justify-between items-center space-x-2">
-            <Header
-              title="Streaming"
-              description="streaming is used to stream the response from the AI provider."
-            />
-            <Switch
-              checked={formData.streaming}
-              onCheckedChange={(checked) =>
-                setFormData((prev) => ({
-                  ...prev,
-                  streaming: checked,
-                }))
-              }
-            />
-          </div>
-          {/* Response Configuration */}
-          <div className="space-y-2">
-            <Header
-              title="Response Content Path *"
-              description="The path to extract content from the API response."
-            />
+          {mode === "visual" ? (
+            <div className="space-y-4">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-medium text-foreground">Пресет провайдера</Label>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={handleTestConnection}
+                    disabled={testState.status === "testing"}
+                    className="h-7 text-xs px-2.5 gap-1.5"
+                  >
+                    {testState.status === "testing" ? (
+                      <>
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Проверка...
+                      </>
+                    ) : (
+                      <>
+                        <CheckIcon className="h-3 w-3" />
+                        Тест подключения
+                      </>
+                    )}
+                  </Button>
+                </div>
 
-            <TextInput
-              placeholder="choices[0].message.content"
-              value={formData.responseContentPath || ""}
-              onChange={(value) =>
-                setFormData((prev) => ({
-                  ...prev,
-                  responseContentPath: value,
-                }))
-              }
-              error={errors.responseContentPath}
-              notes="The path to extract content from the API response. Examples: choices[0].message.content, text, candidates[0].content.parts[0].text"
-            />
-          </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                  {[
+                    { id: "nullform", label: "Nullform Gateway" },
+                    { id: "openai", label: "OpenAI API" },
+                    { id: "openrouter", label: "OpenRouter" },
+                    { id: "ollama", label: "Ollama (Local)" },
+                  ].map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => handlePresetSelect(p.id)}
+                      className={cn(
+                        "text-xs px-3 py-2 rounded-lg border text-left transition-colors",
+                        easyState.preset === p.id
+                          ? "border-primary bg-primary/10 text-primary font-medium"
+                          : "border-border/60 hover:bg-muted/40 text-muted-foreground"
+                      )}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-          <div className="flex justify-end gap-2 -mt-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium text-foreground">API key *</Label>
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Input
+                      type={showKey ? "text" : "password"}
+                      placeholder="sk-..."
+                      value={easyState.apiKey}
+                      onChange={(e) => handleEasyChange({ apiKey: e.target.value })}
+                      className="pr-16 font-mono text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowKey(!showKey)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground hover:text-foreground font-medium"
+                    >
+                      {showKey ? "Скрыть" : "Показать"}
+                    </button>
+                  </div>
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Хранится локально на этом устройстве в защищённом хранилище.
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs font-medium text-foreground">Base URL *</Label>
+                <Input
+                  placeholder="https://api.openai.com/v1"
+                  value={easyState.baseUrl}
+                  onChange={(e) => handleEasyChange({ baseUrl: e.target.value })}
+                  className="font-mono text-xs"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-foreground">Model *</Label>
+                  {fetchedModels.length > 0 ? (
+                    <div className="space-y-1.5">
+                      <Selection
+                        selected={easyState.model}
+                        options={fetchedModels.map((m) => ({ label: m, value: m }))}
+                        placeholder="Выберите модель из списка"
+                        onChange={(val) => handleEasyChange({ model: val })}
+                      />
+                      <Input
+                        placeholder="Или укажите вручную..."
+                        value={easyState.model}
+                        onChange={(e) => handleEasyChange({ model: e.target.value })}
+                        className="text-xs"
+                      />
+                    </div>
+                  ) : (
+                    <Input
+                      placeholder="gemini-3.8-flash-tiered, gpt-4o..."
+                      value={easyState.model}
+                      onChange={(e) => handleEasyChange({ model: e.target.value })}
+                      className="text-xs font-mono"
+                    />
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label className="text-xs font-medium text-foreground">Max tokens (опционально)</Label>
+                  <Input
+                    type="number"
+                    placeholder="4096"
+                    value={easyState.maxTokens}
+                    onChange={(e) => handleEasyChange({ maxTokens: e.target.value })}
+                    className="text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              {testState.status !== "idle" && (
+                <div
+                  className={cn(
+                    "p-2.5 rounded-lg text-xs flex items-center gap-2 border",
+                    testState.status === "ok" && "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400",
+                    testState.status === "error" && "bg-red-500/10 border-red-500/30 text-red-500",
+                    testState.status === "testing" && "bg-muted border-border text-muted-foreground"
+                  )}
+                >
+                  {testState.status === "ok" && <CheckIcon className="w-4 h-4 shrink-0" />}
+                  {testState.status === "error" && <AlertCircleIcon className="w-4 h-4 shrink-0" />}
+                  {testState.status === "testing" && <Loader2 className="w-4 h-4 shrink-0 animate-spin" />}
+                  <span className="truncate">{testState.message}</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <Header
+                  title="Команда cURL *"
+                  description="Сгенерированная команда вызова API провайдера."
+                />
+                <Textarea
+                  className={cn("h-64 font-mono text-xs", errors.curl && "border-red-500")}
+                  value={formData.curl}
+                  onChange={(e) =>
+                    setFormData((prev: any) => ({
+                      ...prev,
+                      curl: e.target.value,
+                    }))
+                  }
+                />
+              </div>
+
+              <div className="flex justify-between items-center space-x-2 pt-2 border-t border-border/40">
+                <Header
+                  title="Streaming"
+                  description="Потоковая передача ответа от модели."
+                />
+                <Switch
+                  checked={formData.streaming}
+                  onCheckedChange={(checked) =>
+                    setFormData((prev: any) => ({
+                      ...prev,
+                      streaming: checked,
+                    }))
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Header
+                  title="Путь к ответу (Response Content Path) *"
+                  description="JSON-путь для извлечения текста ответа."
+                />
+                <Input
+                  placeholder="choices[0].message.content"
+                  value={formData.responseContentPath || ""}
+                  onChange={(e) =>
+                    setFormData((prev: any) => ({
+                      ...prev,
+                      responseContentPath: e.target.value,
+                    }))
+                  }
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end gap-2.5 pt-4 border-t border-border/50">
             <Button
               variant="outline"
-              onClick={() => setShowForm(!showForm)}
-              className="h-11 border-1 border-input/50 focus:border-primary/50 transition-colors"
+              onClick={() => setShowForm(false)}
+              className="h-10 text-xs px-4"
             >
-              Cancel
+              Отмена
             </Button>
             <Button
               onClick={handleSave}
-              disabled={!formData.curl.trim()}
-              className={cn(
-                "h-11 border-1 border-input/50 focus:border-primary/50 transition-colors",
-                errors.curl && "bg-red-500 hover:bg-red-600 text-white"
-              )}
+              disabled={!formData.curl?.trim()}
+              className="h-10 text-xs px-5"
             >
-              {errors.curl ? (
-                "Invalid cURL, try again"
-              ) : (
-                <>
-                  <SaveIcon className="h-4 w-4 mr-2" />
-                  {editingProvider ? "Update" : "Save"} Provider
-                </>
-              )}
+              <SaveIcon className="h-3.5 w-3.5 mr-1.5" />
+              {editingProvider ? "Обновить" : "Сохранить провайдер"}
             </Button>
           </div>
         </Card>

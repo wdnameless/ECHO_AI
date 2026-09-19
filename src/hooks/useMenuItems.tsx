@@ -60,7 +60,7 @@ export const useMenuItems = () => {
     {
       icon: BugIcon,
       label: "Report a bug",
-      href: "https://github.com/wdnameless/ECHO_AI/issues/new",
+      href: "https://github.com/wdnameless/ECHO_AI/issues",
     },
     {
       icon: PowerIcon,
