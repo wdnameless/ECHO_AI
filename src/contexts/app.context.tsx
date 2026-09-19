@@ -152,9 +152,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   );
 
   const deletePromptProfile = useCallback((profileId: string) => {
-    const profiles = getPromptProfiles().filter(
-      (p) => p.id !== profileId && !p.isBuiltin
-    );
+    const current = getPromptProfiles();
+    const target = current.find((p) => p.id === profileId);
+    if (!target || target.isBuiltin) return;
+    const profiles = current.filter((p) => p.id !== profileId);
     savePromptProfiles(profiles);
     setPromptProfiles(profiles);
     // If active profile was deleted, fall back to Interview profile.

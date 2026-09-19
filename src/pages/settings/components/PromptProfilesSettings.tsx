@@ -165,11 +165,11 @@ export const PromptProfilesSettings = () => {
               : MessageCircleIcon;
 
           return (
-            <button
+            <div
               key={profile.id}
               onClick={() => selectPromptProfile(profile.id)}
               className={cn(
-                "relative flex items-start gap-3 rounded-xl border p-3 text-left transition-all cursor-pointer",
+                "group relative flex items-start gap-3 rounded-xl border p-3 text-left transition-all cursor-pointer select-none",
                 isActive
                   ? "border-primary bg-primary/5 shadow-sm"
                   : "border-border/50 bg-muted/20 hover:border-primary/40"
@@ -187,17 +187,29 @@ export const PromptProfilesSettings = () => {
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-semibold line-clamp-1">{profile.name}</span>
                   {isActive && <CheckCircle2Icon className="size-4 text-primary shrink-0" />}
-                  {profile.isBuiltin && (
+                  {profile.isBuiltin ? (
                     <span className="text-[10px] text-muted-foreground/60 bg-muted/40 px-1 rounded">
                       built-in
                     </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deletePromptProfile(profile.id);
+                      }}
+                      className="ml-auto p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded transition-colors"
+                      title="Удалить профиль"
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </button>
                   )}
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
                   {profile.description}
                 </p>
               </div>
-            </button>
+            </div>
           );
         })}
       </div>
