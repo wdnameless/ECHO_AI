@@ -392,8 +392,13 @@ async function* streamAIResponse(params: {
           k.toLowerCase() === key.toLowerCase() && v && v.trim() !== ""
       );
       if (!found) {
+        if (key.toLowerCase().includes("api_key")) {
+          throw new Error(
+            `Не настроен API-ключ для провайдера «${provider?.id ?? "AI"}». Откройте настройки провайдеров и укажите ключ.`
+          );
+        }
         throw new Error(
-          `Missing required variable: ${key}. Please configure it in settings.`
+          `Не заполнена переменная: ${key}. Настройте её в настройках провайдеров.`
         );
       }
     }
@@ -694,11 +699,8 @@ async function* streamAIResponse(params: {
       }
     }
   } catch (error) {
-    throw new Error(
-      `Error in streamAIResponse: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`
-    );
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    throw new Error(msg);
   }
 }
 

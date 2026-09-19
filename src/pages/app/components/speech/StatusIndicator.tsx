@@ -31,9 +31,12 @@ export const StatusIndicator = ({
     <div className="flex flex-1 items-center gap-2 px-3 py-2 justify-end">
       {/* Priority: Error > AI Processing > Transcribing > Listening */}
       {error && !setupRequired ? (
-        <div className="flex items-center gap-2 text-red-600">
-          <AlertCircleIcon className="w-4 h-4" />
-          <span className="text-xs font-medium">{error}</span>
+        <div
+          className="flex items-center gap-1.5 text-red-500 max-w-[280px] min-w-0"
+          title={error}
+        >
+          <AlertCircleIcon className="w-4 h-4 shrink-0" />
+          <span className="text-xs font-medium truncate">{error}</span>
         </div>
       ) : isAIProcessing ? (
         <div className="flex items-center gap-2 animate-pulse">

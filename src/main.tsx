@@ -12,9 +12,12 @@ const currentWindow = getCurrentWindow();
 const windowLabel = currentWindow.label;
 
 if (windowLabel === "main") {
+  document.documentElement.style.backgroundColor = "transparent";
   document.body.style.backgroundColor = "transparent";
 } else {
+  document.documentElement.style.backgroundColor = "hsl(var(--background))";
   document.body.style.backgroundColor = "hsl(var(--background))";
+  document.body.classList.add("bg-background");
 }
 window.addEventListener("error", (e) => {
   console.error("[CRITICAL WINDOW ERROR]", windowLabel, e.error || e.message);

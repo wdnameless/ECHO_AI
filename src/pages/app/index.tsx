@@ -94,7 +94,7 @@ const App = () => {
       }}
     >
       <div
-        className={`w-screen h-screen flex overflow-hidden justify-center items-start ${
+        className={`w-screen h-screen flex overflow-hidden justify-center items-start px-2 pt-1 ${
           isHidden ? "hidden pointer-events-none" : ""
         }`}
       >

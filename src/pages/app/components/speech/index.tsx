@@ -24,6 +24,7 @@ import { RecordingPanel } from "./RecordingPanel";
 import { useSystemAudio } from "@/hooks";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp } from "@/contexts";
 import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
@@ -148,9 +149,9 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
 
       {(capturing || setupRequired || error) && (
         <PopoverContent
-          align="end"
+          align="start"
           side="bottom"
-          className="select-none w-screen max-w-full min-w-0 p-0 border shadow-lg overflow-hidden border-input/50"
+          className="select-none w-[calc(100vw-16px)] max-w-full min-w-0 p-0 border shadow-lg overflow-hidden border-input/50 rounded-xl"
           sideOffset={8}
         >
           <div className="flex flex-col h-[calc(100vh - var(--bar-chrome))] max-w-full min-w-0 overflow-hidden">
@@ -313,13 +314,35 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
 
                 {/* Error Display */}
                 {error && !setupRequired && (
-                  <div className="flex items-start gap-2 p-2.5 rounded-lg bg-red-50 border border-red-200">
-                    <AlertCircleIcon className="w-3.5 h-3.5 text-red-500 flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="text-[10px] font-medium text-red-800">
-                        Error
-                      </p>
-                      <p className="text-[10px] text-red-700">{error}</p>
+                  <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-700 dark:text-red-300">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <AlertCircleIcon className="w-4 h-4 text-red-500 shrink-0" />
+                      <p className="text-xs truncate font-medium">{error}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => {
+                          invoke("open_dashboard_page", { route: "/dev-space" }).catch(console.error);
+                        }}
+                        className="px-2 py-0.5 text-[10px] font-medium rounded bg-red-500/20 hover:bg-red-500/30 text-red-600 dark:text-red-300 transition-colors"
+                      >
+                        Настроить
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const p = props as any;
+                          if (p.clearError) {
+                            p.clearError();
+                          } else if (p.setError) {
+                            p.setError("");
+                          }
+                        }}
+                        className="p-1 hover:bg-red-500/20 rounded transition-colors text-red-700 dark:text-red-300"
+                        title="Закрыть ошибку"
+                      >
+                        <XIcon className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 )}
@@ -400,6 +423,23 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                 )}
               </div>
             </ScrollArea>
+            {/* Bottom resize handle */}
+            <div
+              className="flex-shrink-0 h-2 w-full cursor-ns-resize flex items-center justify-center hover:bg-primary/20 transition-colors select-none group"
+              title="Потяните, чтобы изменить высоту окна"
+              onMouseDown={async (e) => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                e.stopPropagation();
+                try {
+                  await getCurrentWindow().startResizeDragging("South");
+                } catch (err) {
+                  console.debug("Failed to start bottom resize:", err);
+                }
+              }}
+            >
+              <div className="w-8 h-1 rounded-full bg-border group-hover:bg-primary/50 transition-colors" />
+            </div>
           </div>
         </PopoverContent>
       )}
