@@ -187,23 +187,22 @@ export const PromptProfilesSettings = () => {
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-semibold line-clamp-1">{profile.name}</span>
                   {isActive && <CheckCircle2Icon className="size-4 text-primary shrink-0" />}
-                  {profile.isBuiltin ? (
+                  {profile.isBuiltin && (
                     <span className="text-[10px] text-muted-foreground/60 bg-muted/40 px-1 rounded">
                       built-in
                     </span>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deletePromptProfile(profile.id);
-                      }}
-                      className="ml-auto p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded transition-colors"
-                      title="Удалить профиль"
-                    >
-                      <Trash2Icon className="size-3.5" />
-                    </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deletePromptProfile(profile.id);
+                    }}
+                    className="ml-auto p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded transition-colors"
+                    title={profile.isBuiltin ? "Сбросить профиль к заводским" : "Удалить профиль"}
+                  >
+                    <Trash2Icon className="size-3.5" />
+                  </button>
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
                   {profile.description}
@@ -411,17 +410,16 @@ export const PromptProfilesSettings = () => {
               <PenLineIcon className="size-4 text-muted-foreground" />
               <span className="text-sm font-semibold">Editing: {activeProfile.name}</span>
             </div>
-            {!activeProfile.isBuiltin && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-destructive gap-1"
-                onClick={() => deletePromptProfile(activeProfile.id)}
-              >
-                <Trash2Icon className="size-3.5" />
-                Delete
-              </Button>
-            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-destructive hover:bg-destructive/10 gap-1.5"
+              onClick={() => deletePromptProfile(activeProfile.id)}
+              title={activeProfile.isBuiltin ? "Сбросить к заводским настройкам" : "Удалить профиль"}
+            >
+              <Trash2Icon className="size-3.5" />
+              {activeProfile.isBuiltin ? "Reset to Default" : "Delete"}
+            </Button>
           </div>
 
           {/* System prompt */}
