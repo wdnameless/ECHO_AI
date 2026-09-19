@@ -47,8 +47,10 @@ export const DashboardLayout = () => {
         {/* Sidebar */}
         <Sidebar />
         {/* Main Content */}
-        <main className="flex flex-1 flex-col overflow-hidden px-8">
-          <Outlet />
+        <main className="flex flex-1 flex-col overflow-hidden px-10">
+          <div className="w-full max-w-4xl mx-auto flex-1 flex flex-col min-h-0">
+            <Outlet />
+          </div>
         </main>
       </div>
     </ErrorBoundary>

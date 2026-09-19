@@ -291,8 +291,8 @@ pub fn create_dashboard_window<R: Runtime>(
         .title("Echo AI - Настройки")
         .center()
         .decorations(true)
-        .inner_size(800.0, 600.0)
-        .min_inner_size(800.0, 600.0)
+        .inner_size(1020.0, 720.0)
+        .min_inner_size(880.0, 600.0)
         .content_protected(true)
         .visible(false);
 

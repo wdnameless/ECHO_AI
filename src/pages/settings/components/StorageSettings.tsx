@@ -100,8 +100,8 @@ export const StorageSettings = () => {
   return (
     <div id="storage" className="space-y-4">
       <Header
-        title="Хранилище"
-        description="Где приложение держит свои файлы и куда скачиваются модели"
+        title="Хранилище и система"
+        description="Расположение моделей, кэша и режим работы приложения"
         isMainTitle
       />
 
@@ -156,7 +156,7 @@ export const StorageSettings = () => {
         </div>
 
         {paths ? (
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             {(
               [
                 ["models_dir", "Модели", paths.models_dir],
@@ -164,29 +164,28 @@ export const StorageSettings = () => {
                 ["logs_dir", "Логи", paths.logs_dir],
               ] as const
             ).map(([field, label, value]) => (
-              <div key={field} className="flex items-center gap-2">
-                <div className="w-24 shrink-0">
-                  <Label className="text-xs text-muted-foreground">{label}</Label>
+              <div key={field} className="flex items-center gap-3">
+                <div className="w-20 shrink-0">
+                  <span className="text-xs font-medium text-foreground">{label}</span>
                 </div>
                 <Input
                   readOnly
                   value={value}
-                  className="h-8 text-[11px] font-mono"
+                  className="h-8 text-[11px] font-mono bg-muted/40"
                   title={value}
                 />
                 <Button
                   size="icon"
-                  variant="outline"
-                  className="size-8 shrink-0"
+                  variant="secondary"
+                  className="size-8 shrink-0 hover:bg-secondary/80"
                   disabled={busy !== null}
-                  title={`Изменить: ${label}`}
+                  title={`Выбрать папку: ${label}`}
                   onClick={() => chooseDirectory(field)}
                 >
                   <FolderOpenIcon className="size-3.5" />
                 </Button>
               </div>
             ))}
-
             {!paths.writable && (
               <p className="text-xs text-destructive">
                 Каталог моделей недоступен для записи — загрузка работать не будет.
