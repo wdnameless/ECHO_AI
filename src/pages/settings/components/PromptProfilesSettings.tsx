@@ -45,12 +45,15 @@ export const PromptProfilesSettings = () => {
     updatePromptProfile,
     createPromptProfile,
     deletePromptProfile,
+    resetPromptProfile,
   } = useApp();
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<PromptProfile | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  // Deleting a profile throws away a hand-written prompt, so it asks first.
+  const [pendingDelete, setPendingDelete] = useState<PromptProfile | null>(null);
 
   // Self-Evolution Memory States
   const [facts, setFacts] = useState<UserFact[]>(() => getUserFacts());
@@ -192,17 +195,31 @@ export const PromptProfilesSettings = () => {
                       built-in
                     </span>
                   )}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deletePromptProfile(profile.id);
-                    }}
-                    className="ml-auto p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded transition-colors"
-                    title={profile.isBuiltin ? "Сбросить профиль к заводским" : "Удалить профиль"}
-                  >
-                    <Trash2Icon className="size-3.5" />
-                  </button>
+                  {profile.isBuiltin ? (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        resetPromptProfile(profile.id);
+                      }}
+                      className="ml-auto p-1 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                      title="Сбросить встроенный профиль к заводским настройкам"
+                    >
+                      <RotateCcwIcon className="size-3.5" />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPendingDelete(profile);
+                      }}
+                      className="ml-auto p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded transition-colors"
+                      title="Удалить профиль"
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </button>
+                  )}
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
                   {profile.description}
@@ -410,16 +427,29 @@ export const PromptProfilesSettings = () => {
               <PenLineIcon className="size-4 text-muted-foreground" />
               <span className="text-sm font-semibold">Editing: {activeProfile.name}</span>
             </div>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-destructive hover:bg-destructive/10 gap-1.5"
-              onClick={() => deletePromptProfile(activeProfile.id)}
-              title={activeProfile.isBuiltin ? "Сбросить к заводским настройкам" : "Удалить профиль"}
-            >
-              <Trash2Icon className="size-3.5" />
-              {activeProfile.isBuiltin ? "Reset to Default" : "Delete"}
-            </Button>
+            {activeProfile.isBuiltin ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="gap-1.5"
+                onClick={() => resetPromptProfile(activeProfile.id)}
+                title="Вернуть встроенный промпт к заводскому тексту"
+              >
+                <RotateCcwIcon className="size-3.5" />
+                Reset to Default
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-destructive hover:bg-destructive/10 gap-1.5"
+                onClick={() => setPendingDelete(activeProfile)}
+                title="Удалить профиль"
+              >
+                <Trash2Icon className="size-3.5" />
+                Delete
+              </Button>
+            )}
           </div>
 
           {/* System prompt */}
@@ -516,6 +546,37 @@ export const PromptProfilesSettings = () => {
                 Edit profile
               </Button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirmation */}
+      {pendingDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md space-y-3 rounded-xl border border-border bg-background p-5">
+            <h3 className="text-sm font-semibold">
+              Удалить профиль «{pendingDelete.name}»?
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              Его системный промпт будет потерян. Встроенные профили удалить нельзя —
+              их можно только сбросить к заводским настройкам.
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button size="sm" variant="outline" onClick={() => setPendingDelete(null)}>
+                Отмена
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => {
+                  deletePromptProfile(pendingDelete.id);
+                  setPendingDelete(null);
+                }}
+              >
+                <Trash2Icon className="size-3.5 mr-1" />
+                Удалить
+              </Button>
+            </div>
           </div>
         </div>
       )}

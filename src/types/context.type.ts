@@ -67,6 +67,8 @@ export type IContextType = {
   updatePromptProfile: (profileId: string, updates: Partial<PromptProfile>) => void;
   createPromptProfile: (profile: Omit<PromptProfile, "id">) => PromptProfile;
   deletePromptProfile: (profileId: string) => void;
+  /** Restores a built-in profile to the prompt shipped with the app. */
+  resetPromptProfile: (profileId: string) => void;
   jobProfiles: JobProfile[];
   activeJobProfileId: string;
   activeJobProfile: JobProfile | null;

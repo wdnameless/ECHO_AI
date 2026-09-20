@@ -22,6 +22,7 @@ import {
 import { IContextType, ScreenshotConfig, TYPE_PROVIDER } from "@/types";
 import {
   applyProfileToStorage,
+  BUILTIN_PROFILES,
   getActiveProfile,
   getActiveProfileId,
   getPromptProfiles,
@@ -168,6 +169,32 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }
     }
   }, []);
+
+  /**
+   * Restores a built-in profile to the prompt that ships with the app.
+   *
+   * The built-in profiles are merged into whatever is stored, so a user edit is
+   * kept on load. Without this there was no way back: the only visible action on a
+   * built-in profile was an inert delete.
+   */
+  const resetPromptProfile = useCallback(
+    (profileId: string) => {
+      const factory = BUILTIN_PROFILES.find((p) => p.id === profileId);
+      if (!factory) return;
+
+      const profiles = getPromptProfiles().map((p) =>
+        p.id === profileId ? { ...factory } : p
+      );
+      savePromptProfiles(profiles);
+      setPromptProfiles(profiles);
+
+      if (profileId === getActiveProfileId()) {
+        applyProfileToStorage(factory);
+        setSystemPrompt(factory.systemPrompt);
+      }
+    },
+    [setSystemPrompt]
+  );
 
   // Job profiles (Resume / Vacancy / Context presets)
   const [jobProfiles, setJobProfiles] = useState<JobProfile[]>(() =>
@@ -914,6 +941,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     updatePromptProfile,
     createPromptProfile,
     deletePromptProfile,
+    resetPromptProfile,
     jobProfiles,
     activeJobProfileId,
     activeJobProfile,
