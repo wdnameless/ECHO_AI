@@ -32,13 +32,26 @@ const App = () => {
   const handleDragMouseDown = async (e: React.MouseEvent) => {
     // Only drag with left mouse button
     if (e.button !== 0) return;
-    // Don't drag if clicking interactive elements
+    // Anything interactive must not start a window drag. React portals forward
+    // events through the React tree, so this handler still sees mousedown from the
+    // docked panel and from Radix menus even though those live under <body> in the
+    // DOM — and a menu row is a <div role="menuitem">, not a <button>, so dragging
+    // used to start and swallow the click. Profiles looked like they would not
+    // switch because the click never completed.
     const target = e.target as HTMLElement | null;
     if (
+      target?.closest("[data-panel-docked]") ||
+      target?.closest("[data-radix-popper-content-wrapper]") ||
       target?.closest("button") ||
       target?.closest("input") ||
       target?.closest("textarea") ||
+      target?.closest("select") ||
+      target?.closest("a") ||
       target?.closest("[role='button']") ||
+      target?.closest("[role='menuitem']") ||
+      target?.closest("[role='option']") ||
+      target?.closest("[role='tab']") ||
+      target?.closest("[role='switch']") ||
       target?.closest(".no-drag")
     ) {
       return;

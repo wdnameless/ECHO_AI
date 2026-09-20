@@ -10,14 +10,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useWindowResize, useGlobalShortcuts } from ".";
 import { useApp } from "@/contexts";
 import { isExplicitAskEligible } from "@/lib/transcript-stabilizer";
-import {
-  generateConversationId,
-  generateMessageId,
-  generateConversationTitle,
-  getAutoAskConfig,
-  AutoAskManager,
-} from "@/lib";
-import { DEFAULT_SYSTEM_PROMPT } from "@/config";
+import { generateConversationId, getAutoAskConfig, AutoAskManager } from "@/lib";
 import { useMicCapture } from "./useMicCapture";
 import {
   useConversationStore,
@@ -33,7 +26,7 @@ import {
   VadConfig,
   DEFAULT_VAD_CONFIG,
 } from "./useSystemAudioCapture";
-import { useContextQuickActions } from "./useContextQuickActions";
+import { useAudioContextSettings } from "./useAudioContextSettings";
 import { useSystemAudioKeyboard } from "./useSystemAudioKeyboard";
 import { useAudioLifecycle } from "./useAudioLifecycle";
 import { micStateStore } from "@/stores/mic-state";
@@ -65,13 +58,8 @@ export function useSystemAudio() {
   const [error, setError] = useState<string>("");
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
-  // 1. Context & Quick Actions Settings Hook
+  // 1. Audio Context Settings Hook
   const {
-    quickActions,
-    isManagingQuickActions,
-    setIsManagingQuickActions,
-    showQuickActions,
-    setShowQuickActions,
     useSystemPrompt,
     setUseSystemPrompt,
     setRawUseSystemPrompt,
@@ -79,9 +67,7 @@ export function useSystemAudio() {
     setContextContent,
     respondToMic,
     setRespondToMic,
-    addQuickAction,
-    removeQuickAction,
-  } = useContextQuickActions();
+  } = useAudioContextSettings();
 
   // 2. Conversation Store Hook
   const {
@@ -329,44 +315,6 @@ export function useSystemAudio() {
     clearFiller,
   });
 
-  const handleQuickActionClick = async (action: string) => {
-    setError("");
-    const effectiveSystemPrompt = useSystemPrompt
-      ? systemPrompt || DEFAULT_SYSTEM_PROMPT
-      : contextContent || DEFAULT_SYSTEM_PROMPT;
-
-    let updatedMessages = [...conversation.messages];
-    const lastSegment = liveSegments.length > 0 ? liveSegments[liveSegments.length - 1] : null;
-    if (lastSegment && lastSegment.text.trim()) {
-      const newestMessage = updatedMessages[0];
-      if (!newestMessage || newestMessage.content !== lastSegment.text) {
-        const timestamp = Date.now();
-        const userMessage: ChatMessage = {
-          id: generateMessageId("user", timestamp),
-          role: "user",
-          content: lastSegment.text,
-          timestamp,
-          source: lastSegment.source,
-        };
-        updatedMessages = [userMessage, ...updatedMessages];
-        setConversation((prev) => ({
-          ...prev,
-          messages: [userMessage, ...prev.messages],
-          updatedAt: timestamp,
-          title: prev.title || generateConversationTitle(lastSegment.text),
-        }));
-      }
-    }
-
-    const previousMessages = buildHistory(updatedMessages);
-    await processWithAI(
-      action,
-      effectiveSystemPrompt,
-      previousMessages,
-      pendingScreenshotRef.current ? [pendingScreenshotRef.current] : []
-    );
-  };
-
   const askAIForTranscript = useCallback(
     async (utteranceId: string, text: string, source: "me" | "them") => {
       if (!isExplicitAskEligible(text)) {
@@ -513,14 +461,6 @@ export function useSystemAudio() {
     setRespondToMic,
     startNewConversation,
     resizeWindow,
-    quickActions,
-    addQuickAction,
-    removeQuickAction,
-    isManagingQuickActions,
-    setIsManagingQuickActions,
-    showQuickActions,
-    setShowQuickActions,
-    handleQuickActionClick,
     vadConfig,
     updateVadConfiguration,
     isContinuousMode,

@@ -1,22 +1,19 @@
 /**
- * UI Context and Quick Actions state and persistence hook.
+ * System-audio context settings.
  *
  * Responsibility:
- * - Manages system audio context prompt settings (useSystemPrompt, content, respondToMic).
- * - Manages user configurable quick actions list and editor modal state.
- * - Handles persistence of quick actions and context settings to safeLocalStorage.
+ * - Holds the prompt/context switches the copilot panel exposes (useSystemPrompt,
+ *   contextContent, respondToMic) and persists them to safeLocalStorage.
+ *
+ * The user-editable quick-action list used to live here too; it was removed with
+ * its panel, so this module is now only about the audio context.
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { safeLocalStorage } from "@/lib";
-import { DEFAULT_QUICK_ACTIONS, STORAGE_KEYS } from "@/config";
+import { STORAGE_KEYS } from "@/config";
 
-export function useContextQuickActions() {
-  const [quickActions, setQuickActions] = useState<string[]>([]);
-  const [isManagingQuickActions, setIsManagingQuickActions] =
-    useState<boolean>(false);
-  const [showQuickActions, setShowQuickActions] = useState<boolean>(true);
-
+export function useAudioContextSettings() {
   const [useSystemPrompt, setUseSystemPrompt] = useState<boolean>(true);
   const [contextContent, setContextContent] = useState<string>("");
   const [respondToMic, setRespondToMic] = useState<boolean>(() => {
@@ -40,23 +37,6 @@ export function useContextQuickActions() {
       } catch (err) {
         console.error("Failed to load system audio context:", err);
       }
-    }
-  }, []);
-
-  useEffect(() => {
-    const savedActions = safeLocalStorage.getItem(
-      STORAGE_KEYS.SYSTEM_AUDIO_QUICK_ACTIONS
-    );
-    if (savedActions) {
-      try {
-        const parsed = JSON.parse(savedActions);
-        setQuickActions(parsed);
-      } catch (err) {
-        console.error("Failed to load quick actions:", err);
-        setQuickActions(DEFAULT_QUICK_ACTIONS);
-      }
-    } else {
-      setQuickActions(DEFAULT_QUICK_ACTIONS);
     }
   }, []);
 
@@ -99,44 +79,7 @@ export function useContextQuickActions() {
     safeLocalStorage.setItem("respond_to_mic", String(value));
   }, []);
 
-  const saveQuickActions = useCallback((actions: string[]) => {
-    try {
-      safeLocalStorage.setItem(
-        STORAGE_KEYS.SYSTEM_AUDIO_QUICK_ACTIONS,
-        JSON.stringify(actions)
-      );
-    } catch (err) {
-      console.error("Failed to save quick actions:", err);
-    }
-  }, []);
-
-  const addQuickAction = useCallback(
-    (action: string) => {
-      if (action && !quickActions.includes(action)) {
-        const newActions = [...quickActions, action];
-        setQuickActions(newActions);
-        saveQuickActions(newActions);
-      }
-    },
-    [quickActions, saveQuickActions]
-  );
-
-  const removeQuickAction = useCallback(
-    (action: string) => {
-      const newActions = quickActions.filter((a) => a !== action);
-      setQuickActions(newActions);
-      saveQuickActions(newActions);
-    },
-    [quickActions, saveQuickActions]
-  );
-
   return {
-    quickActions,
-    setQuickActions,
-    isManagingQuickActions,
-    setIsManagingQuickActions,
-    showQuickActions,
-    setShowQuickActions,
     useSystemPrompt,
     setUseSystemPrompt: updateUseSystemPrompt,
     setRawUseSystemPrompt: setUseSystemPrompt,
@@ -146,7 +89,5 @@ export function useContextQuickActions() {
     respondToMic,
     setRespondToMic: updateRespondToMic,
     respondToMicRef,
-    addQuickAction,
-    removeQuickAction,
   };
 }

@@ -10,10 +10,8 @@ import {
   LoaderIcon,
   Settings2Icon,
   SettingsIcon,
-  ZapIcon,
 } from "lucide-react";
 import { ModeSwitcher } from "./ModeSwitcher";
-import { QuickActions } from "./QuickActions";
 import { ResultsSection } from "./ResultsSection";
 import { SettingsPanel } from "./SettingsPanel";
 import { RecordingPanel } from "./RecordingPanel";
@@ -49,20 +47,12 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     setIsContinuousMode,
     isRecordingInContinuousMode,
     setupRequired,
-    quickActions,
-    isManagingQuickActions,
-    showQuickActions,
     setIsPopoverOpen,
     setUseSystemPrompt,
     setContextContent,
     updateVadConfiguration,
     startCapture,
     startContinuousRecording,
-    handleQuickActionClick,
-    addQuickAction,
-    removeQuickAction,
-    setIsManagingQuickActions,
-    setShowQuickActions,
     startNewConversation,
     setPendingScreenshot,
     resizeWindow,
@@ -82,7 +72,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const [screenshotImage, setScreenshotImage] = useState<string | null>(null);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
-  const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const screenshotAllowed = canUseFeature("screenshot", {
     isDevBuild: isDevBuild(),
@@ -124,12 +113,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     }
   };
 
-  const hasResponse =
-    !!lastAIResponse ||
-    isAIProcessing ||
-    !!myLastTranscription ||
-    !!theirLastTranscription;
-
   /*
    * The copilot panel is docked under the top bar and fills the rest of the window.
    * It is portalled straight into `body` and positioned from `--bar-chrome` alone,
@@ -162,20 +145,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
 
                 {/* Right: Quick Actions, Screenshot, Settings & New */}
                 <div className="flex items-center gap-1 shrink-0">
-                  {/* Quick Actions Button (Top Bar Dropdown/Drawer) */}
-                  {!setupRequired && hasResponse && (
-                    <Button
-                      size="sm"
-                      variant={showQuickActionsDropdown ? "secondary" : "ghost"}
-                      onClick={() => setShowQuickActionsDropdown((prev) => !prev)}
-                      className="h-6 px-2 text-[10px] gap-1 font-medium"
-                      title="Quick prompt actions"
-                    >
-                      <ZapIcon className="w-3 h-3 text-amber-500" />
-                      <span>Prompts</span>
-                    </Button>
-                  )}
-
                   {/* Screenshot Button — остаётся видимой и объясняет причину,
                       когда возможность недоступна (R17), вместо исчезновения. */}
                   {supportsImages && isVadMode && !setupRequired && (
@@ -259,25 +228,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                   )}
                 </div>
               </div>
-
-              {/* Quick Actions Drawer (When Prompts button is clicked) */}
-              {showQuickActionsDropdown && !setupRequired && hasResponse && (
-                <div className="pt-2 mt-1.5 border-t border-border/40 animate-in fade-in duration-150">
-                  <QuickActions
-                    actions={quickActions}
-                    onActionClick={(action) => {
-                      handleQuickActionClick(action);
-                      setShowQuickActionsDropdown(false);
-                    }}
-                    onAddAction={addQuickAction}
-                    onRemoveAction={removeQuickAction}
-                    isManaging={isManagingQuickActions}
-                    setIsManaging={setIsManagingQuickActions}
-                    show={showQuickActions}
-                    setShow={setShowQuickActions}
-                  />
-                </div>
-              )}
             </div>
 
             {/* Main Full-Height ScrollArea for Answers & Text */}
