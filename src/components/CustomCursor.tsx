@@ -1,72 +1,75 @@
 import { useEffect, useRef } from "react";
 import { MousePointer2 } from "lucide-react";
 
+/**
+ * Follows the pointer with the themed cursor.
+ *
+ * The loop parks itself whenever the pointer has not moved: a `requestAnimationFrame`
+ * callback that writes a transform every frame keeps the compositor busy for as long
+ * as the window is on screen, which is exactly the "the app gets slower while I hover
+ * it" symptom. It also writes only on an actual position change.
+ */
 export const CustomCursor = () => {
   const cursorRef = useRef<HTMLDivElement>(null);
   const positionRef = useRef({ x: 0, y: 0 });
-  const isVisibleRef = useRef(false);
+  const paintedRef = useRef({ x: -1, y: -1 });
+  const visibleRef = useRef(false);
+  const frameRef = useRef<number | null>(null);
 
   useEffect(() => {
-    let rafId: number;
+    const paint = () => {
+      frameRef.current = null;
+      const node = cursorRef.current;
+      const { x, y } = positionRef.current;
+      if (!node || !visibleRef.current) return;
+      if (x === paintedRef.current.x && y === paintedRef.current.y) return;
+      paintedRef.current = { x, y };
+      node.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    };
 
-    const updateCursorPosition = () => {
-      if (cursorRef.current && isVisibleRef.current) {
-        cursorRef.current.style.transform = `translate3d(${positionRef.current.x}px, ${positionRef.current.y}px, 0)`;
+    const schedule = () => {
+      if (frameRef.current === null) {
+        frameRef.current = requestAnimationFrame(paint);
       }
-      rafId = requestAnimationFrame(updateCursorPosition);
     };
 
     const handleMouseMove = (e: MouseEvent) => {
       positionRef.current = { x: e.clientX, y: e.clientY };
 
-      if (!isVisibleRef.current) {
-        isVisibleRef.current = true;
-        if (cursorRef.current) {
-          cursorRef.current.style.opacity = "1";
-        }
+      if (!visibleRef.current) {
+        visibleRef.current = true;
+        if (cursorRef.current) cursorRef.current.style.opacity = "1";
       }
+      schedule();
     };
 
-    const handleMouseLeave = () => {
-      isVisibleRef.current = false;
-      if (cursorRef.current) {
-        cursorRef.current.style.opacity = "0";
-      }
+    const hide = () => {
+      visibleRef.current = false;
+      if (cursorRef.current) cursorRef.current.style.opacity = "0";
     };
 
-    const handleWindowBlur = () => {
-      isVisibleRef.current = false;
-      if (cursorRef.current) {
-        cursorRef.current.style.display = "0";
-      }
-    };
-
-    // Start the animation loop
-    rafId = requestAnimationFrame(updateCursorPosition);
-
-    // Add event listeners
     document.addEventListener("mousemove", handleMouseMove, { passive: true });
-    document.addEventListener("mouseleave", handleMouseLeave);
-    window.addEventListener("blur", handleWindowBlur);
+    document.addEventListener("mouseleave", hide);
+    window.addEventListener("blur", hide);
 
     return () => {
       document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseleave", handleMouseLeave);
-      window.removeEventListener("blur", handleWindowBlur);
-      cancelAnimationFrame(rafId);
+      document.removeEventListener("mouseleave", hide);
+      window.removeEventListener("blur", hide);
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
     };
   }, []);
 
   return (
     <div
       ref={cursorRef}
-      className="fixed top-0 left-0 pointer-events-none z-[9999] opacity-0 will-change-transform"
+      className="pointer-events-none fixed left-0 top-0 z-[9999] opacity-0 will-change-transform"
       style={{
         transform: "translate3d(0px, 0px, 0)",
         transition: "opacity 0.1s ease-out",
       }}
     >
-      <MousePointer2 className="w-5 h-5 drop-shadow-2xl fill-secondary stroke-primary" />
+      <MousePointer2 className="h-5 w-5 fill-secondary stroke-primary" />
     </div>
   );
 };

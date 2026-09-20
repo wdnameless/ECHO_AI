@@ -100,6 +100,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_app_version,
             window::set_window_height,
+            window::set_window_height_absolute,
             window::open_dashboard,
             window::open_dashboard_page,
             window::toggle_dashboard,

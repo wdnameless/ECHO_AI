@@ -1,13 +1,45 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useCallback, useEffect } from "react";
+import { safeLocalStorage } from "@/lib/storage/helper";
 
-// Helper function to check if any popover is open in the DOM
+const PANEL_HEIGHT_KEY = "echo_panel_height";
+
+/** Height the panel opens at when the user has never resized it. */
+export const DEFAULT_PANEL_HEIGHT = 600;
+/** Below this the panel shows nothing useful, so it is not a usable preference. */
+export const MIN_PANEL_HEIGHT = 220;
+
+/**
+ * Records the height the user dragged the panel to.
+ *
+ * Without this the stretched height survived only until the next mode switch:
+ * collapsing to the bar dropped it to 54px, and expanding again had nothing left
+ * to restore, so it came back at the default — which reads as "the resize does not
+ * stick".
+ */
+export const rememberPanelHeight = (height: number) => {
+  const clamped = Math.round(Math.max(MIN_PANEL_HEIGHT, height));
+  safeLocalStorage.setItem(PANEL_HEIGHT_KEY, String(clamped));
+};
+
+const preferredPanelHeight = (): number => {
+  const stored = Number(safeLocalStorage.getItem(PANEL_HEIGHT_KEY));
+  if (!Number.isFinite(stored) || stored < MIN_PANEL_HEIGHT) {
+    return DEFAULT_PANEL_HEIGHT;
+  }
+  // Never ask for more than the display can show.
+  return Math.min(stored, window.screen.availHeight);
+};
+
+// Helper function to check if any dismissible surface is open in the DOM. The
+// docked copilot panel is not a Radix popover, but it must count: otherwise
+// closing an unrelated popover would collapse the window out from under it.
 const isAnyPopoverOpen = (): boolean => {
-  const popoverContents = document.querySelectorAll(
-    "[data-radix-popper-content-wrapper]"
+  return (
+    document.querySelectorAll("[data-radix-popper-content-wrapper]").length > 0 ||
+    document.querySelectorAll("[data-panel-docked]").length > 0
   );
-  return popoverContents.length > 0;
 };
 
 export const useWindowResize = () => {
@@ -19,7 +51,7 @@ export const useWindowResize = () => {
         return;
       }
 
-      const newHeight = expanded ? 600 : 54;
+      const newHeight = expanded ? preferredPanelHeight() : 54;
 
       await invoke("set_window_height", {
         window,
@@ -66,12 +98,12 @@ export const useWindowResize = () => {
       popoverWasOpen = popoverOpen;
     });
 
-    // Observe the body for changes to detect popover open/close
+    // Only the popover wrappers matter, and Radix mounts them as direct children
+    // of <body>. Observing the whole subtree with attributes made this fire on
+    // every streaming subtitle mutation, so it is deliberately shallow.
     observer.observe(document.body, {
       childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["data-state"],
+      subtree: false,
     });
 
     document.addEventListener("mousedown", handleMouseDown);

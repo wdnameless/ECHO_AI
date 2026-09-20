@@ -131,8 +131,47 @@ pub fn center_window_completely(window: &WebviewWindow) -> Result<(), Box<dyn st
     Ok(())
 }
 
+/// Resizes the window to fit the current UI mode.
+///
+/// A height the user stretched to by hand is theirs: expanding or collapsing the
+/// panel must not snap it back to the default, otherwise a drag looks like it did
+/// nothing the moment anything else in the bar is touched.
 #[tauri::command]
 pub fn set_window_height(window: tauri::WebviewWindow, height: u32) -> Result<(), String> {
+    let current = measured_height(&window);
+    let target = if height > 100 && current > COLLAPSED_HEIGHT + 60.0 {
+        current
+    } else {
+        height as f64
+    };
+    apply_height(&window, target)
+}
+
+/// Resizes the window to an exact height. Used by the drag handle, which supplies a
+/// height the user is actively choosing.
+#[tauri::command]
+pub fn set_window_height_absolute(
+    window: tauri::WebviewWindow,
+    height: u32,
+) -> Result<(), String> {
+    apply_height(&window, height as f64)
+}
+
+/// The compact bar's height, below which the window is considered collapsed.
+const COLLAPSED_HEIGHT: f64 = 54.0;
+
+fn measured_height<R: Runtime>(window: &tauri::WebviewWindow<R>) -> f64 {
+    match (window.outer_size(), window.scale_factor()) {
+        (Ok(size), Ok(scale)) => size.height as f64 / scale,
+        (Ok(size), Err(_)) => size.height as f64,
+        _ => COLLAPSED_HEIGHT,
+    }
+}
+
+fn apply_height<R: Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    target_height: f64,
+) -> Result<(), String> {
     use tauri::{LogicalSize, Size};
 
     // If the window is maximized or in fullscreen mode, do not force-resize.
@@ -152,8 +191,6 @@ pub fn set_window_height(window: tauri::WebviewWindow, height: u32) -> Result<()
     };
 
     let target_width = if current_width < 400.0 { 600.0 } else { current_width };
-
-    let target_height = height as f64;
 
     let new_size = LogicalSize::new(target_width, target_height);
     window

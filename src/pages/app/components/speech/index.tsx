@@ -1,11 +1,6 @@
 import { useState, useRef } from "react";
-import {
-  Popover,
-  PopoverAnchor,
-  PopoverContent,
-  Button,
-  ScrollArea,
-} from "@/components";
+import { createPortal } from "react-dom";
+import { Button, ScrollArea } from "@/components";
 import { PermissionFlow } from "./PermissionFlow";
 import {
   AlertCircleIcon,
@@ -22,7 +17,11 @@ import { QuickActions } from "./QuickActions";
 import { ResultsSection } from "./ResultsSection";
 import { SettingsPanel } from "./SettingsPanel";
 import { RecordingPanel } from "./RecordingPanel";
-import { useSystemAudio } from "@/hooks";
+import {
+  useSystemAudio,
+  MIN_PANEL_HEIGHT,
+  rememberPanelHeight,
+} from "@/hooks";
 import { cn } from "@/lib/utils";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -46,7 +45,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     vadConfig,
     useSystemPrompt,
     contextContent,
-    isPopoverOpen,
     isContinuousMode,
     setIsContinuousMode,
     isRecordingInContinuousMode,
@@ -132,30 +130,18 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     !!myLastTranscription ||
     !!theirLastTranscription;
 
-  return (
-    <Popover
-      open={isPopoverOpen}
-      onOpenChange={(open) => {
-        if (capturing && !open) {
-          return;
-        }
-        setIsPopoverOpen(open);
-      }}
+  /*
+   * The copilot panel is docked under the top bar and fills the rest of the window.
+   * It is portalled straight into `body` and positioned from `--bar-chrome` alone,
+   * so its geometry does not depend on the bar's insides, on a Radix wrapper's
+   * transform, or on its own measured height.
+   */
+  const panel = (capturing || setupRequired || error) && (
+    <div
+      data-panel-docked="true"
+      className="panel-docked z-50 select-none overflow-hidden rounded-xl border border-input/50 bg-background shadow-lg"
     >
-      {/* Кнопка-дубль убрана: запуск захвата дублировал переключатель
-          «Встреча» в верхнем баре. Popover с лентой субтитров остаётся
-          и открывается сам при старте захвата (см. useSystemAudio),
-          поэтому ему нужен невидимый якорь вместо кнопки-триггера. */}
-      <PopoverAnchor className="w-0 h-0" />
-
-      {(capturing || setupRequired || error) && (
-        <PopoverContent
-          align="start"
-          side="bottom"
-          className="select-none w-[calc(100vw-16px)] max-w-full min-w-0 p-0 border shadow-lg overflow-hidden border-input/50 rounded-xl"
-          sideOffset={14}
-        >
-          <div className="flex flex-col h-[calc(100vh - var(--bar-chrome))] max-w-full min-w-0 overflow-hidden">
+          <div className="flex flex-col h-full max-w-full min-w-0 overflow-hidden">
             {/* Header - Top Control Toolbar (All actions consolidated at top!) */}
             <div className="flex-shrink-0 p-2.5 border-b border-border/50 bg-muted/10">
               <div className="flex items-center justify-between gap-1.5 min-w-0 w-full">
@@ -435,41 +421,51 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                 )}
               </div>
             </ScrollArea>
-            {/* Bottom resize handle with native startResizeDragging and manual mouse drag fallback */}
+            {/* Resize handle: drags the window's bottom edge. `startResizeDragging`
+                resolves without doing anything on a transparent, undecorated
+                window, so the height is driven directly instead. */}
             <div
-              className="flex-shrink-0 h-3 w-full cursor-ns-resize flex items-center justify-center hover:bg-primary/20 transition-colors select-none group touch-none"
-              title="Потяните, чтобы изменить высоту окна"
-              onMouseDown={async (e) => {
+              className="group flex h-4 w-full shrink-0 cursor-ns-resize items-center justify-center border-t border-border/40 bg-muted/20 hover:bg-muted/40 touch-none select-none"
+              title="Потяните, чтобы изменить высоту панели"
+              onMouseDown={(e) => {
                 if (e.button !== 0) return;
                 e.preventDefault();
                 e.stopPropagation();
-                try {
-                  await getCurrentWindow().startResizeDragging("South");
-                } catch (err) {
-                  console.debug("Native resize failed, using fallback:", err);
-                  const startY = e.screenY;
-                  const startH = window.innerHeight;
-                  const onMouseMove = (moveEv: MouseEvent) => {
-                    const newH = Math.max(200, Math.round(startH + (moveEv.screenY - startY)));
-                    invoke("set_window_height", {
-                      window: getCurrentWindow(),
-                      height: newH,
-                    }).catch(console.error);
-                  };
-                  const onMouseUp = () => {
-                    window.removeEventListener("mousemove", onMouseMove);
-                    window.removeEventListener("mouseup", onMouseUp);
-                  };
-                  window.addEventListener("mousemove", onMouseMove);
-                  window.addEventListener("mouseup", onMouseUp);
-                }
+
+                const startY = e.screenY;
+                const startHeight = window.innerHeight;
+                let pending = startHeight;
+
+                const onMouseMove = (move: MouseEvent) => {
+                  const next = Math.max(
+                    MIN_PANEL_HEIGHT,
+                    Math.min(
+                      window.screen.availHeight,
+                      Math.round(startHeight + (move.screenY - startY))
+                    )
+                  );
+                  if (next === pending) return;
+                  pending = next;
+                  rememberPanelHeight(next);
+                  void invoke("set_window_height_absolute", {
+                    window: getCurrentWindow(),
+                    height: next,
+                  }).catch((err) => console.error("Resize failed:", err));
+                };
+                const onMouseUp = () => {
+                  window.removeEventListener("mousemove", onMouseMove);
+                  window.removeEventListener("mouseup", onMouseUp);
+                };
+
+                window.addEventListener("mousemove", onMouseMove);
+                window.addEventListener("mouseup", onMouseUp);
               }}
             >
-              <div className="w-10 h-1 rounded-full bg-muted-foreground/40 group-hover:bg-primary transition-colors" />
+              <div className="h-1 w-10 rounded-full bg-muted-foreground/40 transition-colors group-hover:bg-foreground" />
             </div>
           </div>
-        </PopoverContent>
-      )}
-    </Popover>
+        </div>
   );
+
+  return <>{panel && createPortal(panel, document.body)}</>;
 };

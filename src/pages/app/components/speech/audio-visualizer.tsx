@@ -14,6 +14,9 @@ const AUDIO_CONFIG = {
   },
 } as const;
 
+/** Minimum gap between visualizer repaints (~30 fps). */
+const PAINT_INTERVAL_MS = 1000 / 30;
+
 interface AudioVisualizerProps {
   isRecording: boolean;
   stream?: MediaStream | null;
@@ -28,11 +31,25 @@ export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const oscillatorsRef = useRef<OscillatorNode[]>([]);
   const gainNodesRef = useRef<GainNode[]>([]);
+  // The draw loop reads this instead of the captured `isRecording` prop, so it can
+  // observe that capture stopped rather than running until the effect cleanup.
+  const recordingRef = useRef(isRecording);
+
+  useEffect(() => {
+    recordingRef.current = isRecording;
+    if (!isRecording) {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = 0;
+      }
+    }
+  }, [isRecording]);
 
   // Cleanup function to stop visualization and close audio context
   const cleanup = () => {
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = 0;
     }
     // Stop all oscillators
     oscillatorsRef.current.forEach((osc) => {
@@ -126,7 +143,10 @@ export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
 
     // Animate the gain to simulate speech patterns
     const animateGain = () => {
-      if (!isRecording || !audioContextRef.current) return;
+      // Read the live refs, not the captured props/values: after cleanup this
+      // closure would otherwise keep re-arming a timer forever.
+      if (!recordingRef.current || !audioContextRef.current) return;
+      if (gainNodesRef.current !== gainNodes) return;
 
       gainNodes.forEach((gainNode, index) => {
         // Create random fluctuations to simulate speech
@@ -151,6 +171,10 @@ export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
   // Initialize audio context and start visualization
   const startVisualization = async () => {
     try {
+      // Drop whatever the previous run left behind first: without this, every
+      // restart leaked an AudioContext and left an orphan animation loop running.
+      cleanup();
+
       const audioContext = new AudioContext();
       audioContextRef.current = audioContext;
 
@@ -202,24 +226,49 @@ export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
   const draw = () => {
     if (!isRecording) return;
 
+    // A previous loop may still be alive: `startVisualization` runs again whenever
+    // the stream or the recording flag changes, and each run used to spawn another
+    // animation loop that nothing could cancel. Four of them added up to ~240
+    // frame callbacks per second.
+    if (animationFrameRef.current) return;
+
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx || !analyserRef.current) return;
 
     const dpr = window.devicePixelRatio || 1;
-    ctx.scale(dpr, dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     const analyser = analyserRef.current;
     const bufferLength = analyser.frequencyBinCount;
     const frequencyData = new Uint8Array(bufferLength);
+    // A level meter reads the same whether it moves 30 or 240 times a second, and
+    // the panel refreshes at 240 Hz — redrawing 512 bars on every one of those
+    // frames was the single most expensive thing on the capture path.
+    let lastPaint = 0;
 
-    const drawFrame = () => {
+    const drawFrame = (now: number) => {
+      // Stop drawing as soon as recording ends: this loop used to re-request itself
+      // unconditionally, so a stopped capture kept burning a frame budget forever.
+      if (!recordingRef.current) {
+        animationFrameRef.current = 0;
+        return;
+      }
       animationFrameRef.current = requestAnimationFrame(drawFrame);
 
-      // Get current frequency data
-      analyser.getByteFrequencyData(frequencyData);
+      if (now - lastPaint < PAINT_INTERVAL_MS) return;
+      lastPaint = now;
 
-      // Clear canvas - use CSS pixels for clearing
+      // Skip the repaint when no bars are lit: silence is the common case while
+      // the copilot waits, and clearing 512 bars per frame for a flat line is waste.
+      let loudest = 0;
+      analyser.getByteFrequencyData(frequencyData);
+      for (let i = 0; i < bufferLength; i++) {
+        if (frequencyData[i] > loudest) loudest = frequencyData[i];
+      }
+      if (loudest === 0) return;
+
+      // Use CSS pixels for clearing
       ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
 
       // Calculate dimensions in CSS pixels
@@ -251,7 +300,7 @@ export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
       }
     };
 
-    drawFrame();
+    drawFrame(performance.now());
   };
 
   return (

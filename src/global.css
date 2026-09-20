@@ -46,10 +46,11 @@
 :root {
   --radius: 0.625rem;
   --cursor-type: default;
-  /* Высота верхнего бара плюс отступ всплывающей панели. В пикселях, а НЕ в
-     rem: настройка «Font Size» меняет корневой font-size (13–19px), из-за
-     чего rem-вычисления меняли высоту панелей и верхняя панель съезжала. */
-  --bar-chrome: 72px;
+  /* Distance from the top of the window to the top of the docked panel: the top
+     bar plus the gap under it. Measured at runtime (see `useBarChrome`) and kept
+     in px, because the "Font Size" setting changes the root font-size (13–19px)
+     and rem-based maths would visibly drift. */
+  --bar-chrome: 68px;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -181,6 +182,51 @@ body {
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+/*
+ * Docked panel geometry.
+ *
+ * These were previously written as Tailwind arbitrary values
+ * (`h-[calc(100vh - var(--bar-chrome))]`). Tailwind does not emit an arbitrary
+ * value that contains spaces, so the class was silently dropped and every one of
+ * these containers had no height at all: the panel collapsed to its content, the
+ * window could be made taller while the panel stayed put, and Radix's collision
+ * avoidance slid the panel up over the top bar. Plain CSS rules keep the intent
+ * and actually apply.
+ */
+.panel-fill {
+  height: calc(100vh - var(--bar-chrome));
+}
+.panel-fill-sm {
+  height: calc(100vh - var(--bar-chrome) - 56px);
+}
+.panel-fill-md {
+  height: calc(100vh - var(--bar-chrome) - 64px);
+}
+.panel-fill-lg {
+  height: calc(100vh - var(--bar-chrome) - 72px);
+}
+
+/*
+ * The meeting copilot panel is docked, not floating: it hangs under the top bar
+ * and fills the rest of the window. Radix computes a transform for it, which
+ * made its position depend on its own measured height — so growing the window
+ * pushed it over the bar. Pinning it with `top`/`bottom` makes the geometry
+ * independent of both the panel and the window size.
+ */
+.panel-docked {
+  /* `body` is `position: fixed`, so an absolutely positioned child of it is
+     positioned against the viewport — with none of the surprises `position: fixed`
+     picked up while the panel lived deep inside the app tree. */
+  position: absolute !important;
+  top: var(--bar-chrome) !important;
+  left: 8px !important;
+  right: 8px !important;
+  /* Height is stated outright: with `bottom: 0` + `height: auto` the browser
+     kept the content height instead of stretching, leaving a 2px sliver. */
+  height: calc(100vh - var(--bar-chrome)) !important;
+  transform: none !important;
 }
 
 /* Streamdown code block styling */

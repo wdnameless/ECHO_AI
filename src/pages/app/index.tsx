@@ -5,7 +5,7 @@ import {
   AudioVisualizer,
   StatusIndicator,
 } from "./components";
-import { useApp } from "@/hooks";
+import { useApp, useBarChrome } from "@/hooks";
 import { useApp as useAppContext } from "@/contexts";
 import { HeadphonesIcon, MicIcon, Eye, EyeOff, Settings } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
@@ -27,6 +27,7 @@ const App = () => {
   const { isHidden, systemAudio } = useApp();
   const { customizable, toggleStealthMode } = useAppContext();
   const platform = getPlatform();
+  useBarChrome();
 
   const handleDragMouseDown = async (e: React.MouseEvent) => {
     // Only drag with left mouse button
