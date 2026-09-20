@@ -25,20 +25,30 @@ import {
   type SttReadiness,
 } from "@/lib/storage/app-paths";
 import {
-  LANGUAGES,
   supportsLanguageCode,
-  type Language,
+  getUniqueCapabilityLanguages,
+  getLanguageLabel,
 } from "@/lib/constants/languages";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { LanguageFilterDropdown } from "./LanguageFilterDropdown";
 import { cn } from "@/lib/utils";
 
 type SortOption = "name" | "accuracy" | "speed" | "size";
+
+/**
+ * Human label for a model's language support.
+ *
+ * The catalogue stores recognition codes, so a one-language model must be named
+ * after the language it actually handles — calling a Russian-only GigaAM model
+ * "English only" is simply wrong and made the language filter look broken.
+ */
+function describeLanguages(model: ModelEntry): string {
+  const unique = getUniqueCapabilityLanguages(model.languages);
+  if (unique.length === 0) return "Unknown languages";
+  if (unique.length === 1) {
+    return `${getLanguageLabel(unique[0]) ?? unique[0]} only`;
+  }
+  return `${unique.length} languages`;
+}
 
 export const Models = () => {
   const [models, setModels] = useState<ModelEntry[]>([]);
@@ -278,19 +288,10 @@ export const Models = () => {
               </Button>
 
               {/* Language filter dropdown */}
-              <Select value={selectedLanguage} onValueChange={setSelectedLanguage}>
-                <SelectTrigger className="h-8 w-[150px] text-xs bg-card border-border/60 rounded-lg">
-                  <SelectValue placeholder="All Languages" />
-                </SelectTrigger>
-                <SelectContent className="max-h-60">
-                  <SelectItem value="all">All Languages</SelectItem>
-                  {LANGUAGES.map((lang: Language) => (
-                    <SelectItem key={lang.value} value={lang.value}>
-                      {lang.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <LanguageFilterDropdown
+                value={selectedLanguage}
+                onChange={setSelectedLanguage}
+              />
             </div>
           </div>
 
@@ -372,7 +373,7 @@ export const Models = () => {
                       <div className="flex items-center gap-3">
                         <span className="flex items-center gap-1">
                           <Languages className="w-3.5 h-3.5" />
-                          {model ? `${model.language_count} languages` : "Offline"}
+                          {model ? describeLanguages(model) : "Offline"}
                         </span>
                         {model?.capabilities.streaming && (
                           <span className="flex items-center gap-1">
@@ -468,11 +469,7 @@ export const Models = () => {
                       <div className="flex items-center gap-3">
                         <span className="flex items-center gap-1">
                           <Languages className="w-3.5 h-3.5" />
-                          {model.languages && model.languages.length === 1 && model.languages[0] === "ru"
-                            ? "Russian only"
-                            : model.language_count === 1
-                            ? "English only"
-                            : `${model.language_count || model.languages?.length || 1} languages`}
+                          {describeLanguages(model)}
                         </span>
                         {model.capabilities.streaming && (
                           <span className="flex items-center gap-1">

@@ -187,7 +187,18 @@ pub fn run() {
             }
             #[cfg(target_os = "macos")]
             init(app.app_handle());
-            // Dashboard window is created lazily on demand when user opens it via menu or tray.
+
+            // The settings window is built once, hidden. Its WebView2 must have the app
+            // bundle loaded before the user asks for it: creating it on demand left it
+            // sitting on `about:blank` on Windows, which surfaced as an empty window
+            // with no controls. `visible(false)` keeps it off screen until requested.
+            let app_handle = app.handle();
+            if app_handle.get_webview_window("dashboard").is_none() {
+                if let Err(e) = window::create_dashboard_window(&app_handle) {
+                    eprintln!("Failed to pre-create settings window: {}", e);
+                }
+            }
+
             #[cfg(desktop)]
             {
                 use tauri_plugin_autostart::MacosLauncher;

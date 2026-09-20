@@ -295,12 +295,13 @@ pub fn create_dashboard_window<R: Runtime>(
         .min_inner_size(880.0, 600.0)
         .visible(false)
         .content_protected(true);
+
     let window = base_builder.build()?;
     setup_dashboard_close_handler(&window);
-    #[cfg(target_os = "windows")]
-    {
-        let _ = apply_stealth_to_window(&window);
-    }
+    // The settings window is a normal interactive window: it must NOT carry the
+    // overlay's stealth flags. `WS_EX_NOACTIVATE` in particular makes it unable to
+    // take focus, which reads to the user as "buttons do not respond".
+    let _ = window.hide();
     Ok(window)
 }
 
