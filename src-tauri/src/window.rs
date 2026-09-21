@@ -1,5 +1,6 @@
 #[cfg(target_os = "macos")]
 use tauri::LogicalPosition;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{App, AppHandle, Emitter, Manager, Runtime, WebviewWindow, WebviewWindowBuilder};
 
 #[cfg(target_os = "windows")]
@@ -339,7 +340,38 @@ pub fn create_dashboard_window<R: Runtime>(
     // overlay's stealth flags. `WS_EX_NOACTIVATE` in particular makes it unable to
     // take focus, which reads to the user as "buttons do not respond".
     let _ = window.hide();
+    guard_settings_visibility(app.clone(), window.clone());
     Ok(window)
+}
+
+/// How long after startup the window may still be forced back to hidden.
+const SETTINGS_GUARD_MS: u64 = 1500;
+
+/// Set once the user asks for the settings window, which disarms the guard.
+static SETTINGS_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+fn guard_settings_visibility<R: Runtime>(app: AppHandle<R>, window: WebviewWindow<R>) {
+    // The window is preloaded so its WebView2 already has the app bundle; on some
+    // machines the host re-shows the window once WebView2 attaches to it, which
+    // surfaced as "settings open by themselves at launch". Hiding it once more
+    // after everything has settled removes that race entirely: nothing but an
+    // explicit request may keep this window on screen.
+    tauri::async_runtime::spawn(async move {
+        for _ in 0..6 {
+            tokio::time::sleep(std::time::Duration::from_millis(SETTINGS_GUARD_MS / 3)).await;
+            if SETTINGS_REQUESTED.load(Ordering::SeqCst) {
+                return;
+            }
+            if let Some(win) = app.get_webview_window("dashboard") {
+                if win.is_visible().unwrap_or(false) {
+                    let _ = win.hide();
+                }
+            } else {
+                return;
+            }
+        }
+        let _ = window;
+    });
 }
 
 /// Sets up the close event handler for the dashboard window
@@ -360,6 +392,7 @@ fn setup_dashboard_close_handler<R: Runtime>(window: &WebviewWindow<R>) {
 
 /// Shows the dashboard window and brings it to focus
 pub fn show_dashboard_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    SETTINGS_REQUESTED.store(true, Ordering::SeqCst);
     let dashboard_window = match app.get_webview_window("dashboard") {
         Some(win) => win,
         None => create_dashboard_window(app)
