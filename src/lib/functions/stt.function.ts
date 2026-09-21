@@ -11,6 +11,7 @@ import { TYPE_PROVIDER } from "@/types";
 import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
 import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
+import { sttReadiness } from "@/lib/storage/app-paths";
 import { getResponseSettings } from "@/lib";
 
 // Cache parsed curl configs: curl2Json is pure, so parsing the same provider
@@ -98,6 +99,26 @@ export interface STTParams {
   priority?: "high" | "low";
   /** Optional initial prompt / vocabulary hints passed to ASR (e.g. sidecar). */
   prompt?: string;
+}
+
+/**
+ * Explains why a local ASR request could not be delivered.
+ *
+ * The sidecar is only started when a speech model is configured, so a missing
+ * model and a crashed engine both surface as "network error" on the loopback
+ * address. Asking the backend which of the two it is turns an unactionable
+ * message into one the user can fix.
+ */
+async function describeLocalAsrFailure(): Promise<string | null> {
+  try {
+    // The backend already distinguishes "no model selected" from "engine never
+    // came up", and phrases both for the user. Reuse that verdict instead of
+    // second-guessing the sidecar state from the renderer.
+    const readiness = await sttReadiness();
+    return readiness.engine_running ? null : readiness.reason;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -308,6 +329,9 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     // lose a speech segment.
     let response: Response | null = null;
     let lastErrMsg = "";
+    // Set once the server has answered with any status: an HTTP error means the
+    // engine is alive, so it must not be reported as "the engine is not running".
+    let unreachable = true;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         response = await fetchFunction(url, {
@@ -315,6 +339,7 @@ export async function fetchSTT(params: STTParams): Promise<string> {
           headers: trust.headers,
           body: curlJson.method === "GET" ? undefined : body,
         });
+        unreachable = false;
       } catch (e) {
         lastErrMsg = `Network error: ${e instanceof Error ? e.message : e}`;
         response = null;
@@ -346,6 +371,13 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     }
 
     if (!response || !response.ok) {
+      // A local engine that is not running looks exactly like a network failure,
+      // but the cause is on this machine and the user can act on it: either no
+      // speech model is configured, or the sidecar never came up.
+      if (isLocalAsr && unreachable) {
+        const explanation = await describeLocalAsrFailure();
+        if (explanation) throw new Error(explanation);
+      }
       throw new Error(lastErrMsg || "STT request failed");
     }
 
