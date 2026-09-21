@@ -54,6 +54,89 @@ export async function removeSecret(key: string): Promise<void> {
   await invoke("secure_storage_remove", { keys: [key] });
 }
 
+/**
+ * Matches a literal bearer token inside a curl template.
+ *
+ * Placeholders (`{{API_KEY}}`) are excluded by the negative lookahead so an already
+ * migrated template is left untouched.
+ */
+const LITERAL_BEARER = /(Bearer\s+)(?!\{\{)([^\s"'\\]+)/i;
+
+/** True when the template carries a real key instead of the placeholder. */
+export function curlHasLiteralSecret(curl: string): boolean {
+  return LITERAL_BEARER.test(curl || "");
+}
+
+/**
+ * Moves a key that a curl template carries in plaintext into the secure store.
+ *
+ * Returns the sanitized template and the key that was found. Providers are stored
+ * in localStorage, so a key embedded there is readable by anything running in the
+ * webview — the whole point of keeping secrets out of it.
+ */
+export function extractLiteralSecret(curl: string): {
+  curl: string;
+  secret: string | null;
+} {
+  const match = LITERAL_BEARER.exec(curl || "");
+  if (!match) return { curl, secret: null };
+  return {
+    curl: (curl || "").replace(LITERAL_BEARER, "$1{{API_KEY}}"),
+    secret: match[2],
+  };
+}
+
+/** Flag for the one-time curl-template sweep, separate from the variables sweep. */
+const CURL_MIGRATION_FLAG = "curl_literal_secrets_migrated_v1";
+
+/**
+ * One-time sweep over stored custom AI providers.
+ *
+ * The older visual form wrote the key the user typed straight into the generated
+ * curl, so those providers keep a plaintext key in localStorage until something
+ * rewrites the template. Rewriting it requires no user action.
+ */
+export async function migrateCurlLiteralsToSecrets(): Promise<number> {
+  if (safeLocalStorage.getItem(CURL_MIGRATION_FLAG) === "true") return 0;
+
+  const raw = safeLocalStorage.getItem(STORAGE_KEYS.CUSTOM_AI_PROVIDERS);
+  if (!raw) {
+    safeLocalStorage.setItem(CURL_MIGRATION_FLAG, "true");
+    return 0;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return 0;
+  }
+  if (!Array.isArray(parsed)) return 0;
+
+  let migrated = 0;
+  let changed = false;
+  const pending: Promise<void>[] = [];
+  const next = (parsed as Array<Record<string, unknown>>).map((entry) => {
+    const id = typeof entry?.id === "string" ? entry.id : null;
+    const curl = typeof entry?.curl === "string" ? entry.curl : "";
+    if (!id || !curlHasLiteralSecret(curl)) return entry;
+    const { curl: sanitized, secret } = extractLiteralSecret(curl);
+    if (secret) {
+      pending.push(saveSecret(secretKey.aiProvider(id), secret));
+      migrated += 1;
+      changed = true;
+    }
+    return { ...entry, curl: sanitized };
+  });
+
+  await Promise.all(pending);
+  if (changed) {
+    safeLocalStorage.setItem(STORAGE_KEYS.CUSTOM_AI_PROVIDERS, JSON.stringify(next));
+  }
+  safeLocalStorage.setItem(CURL_MIGRATION_FLAG, "true");
+  return migrated;
+}
+
 /** Метка, что миграция уже выполнена: повторно localStorage не сканируем. */
 const MIGRATION_FLAG = "secrets_migrated_v1";
 
@@ -249,4 +332,5 @@ export async function migrateSecretsFromLocalStorage(): Promise<number> {
 /** Только для тестов: сброс отметки о миграции. */
 export function resetMigrationFlagForTests(): void {
   safeLocalStorage.removeItem(MIGRATION_FLAG);
+  safeLocalStorage.removeItem(CURL_MIGRATION_FLAG);
 }

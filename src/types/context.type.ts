@@ -69,6 +69,8 @@ export type IContextType = {
   deletePromptProfile: (profileId: string) => void;
   /** Restores a built-in profile to the prompt shipped with the app. */
   resetPromptProfile: (profileId: string) => void;
+  /** Re-reads prompt profiles from storage (used after restoring deleted built-ins). */
+  refreshPromptProfiles: () => void;
   jobProfiles: JobProfile[];
   activeJobProfileId: string;
   activeJobProfile: JobProfile | null;
@@ -77,4 +79,6 @@ export type IContextType = {
   createJobProfile: (profile: Omit<JobProfile, "id">) => JobProfile;
   deleteJobProfile: (profileId: string) => void;
   applyJobProfile: (profileId: string) => void;
+  /** Re-reads job profiles from storage (used after restoring deleted built-ins). */
+  refreshJobProfiles: () => void;
 };

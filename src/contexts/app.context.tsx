@@ -6,7 +6,10 @@ import {
 } from "@/config";
 import { canonicalizeVariables, getPlatform, safeLocalStorage, trackAppStart } from "@/lib";
 import { getShortcutsConfig } from "@/lib/storage";
-import { migrateSecretsFromLocalStorage } from "@/lib/storage/secret-store";
+import {
+  migrateCurlLiteralsToSecrets,
+  migrateSecretsFromLocalStorage,
+} from "@/lib/storage/secret-store";
 import {
   getCustomizableState,
   setCustomizableState,
@@ -27,6 +30,8 @@ import {
   getActiveProfileId,
   getPromptProfiles,
   PromptProfile,
+  removeBuiltinProfile,
+  restoreBuiltinProfile,
   savePromptProfiles,
   setActiveProfileId,
 } from "@/lib/storage/prompt-profiles";
@@ -35,6 +40,7 @@ import {
   getActiveJobProfileId,
   getJobProfiles,
   JobProfile,
+  removeBuiltinJobProfile,
   saveJobProfiles,
   setActiveJobProfileId,
 } from "@/lib/storage/job-profiles";
@@ -49,6 +55,7 @@ import {
   useContext,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -152,23 +159,40 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     []
   );
 
+  /**
+   * Deletes a prompt profile.
+   *
+   * A custom profile is simply removed. A built-in is remembered as deleted, so the
+   * merge that runs on every load does not bring it back. The last remaining profile
+   * is kept: with nothing to activate, the copilot would have no prompt at all.
+   */
+  /** Re-reads profiles from storage: used after out-of-band edits such as restoring built-ins. */
+  const refreshPromptProfiles = useCallback(() => {
+    setPromptProfiles(getPromptProfiles());
+  }, []);
+
   const deletePromptProfile = useCallback((profileId: string) => {
     const current = getPromptProfiles();
+    if (current.length <= 1) return;
     const target = current.find((p) => p.id === profileId);
-    if (!target || target.isBuiltin) return;
+    if (!target) return;
+
+    if (target.isBuiltin) removeBuiltinProfile(profileId);
+
     const profiles = current.filter((p) => p.id !== profileId);
     savePromptProfiles(profiles);
     setPromptProfiles(profiles);
-    // If active profile was deleted, fall back to Interview profile.
+
     if (profileId === getActiveProfileId()) {
       const fallback = profiles.find((p) => p.isBuiltin) || profiles[0];
       if (fallback) {
         setActiveProfileIdState(fallback.id);
         setActiveProfileId(fallback.id);
         applyProfileToStorage(fallback);
+        setSystemPrompt(fallback.systemPrompt);
       }
     }
-  }, []);
+  }, [setSystemPrompt]);
 
   /**
    * Restores a built-in profile to the prompt that ships with the app.
@@ -181,6 +205,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     (profileId: string) => {
       const factory = BUILTIN_PROFILES.find((p) => p.id === profileId);
       if (!factory) return;
+      // Resetting a built-in that had been deleted brings it back into the list.
+      restoreBuiltinProfile(profileId);
 
       const profiles = getPromptProfiles().map((p) =>
         p.id === profileId ? { ...factory } : p
@@ -251,14 +277,31 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     []
   );
 
+  /**
+   * Deletes a job profile.
+   *
+   * A custom profile is removed from storage; a built-in is remembered as deleted so
+   * the merge that runs on every load does not bring it back. The last profile is
+   * kept, since without one there is no job context to fill at all.
+   */
+  /** Re-reads job profiles from storage: used after out-of-band edits such as restoring built-ins. */
+  const refreshJobProfiles = useCallback(() => {
+    setJobProfiles(getJobProfiles());
+  }, []);
+
   const deleteJobProfile = useCallback((profileId: string) => {
-    const profiles = getJobProfiles().filter(
-      (p) => p.id !== profileId && !p.isBuiltin
-    );
+    const current = getJobProfiles();
+    if (current.length <= 1) return;
+    const target = current.find((p) => p.id === profileId);
+    if (!target) return;
+
+    if (target.isBuiltin) removeBuiltinJobProfile(profileId);
+
+    const profiles = current.filter((p) => p.id !== profileId);
     saveJobProfiles(profiles);
     setJobProfiles(profiles);
     if (profileId === getActiveJobProfileId()) {
-      const fallback = profiles.find((p) => p.isBuiltin) || profiles[0];
+      const fallback = profiles[0];
       if (fallback) {
         setActiveJobProfileIdState(fallback.id);
         setActiveJobProfileId(fallback.id);
@@ -301,6 +344,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     provider: "",
     variables: {},
   });
+  /** True when the selection was changed locally and still needs persisting. */
+  const aiSelectionDirtyRef = useRef(false);
 
   // STT Providers
   const [customSttProviders, setCustomSttProviders] = useState<TYPE_PROVIDER[]>(
@@ -561,6 +606,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         console.debug("Secret migration skipped:", error);
       }
 
+      // Keys that an older version wrote into the curl text itself.
+      try {
+        await migrateCurlLiteralsToSecrets();
+      } catch (error) {
+        console.debug("Curl secret sweep skipped:", error);
+      }
+
       // Load license and data
       await getActiveLicenseStatus();
 
@@ -729,14 +781,29 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     checkImageSupport();
   }, [pluelyApiEnabled, selectedAIProvider.provider]);
 
-  // Sync selected AI to localStorage
+  // Sync selected AI to localStorage — only for changes made here.
+  //
+  // Every window runs this provider, and `loadData()` (fired by storage events)
+  // replaces the state object with whatever storage already holds. Persisting that
+  // copy back made the two windows fight: the window with the stale value could
+  // write it last and silently undo a selection made in the other one. Writing
+  // only when the value came from a local change removes the race.
   useEffect(() => {
-    if (selectedAIProvider.provider) {
-      safeLocalStorage.setItem(
-        STORAGE_KEYS.SELECTED_AI_PROVIDER,
-        JSON.stringify(selectedAIProvider)
-      );
+    if (!selectedAIProvider.provider) return;
+    // Only a change made in this window may be persisted. `loadData()` copies
+    // whatever storage holds into the state, and persisting that copy back let a
+    // window with a stale value write it last and undo the other window's choice.
+    if (!aiSelectionDirtyRef.current) return;
+    const serialized = JSON.stringify(selectedAIProvider);
+    // A change can be dispatched while an older render is still being committed,
+    // and that older render runs this effect first. Comparing against storage
+    // keeps the stale render from writing its outdated value over the fresh one;
+    // the flag stays set so the render that actually carries the new value writes.
+    if (safeLocalStorage.getItem(STORAGE_KEYS.SELECTED_AI_PROVIDER) === serialized) {
+      return;
     }
+    aiSelectionDirtyRef.current = false;
+    safeLocalStorage.setItem(STORAGE_KEYS.SELECTED_AI_PROVIDER, serialized);
   }, [selectedAIProvider]);
 
   // Sync selected STT to localStorage
@@ -786,6 +853,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
 
     const canonicalVars = canonicalizeVariables(variables);
+    aiSelectionDirtyRef.current = true;
     setSelectedAIProvider((prev) => ({
       ...prev,
       provider,
@@ -936,6 +1004,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     supportsImages,
     setSupportsImages,
     promptProfiles,
+    refreshPromptProfiles,
     activeProfileId,
     selectPromptProfile,
     updatePromptProfile,
@@ -950,6 +1019,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     createJobProfile,
     deleteJobProfile,
     applyJobProfile,
+    refreshJobProfiles,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

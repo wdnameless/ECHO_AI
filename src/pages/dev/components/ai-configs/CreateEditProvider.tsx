@@ -4,6 +4,9 @@ import { PlusIcon, SaveIcon, CodeIcon, SlidersIcon, CheckIcon, AlertCircleIcon, 
 import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 import { fetchProviderModels } from "@/lib/functions/models.function";
+import { useEffect } from "react";
+import curl2Json from "@bany/curl-to-json";
+import { getSecret, secretKey } from "@/lib/storage/secret-store";
 
 interface EasyFormState {
   preset: string;
@@ -88,9 +91,9 @@ export const CreateEditProvider = ({
       : `${cleanBase}/chat/completions`;
 
     const modelVal = state.model.trim() || "{{MODEL}}";
-    const authHeader = state.apiKey.trim()
-      ? `  -H "Authorization: Bearer ${state.apiKey.trim()}" \\\n`
-      : `  -H "Authorization: Bearer {{API_KEY}}" \\\n`;
+    // The template is stored in localStorage, so the key never goes into it: the
+    // placeholder is resolved at request time from the OS secure store.
+    const authHeader = `  -H "Authorization: Bearer {{API_KEY}}" \\\n`;
 
     let dataObj: any = {
       model: modelVal,
@@ -160,6 +163,53 @@ export const CreateEditProvider = ({
       });
     }
   };
+
+  /**
+   * Fills the visual fields from the provider being edited.
+   *
+   * Without this the form kept whatever values it had from the previous edit, and
+   * saving rewrote the template with an unrelated endpoint and model.
+   */
+  useEffect(() => {
+    if (!editingProvider) return;
+    const parsed: any = curl2Json(formData.curl || "");
+    const url: string = typeof parsed?.url === "string" ? parsed.url : "";
+    const data: any = parsed?.data ?? {};
+    const baseUrl = url.replace(/\/(chat\/completions|completions|messages)\/?$/i, "");
+    const preset =
+      Object.entries(PRESET_DEFAULTS).find(
+        ([, config]) => config.baseUrl && baseUrl.startsWith(config.baseUrl)
+      )?.[0] ?? "custom";
+
+    setEasyState((prev) => ({
+      ...prev,
+      preset,
+      baseUrl,
+      // A placeholder is not a model name: leave the field empty for the user.
+      model:
+        typeof data.model === "string" && !data.model.includes("{{")
+          ? data.model
+          : "",
+      maxTokens:
+        data.max_tokens !== undefined && data.max_tokens !== null
+          ? String(data.max_tokens)
+          : "",
+      streaming: formData.streaming ?? data.stream === true,
+      responseContentPath:
+        formData.responseContentPath || prev.responseContentPath,
+    }));
+
+    // Show the stored key so replacing it does not silently wipe it.
+    let cancelled = false;
+    void (async () => {
+      const stored = await getSecret(secretKey.aiProvider(editingProvider));
+      if (!cancelled) setEasyState((prev) => ({ ...prev, apiKey: stored ?? "" }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingProvider]);
 
   const handlePresetSelect = (presetKey: string) => {
     const config = PRESET_DEFAULTS[presetKey] || PRESET_DEFAULTS.custom;
@@ -307,7 +357,8 @@ export const CreateEditProvider = ({
                   </div>
                 </div>
                 <p className="text-[11px] text-muted-foreground">
-                  Хранится локально на этом устройстве в защищённом хранилище.
+                  Хранится в защищённом хранилище ОС и подставляется в запрос как
+                  {" "}<code className="font-mono">{"{{API_KEY}}"}</code> — в cURL и localStorage ключ не попадает.
                 </p>
               </div>
 
@@ -440,7 +491,9 @@ export const CreateEditProvider = ({
               Отмена
             </Button>
             <Button
-              onClick={handleSave}
+              onClick={() =>
+                handleSave({ apiKey: easyState.apiKey, model: easyState.model })
+              }
               disabled={!formData.curl?.trim()}
               className="h-10 text-xs px-5"
             >

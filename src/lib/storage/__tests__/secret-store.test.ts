@@ -7,6 +7,9 @@ import {
   getSecret,
   removeSecret,
   migrateSecretsFromLocalStorage,
+  migrateCurlLiteralsToSecrets,
+  extractLiteralSecret,
+  curlHasLiteralSecret,
   resetMigrationFlagForTests,
 } from "../secret-store";
 
@@ -166,5 +169,69 @@ describe("secret-store", () => {
       const migrated = await migrateSecretsFromLocalStorage();
       expect(migrated).toBeGreaterThanOrEqual(0);
     });
+  });
+});
+
+describe("curl templates never keep a plaintext key", () => {
+  const PROVIDER_CURL = [
+    "curl https://api.example.test/v1/chat/completions \\",
+    '  -H "Content-Type: application/json" \\',
+    '  -H "Authorization: Bearer sk-literal-123456" \\',
+    `  -d '{"model": "m", "messages": [{"role": "user", "content": "{{TEXT}}"}]}'`,
+  ].join("\n");
+
+  beforeEach(() => {
+    localStorage.clear();
+    store.clear();
+    resetMigrationFlagForTests();
+  });
+
+  it("replaces a literal bearer token with the placeholder and reports it", () => {
+    const { curl, secret } = extractLiteralSecret(PROVIDER_CURL);
+
+    expect(secret).toBe("sk-literal-123456");
+    expect(curl).toContain("Bearer {{API_KEY}}");
+    expect(curl).not.toContain("sk-literal-123456");
+    // Everything else in the template must survive untouched.
+    expect(curl).toContain("https://api.example.test/v1/chat/completions");
+    expect(curl).toContain("{{TEXT}}");
+  });
+
+  it("leaves an already sanitized template alone", () => {
+    const sanitized = PROVIDER_CURL.replace("sk-literal-123456", "{{API_KEY}}");
+
+    expect(curlHasLiteralSecret(sanitized)).toBe(false);
+    expect(extractLiteralSecret(sanitized)).toEqual({
+      curl: sanitized,
+      secret: null,
+    });
+  });
+
+  it("moves a stored literal into the secure store and sanitizes the provider", async () => {
+    localStorage.setItem(
+      STORAGE_KEYS.CUSTOM_AI_PROVIDERS,
+      JSON.stringify([{ id: "custom-1", curl: PROVIDER_CURL }])
+    );
+
+    await expect(migrateCurlLiteralsToSecrets()).resolves.toBe(1);
+
+    const [provider] = JSON.parse(
+      localStorage.getItem(STORAGE_KEYS.CUSTOM_AI_PROVIDERS) as string
+    );
+    expect(provider.curl).toContain("Bearer {{API_KEY}}");
+    expect(provider.curl).not.toContain("sk-literal-123456");
+    await expect(getSecret(secretKey.aiProvider("custom-1"))).resolves.toBe(
+      "sk-literal-123456"
+    );
+  });
+
+  it("runs once, so a later start does not rescan the list", async () => {
+    localStorage.setItem(
+      STORAGE_KEYS.CUSTOM_AI_PROVIDERS,
+      JSON.stringify([{ id: "custom-1", curl: PROVIDER_CURL }])
+    );
+
+    await migrateCurlLiteralsToSecrets();
+    await expect(migrateCurlLiteralsToSecrets()).resolves.toBe(0);
   });
 });

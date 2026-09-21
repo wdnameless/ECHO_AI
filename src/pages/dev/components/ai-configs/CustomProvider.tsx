@@ -1,11 +1,15 @@
 import { UseSettingsReturn } from "@/types";
-import { Card, Button, Header } from "@/components";
+import { useEffect } from "react";
+import { Card, Button, Label } from "@/components";
 import { EditIcon, TrashIcon } from "lucide-react";
 import { CreateEditProvider } from "./CreateEditProvider";
 import { useCustomAiProviders } from "@/hooks";
 import curl2Json from "@bany/curl-to-json";
 
-export const CustomProviders = ({ allAiProviders }: UseSettingsReturn) => {
+export const CustomProviders = ({
+  allAiProviders,
+  onSetSelectedAIProvider,
+}: UseSettingsReturn) => {
   const customProviderHook = useCustomAiProviders();
   const {
     handleEdit,
@@ -13,14 +17,29 @@ export const CustomProviders = ({ allAiProviders }: UseSettingsReturn) => {
     deleteConfirm,
     confirmDelete,
     cancelDelete,
+    pendingSelect,
+    clearPendingSelect,
   } = customProviderHook;
+
+  // Activate a provider as soon as the reloaded list contains it.
+  useEffect(() => {
+    if (!pendingSelect) return;
+    if (!allAiProviders?.some((p) => p?.id === pendingSelect.id)) return;
+    onSetSelectedAIProvider({
+      provider: pendingSelect.id,
+      variables: pendingSelect.variables,
+    });
+    clearPendingSelect();
+  }, [
+    allAiProviders,
+    clearPendingSelect,
+    onSetSelectedAIProvider,
+    pendingSelect,
+  ]);
 
   return (
     <div className="space-y-2">
-      <Header
-        title="Custom Providers"
-        description="Create and manage custom AI providers. Configure endpoints, authentication, and response formats."
-      />
+      <Label className="text-xs font-medium text-foreground">Свои провайдеры</Label>
 
       <div className="space-y-2">
         {/* Existing Custom Providers */}
