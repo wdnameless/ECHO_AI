@@ -344,41 +344,97 @@ pub fn create_dashboard_window<R: Runtime>(
     Ok(window)
 }
 
-/// How long after startup the window may still be forced back to hidden.
-const SETTINGS_GUARD_MS: u64 = 1500;
+/// Steady-state interval of the visibility guard.
+const SETTINGS_GUARD_MS: u64 = 500;
 
 /// Set once the user asks for the settings window, which disarms the guard.
 static SETTINGS_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// Whether the window is on screen, according to the OS.
+///
+/// Tauri's `is_visible` reports *its own* flag, which stays `false` when the
+/// shell reveals a window the app never showed — exactly the reveal this guard
+/// exists to undo, so it must ask the window manager instead.
+fn visible_on_screen<R: Runtime>(window: &WebviewWindow<R>) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+
+        if let Ok(hwnd_ptr) = window.hwnd() {
+            let hwnd = HWND(hwnd_ptr.0 as *mut _);
+            return unsafe { IsWindowVisible(hwnd).as_bool() };
+        }
+        false
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        window.is_visible().unwrap_or(false)
+    }
+}
+
 fn guard_settings_visibility<R: Runtime>(app: AppHandle<R>, window: WebviewWindow<R>) {
-    // The window is preloaded so its WebView2 already has the app bundle; on some
-    // machines the host re-shows the window once WebView2 attaches to it, which
-    // surfaced as "settings open by themselves at launch". Hiding it once more
-    // after everything has settled removes that race entirely: nothing but an
-    // explicit request may keep this window on screen.
+    // The window is preloaded for its WebView2 side effect — created on demand it
+    // came up blank — so nothing but an explicit request may leave it visible.
+    // The shell reveals it on its own every so often (WebView2 attaching, the
+    // window being activated, session events), and a guard that only runs for the
+    // first seconds after creation misses exactly those: the window then stays on
+    // screen, which is the "settings open by themselves at launch" report.
     tauri::async_runtime::spawn(async move {
-        for _ in 0..6 {
-            tokio::time::sleep(std::time::Duration::from_millis(SETTINGS_GUARD_MS / 3)).await;
+        // Poll quickly while the window settles, then slowly: a reveal can happen
+        // at any point in the session, but only costs a visibility query.
+        let startup_until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let interval = if std::time::Instant::now() < startup_until {
+                std::time::Duration::from_millis(100)
+            } else {
+                std::time::Duration::from_millis(SETTINGS_GUARD_MS)
+            };
+            tokio::time::sleep(interval).await;
+
             if SETTINGS_REQUESTED.load(Ordering::SeqCst) {
                 return;
             }
-            if let Some(win) = app.get_webview_window("dashboard") {
-                if win.is_visible().unwrap_or(false) {
-                    let _ = win.hide();
+            match app.get_webview_window("dashboard") {
+                Some(win) => {
+                    if visible_on_screen(&win) {
+                        hide_at_os_level(&win);
+                    }
                 }
-            } else {
-                return;
+                // Closed for real: nothing left to guard.
+                None => return,
             }
         }
-        let _ = window;
     });
+    let _ = window;
 }
 
-/// Sets up the close event handler for the dashboard window
+/// Takes the window off screen, whatever state the toolkit thinks it is in.
+fn hide_at_os_level<R: Runtime>(window: &WebviewWindow<R>) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+
+        if let Ok(hwnd_ptr) = window.hwnd() {
+            let hwnd = HWND(hwnd_ptr.0 as *mut _);
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+        }
+    }
+    // Keep the toolkit's own state in step with what is on screen.
+    let _ = window.hide();
+}
+
+/// Sets up the close event handler for the dashboard window.
+///
+/// Also answers the other way the window can reappear: a reveal activates it, so
+/// hiding on focus gets it off screen immediately instead of at the next poll.
 fn setup_dashboard_close_handler<R: Runtime>(window: &WebviewWindow<R>) {
     let window_clone = window.clone();
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::CloseRequested { api, .. } => {
             // Prevent the window from being destroyed
             api.prevent_close();
             // Hide the window instead
@@ -386,6 +442,10 @@ fn setup_dashboard_close_handler<R: Runtime>(window: &WebviewWindow<R>) {
                 eprintln!("Failed to hide dashboard window on close: {}", e);
             }
         }
+        tauri::WindowEvent::Focused(true) if !SETTINGS_REQUESTED.load(Ordering::SeqCst) => {
+            hide_at_os_level(&window_clone);
+        }
+        _ => {}
     });
 }
 
