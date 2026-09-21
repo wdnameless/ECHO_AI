@@ -11,6 +11,8 @@ export interface JobProfile {
 
 export const JOB_PROFILES_STORAGE_KEY = STORAGE_KEYS.JOB_PROFILES;
 export const ACTIVE_JOB_PROFILE_STORAGE_KEY = STORAGE_KEYS.ACTIVE_JOB_PROFILE_ID;
+/** Built-in job profiles the user deleted; they must not come back on reload. */
+export const REMOVED_BUILTIN_JOB_PROFILES_KEY = "job_profiles_removed_builtins";
 
 export const DEFAULT_JOB_PROFILES: JobProfile[] = [
   {
@@ -52,21 +54,64 @@ export const DEFAULT_JOB_PROFILES: JobProfile[] = [
   },
 ];
 
+/**
+ * Built-in job profiles the user deleted.
+ *
+ * Built-ins are merged into whatever is stored on every load, so without this
+ * list a deleted built-in would silently reappear on the next start.
+ */
+export function getRemovedBuiltinJobProfileIds(): string[] {
+  const raw = safeLocalStorage.getItem(REMOVED_BUILTIN_JOB_PROFILES_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function setRemovedBuiltinJobProfileIds(ids: string[]): void {
+  safeLocalStorage.setItem(REMOVED_BUILTIN_JOB_PROFILES_KEY, JSON.stringify(ids));
+}
+
+/** Deletes a built-in by recording it as removed. */
+export function removeBuiltinJobProfile(id: string): void {
+  const removed = getRemovedBuiltinJobProfileIds();
+  if (!removed.includes(id)) setRemovedBuiltinJobProfileIds([...removed, id]);
+}
+
+/** Undoes {@link removeBuiltinJobProfile}. */
+export function restoreBuiltinJobProfile(id: string): void {
+  setRemovedBuiltinJobProfileIds(getRemovedBuiltinJobProfileIds().filter((x) => x !== id));
+}
+
+/** Brings every deleted built-in back. Returns how many were restored. */
+export function restoreAllBuiltinJobProfiles(): number {
+  const removed = getRemovedBuiltinJobProfileIds();
+  setRemovedBuiltinJobProfileIds([]);
+  return removed.length;
+}
+
 export function getJobProfiles(): JobProfile[] {
+  const removed = getRemovedBuiltinJobProfileIds();
+  const availableBuiltins = DEFAULT_JOB_PROFILES.filter((b) => !removed.includes(b.id));
   const stored = safeLocalStorage.getItem(JOB_PROFILES_STORAGE_KEY);
-  if (!stored) return [...DEFAULT_JOB_PROFILES];
+  if (!stored) return [...availableBuiltins];
   try {
     const parsed = JSON.parse(stored) as JobProfile[];
-    if (!Array.isArray(parsed)) return [...DEFAULT_JOB_PROFILES];
+    if (!Array.isArray(parsed)) return [...availableBuiltins];
 
-    const builtins = DEFAULT_JOB_PROFILES.map((b) => {
+    const builtins = availableBuiltins.map((b) => {
       const existing = parsed.find((p) => p.id === b.id);
       return existing ? { ...b, ...existing, isBuiltin: true } : b;
     });
-    const customs = parsed.filter((p) => !p.isBuiltin);
+    const customs = parsed.filter(
+      (p) => !p.isBuiltin && !DEFAULT_JOB_PROFILES.some((b) => b.id === p.id)
+    );
     return [...builtins, ...customs];
   } catch {
-    return [...DEFAULT_JOB_PROFILES];
+    return [...availableBuiltins];
   }
 }
 
@@ -78,7 +123,7 @@ export function getActiveJobProfileId(): string {
   const id = safeLocalStorage.getItem(ACTIVE_JOB_PROFILE_STORAGE_KEY);
   const profiles = getJobProfiles();
   if (id && profiles.some((p) => p.id === id)) return id;
-  return DEFAULT_JOB_PROFILES[0].id;
+  return profiles[0]?.id ?? DEFAULT_JOB_PROFILES[0].id;
 }
 
 export function setActiveJobProfileId(id: string): void {

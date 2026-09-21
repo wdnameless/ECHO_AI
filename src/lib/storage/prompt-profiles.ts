@@ -4,6 +4,8 @@ import { HUMANIZER_STORAGE_KEY } from "@/config/humanizer.rules";
 
 export const PROFILE_STORAGE_KEY = "prompt_profiles";
 export const ACTIVE_PROFILE_STORAGE_KEY = "active_profile_id";
+/** Built-in profiles the user has deleted; they must not come back on reload. */
+export const REMOVED_BUILTIN_PROFILES_KEY = "prompt_profiles_removed_builtins";
 
 export interface PromptProfile {
   id: string;
@@ -67,21 +69,64 @@ export const BUILTIN_PROFILES: PromptProfile[] = [
   },
 ];
 
+/**
+ * Built-in profiles the user deleted.
+ *
+ * Built-ins are merged into whatever is stored on every load, so without this
+ * list a deleted built-in would silently reappear on the next start.
+ */
+export function getRemovedBuiltinProfileIds(): string[] {
+  const raw = safeLocalStorage.getItem(REMOVED_BUILTIN_PROFILES_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function setRemovedBuiltinProfileIds(ids: string[]): void {
+  safeLocalStorage.setItem(REMOVED_BUILTIN_PROFILES_KEY, JSON.stringify(ids));
+}
+
+/** Deletes a built-in by recording it as removed. */
+export function removeBuiltinProfile(id: string): void {
+  const removed = getRemovedBuiltinProfileIds();
+  if (!removed.includes(id)) setRemovedBuiltinProfileIds([...removed, id]);
+}
+
+/** Undoes {@link removeBuiltinProfile}. */
+export function restoreBuiltinProfile(id: string): void {
+  setRemovedBuiltinProfileIds(getRemovedBuiltinProfileIds().filter((x) => x !== id));
+}
+
+/** Brings every deleted built-in back. Returns how many were restored. */
+export function restoreAllBuiltinProfiles(): number {
+  const removed = getRemovedBuiltinProfileIds();
+  setRemovedBuiltinProfileIds([]);
+  return removed.length;
+}
+
 export function getPromptProfiles(): PromptProfile[] {
+  const removed = getRemovedBuiltinProfileIds();
+  const availableBuiltins = BUILTIN_PROFILES.filter((b) => !removed.includes(b.id));
   const stored = safeLocalStorage.getItem(PROFILE_STORAGE_KEY);
-  if (!stored) return [...BUILTIN_PROFILES];
+  if (!stored) return [...availableBuiltins];
   try {
     const parsed = JSON.parse(stored) as PromptProfile[];
-    if (!Array.isArray(parsed)) return [...BUILTIN_PROFILES];
+    if (!Array.isArray(parsed)) return [...availableBuiltins];
     // Merge built-ins (so updated built-ins always exist) + custom ones
-    const builtins = BUILTIN_PROFILES.map((b) => {
+    const builtins = availableBuiltins.map((b) => {
       const existing = parsed.find((p) => p.id === b.id);
       return existing ? { ...b, ...existing, isBuiltin: true } : b;
     });
-    const customs = parsed.filter((p) => !p.isBuiltin);
+    const customs = parsed.filter(
+      (p) => !p.isBuiltin && !BUILTIN_PROFILES.some((b) => b.id === p.id)
+    );
     return [...builtins, ...customs];
   } catch {
-    return [...BUILTIN_PROFILES];
+    return [...availableBuiltins];
   }
 }
 
