@@ -54,3 +54,6 @@ asr-port
 # Generated architecture reports (tooling output)
 .archmap/
 src/.archmap/
+
+# Workflow tool state (lane/artifact bookkeeping), not part of the project
+/.workflow/
