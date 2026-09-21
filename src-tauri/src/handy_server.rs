@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::Write;
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -27,35 +27,62 @@ static JOB_OBJECT: Mutex<Option<SendHandle>> = Mutex::new(None);
 
 pub static STT_SERVER: Mutex<Option<Child>> = Mutex::new(None);
 
-const PORT: &str = "127.0.0.1:8000";
-const ASR_PORT: &str = "127.0.0.1:9877";
+/// Default port of the native engine, and the range it rebounds into when the
+/// default one is taken.
+const ENGINE_PORT: u16 = 9877;
+const ENGINE_PORT_RANGE: std::ops::RangeInclusive<u16> = ENGINE_PORT..=9882;
+
+/// Port of the legacy python fallback server (`scripts/handy_stt_server.py`),
+/// used only when no engine binary or no model is available.
+const LEGACY_PORT: u16 = 8000;
+
+/// Health of a loopback ASR service, as JSON.
+///
+/// An accepted TCP connection is not evidence of a working engine: any service
+/// can own a port, and the legacy port is a popular one. Treating it as
+/// evidence made the app declare recognition ready, never start the engine, and
+/// leave the renderer posting to a port nothing served. Both servers answer
+/// `{"status": "ok", ...}` on `/health`, so that is what liveness means here.
+fn health_body(port: u16) -> Option<serde_json::Value> {
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().ok()?;
+    // Cheap gate first: a closed port costs one failed connect, not a request.
+    TcpStream::connect_timeout(&addr, Duration::from_millis(150)).ok()?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(700))
+        .build()
+        .ok()?;
+    let body = client
+        .get(format!("http://127.0.0.1:{port}/health"))
+        .send()
+        .ok()?
+        .text()
+        .ok()?;
+    let value: serde_json::Value = serde_json::from_str(&body).ok()?;
+    (value.get("status").and_then(|s| s.as_str()) == Some("ok")).then_some(value)
+}
+
+/// Port the native engine is serving on, if it is.
+fn native_engine_port() -> Option<u16> {
+    let mut candidates: Vec<u16> = Vec::new();
+    if let Some(port) = read_bound_asr_port() {
+        candidates.push(port);
+    }
+    candidates.extend(ENGINE_PORT_RANGE);
+    candidates
+        .into_iter()
+        .find(|port| health_body(*port).is_some())
+}
+
+/// Port any usable ASR service is serving on: the native engine first, then the
+/// legacy python fallback. The renderer resolves its base URL from this same
+/// answer, so both sides agree on where speech is sent.
+pub fn serving_port() -> Option<u16> {
+    native_engine_port().or_else(|| health_body(LEGACY_PORT).map(|_| LEGACY_PORT))
+}
 
 fn is_running() -> bool {
-    // The sidecar rebounds upward (9877..9882) when the default port is busy,
-    // so a fixed-port probe would report a healthy instance as dead. Ask the
-    // port file first (written next to the sidecar binary), then probe the
-    // known range. The legacy python server on :8000 stays as a candidate.
-    if let Some(port) = read_bound_asr_port() {
-        if TcpStream::connect_timeout(
-            &format!("127.0.0.1:{port}").parse().unwrap(),
-            Duration::from_millis(300),
-        )
-        .is_ok()
-        {
-            return true;
-        }
-    }
-    for port in 9877..=9882 {
-        if TcpStream::connect_timeout(
-            &format!("127.0.0.1:{port}").parse().unwrap(),
-            Duration::from_millis(150),
-        )
-        .is_ok()
-        {
-            return true;
-        }
-    }
-    TcpStream::connect_timeout(&PORT.parse().unwrap(), Duration::from_millis(150)).is_ok()
+    serving_port().is_some()
 }
 
 /// Read the port recorded in the asr-port file next to any known sidecar
@@ -86,7 +113,7 @@ fn read_bound_asr_port() -> Option<u16> {
             .metadata()
             .and_then(|m| m.modified())
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        if freshest.as_ref().map_or(true, |(cur, _)| ts > *cur) {
+        if freshest.as_ref().is_none_or(|(cur, _)| ts > *cur) {
             freshest = Some((ts, port));
         }
     }
@@ -366,6 +393,23 @@ fn open_sidecar_log_file() -> std::fs::File {
 }
 
 
+/// Records the child that owns the STT port, retiring whatever it replaces.
+///
+/// The replaced child is killed: only one server may serve, and a replaced one
+/// would otherwise survive as an orphan holding its port. That is exactly how a
+/// fallback python server ended up squatting on the legacy port long after the
+/// engine had taken over, which made every later launch believe recognition was
+/// already running.
+fn track_server(child: Child) -> bool {
+    if let Ok(mut guard) = STT_SERVER.lock() {
+        if let Some(mut old) = guard.replace(child) {
+            let _ = old.kill();
+            let _ = old.wait();
+        }
+    }
+    true
+}
+
 /// Spawn the native pluely-asr sidecar. Returns true on success.
 ///
 /// stdout/stderr go to a rotating-ish log file (asr-sidecar.log) next to the
@@ -419,10 +463,7 @@ fn spawn_pluely_asr() -> bool {
                 child.id()
             );
             assign_job_object(&child);
-            if let Ok(mut guard) = STT_SERVER.lock() {
-                *guard = Some(child);
-            }
-            true
+            track_server(child)
         }
         Err(e) => {
             eprintln!("[tauri] failed to spawn pluely-asr: {}", e);
@@ -443,12 +484,16 @@ fn start_sidecar_watchdog() {
     std::thread::spawn(|| {
         loop {
             std::thread::sleep(Duration::from_secs(25));
-            if !is_running() {
-                eprintln!("[tauri] watchdog: ASR service is down, restarting...");
-                if spawn_pluely_asr() {
-                    // Give the model a moment to load before next check.
-                    std::thread::sleep(Duration::from_secs(8));
-                }
+            // Watch the engine, not "some ASR service": with the fallback
+            // serving, a dead engine would otherwise look healthy forever. With
+            // no model there is nothing to start, so staying quiet is correct.
+            if native_engine_port().is_some() || find_model_path().is_none() {
+                continue;
+            }
+            eprintln!("[tauri] watchdog: ASR engine is down, restarting...");
+            if spawn_pluely_asr() {
+                // Give the model a moment to load before next check.
+                std::thread::sleep(Duration::from_secs(8));
             }
         }
     });
@@ -456,7 +501,13 @@ fn start_sidecar_watchdog() {
 
 /// Start the local Handy STT server if it isn't already running.
 pub fn ensure_server_running() {
-    if is_running() {
+    // The native engine is what the renderer resolves first, so it wins whenever
+    // a model allows it. The legacy fallback must not count as "already running"
+    // here: an install that started without a model (fallback serving on :8000)
+    // used to keep running the fallback -- or keep failing with a network error,
+    // when the renderer never probed that port -- even after a model was
+    // installed and the GPU engine became possible.
+    if native_engine_port().is_some() {
         start_sidecar_watchdog();
         return;
     }
@@ -467,12 +518,21 @@ pub fn ensure_server_running() {
         return;
     }
 
+    // No engine binary or no model: the fallback is what is left, and it may
+    // already be serving from an earlier run of this app.
+    if health_body(LEGACY_PORT).is_some() {
+        start_sidecar_watchdog();
+        return;
+    }
+
     let Some(python) = find_python() else {
         eprintln!("handy_server: python not found, skipping");
+        start_sidecar_watchdog();
         return;
     };
     let Some(script) = find_script() else {
         eprintln!("handy_server: script not found, skipping");
+        start_sidecar_watchdog();
         return;
     };
 
@@ -492,12 +552,14 @@ pub fn ensure_server_running() {
     match spawn {
         Ok(child) => {
             eprintln!("[tauri] Handy STT server started (pid {})", child.id());
-            if let Ok(mut guard) = STT_SERVER.lock() {
-                *guard = Some(child);
-            }
+            track_server(child);
         }
         Err(e) => eprintln!("[tauri] failed to start Handy STT server: {}", e),
     }
+
+    // The fallback must not be a dead end: the engine can become possible later
+    // (the user installs a model), and the watchdog is what switches to it.
+    start_sidecar_watchdog();
 }
 
 /// Stop the server child process (called on app exit).
@@ -514,11 +576,14 @@ pub fn stop_server() {
     wait_for_shutdown(Duration::from_secs(8));
 }
 
-/// Waits until the ASR port stops responding, up to `timeout`.
+/// Waits until the engine port stops responding, up to `timeout`.
+///
+/// Waits on the engine rather than on any ASR service: a fallback server left
+/// running would otherwise keep this loop spinning for the whole timeout.
 fn wait_for_shutdown(timeout: Duration) {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
-        if !is_running() {
+        if native_engine_port().is_none() {
             return;
         }
         std::thread::sleep(Duration::from_millis(150));
@@ -605,29 +670,22 @@ pub fn handy_server_status() -> bool {
     is_running()
 }
 
-/// Detailed status for the frontend: whether the server is up plus the
-/// currently selected Handy model (read from the server /health endpoint).
+/// Detailed status for the frontend: whether the service that the renderer will
+/// actually use is up, plus the model it reports on `/health`.
 #[tauri::command]
 pub fn handy_server_status_detailed() -> serde_json::Value {
-    if !is_running() {
+    let Some(port) = serving_port() else {
         return serde_json::json!({ "online": false, "model": "" });
-    }
-    // Ask the python server for the selected model via /health.
-    let model = TcpStream::connect_timeout(&PORT.parse().unwrap(), Duration::from_millis(400))
-        .ok()
-        .and_then(|mut stream| {
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(600)));
-            let _ = stream.write_all(
-                b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-            );
-            let _ = stream.flush();
-            let mut buf = Vec::new();
-            let _ = stream.read_to_end(&mut buf);
-            let text = String::from_utf8_lossy(&buf);
-            // Extract the JSON body after the blank line
-            let body = text.split("\r\n\r\n").nth(1).unwrap_or("");
-            let v: serde_json::Value = serde_json::from_str(body).ok()?;
-            v.get("model").and_then(|m| m.as_str()).map(|s| s.to_string())
+    };
+    // The python fallback reports the model as a string, the native engine as an
+    // object with `variant` — the badge needs a name either way.
+    let model = health_body(port)
+        .and_then(|v| match v.get("model") {
+            Some(serde_json::Value::String(s)) => Some(s.clone()),
+            Some(serde_json::Value::Object(o)) => {
+                o.get("variant").and_then(|x| x.as_str()).map(str::to_string)
+            }
+            _ => None,
         })
         .unwrap_or_default();
     serde_json::json!({ "online": true, "model": model })
@@ -640,13 +698,20 @@ pub fn start_handy_server() -> bool {
     is_running()
 }
 
-/// Read the port the sidecar actually bound to (written next to its binary).
-/// Returns None if the file is missing or the sidecar never started.
+/// Port the ASR service is serving on right now, for the renderer to build its
+/// base URL — the native engine first, then the legacy fallback.
+///
+/// Replaces reading the sidecar's `asr-port` file: a file cannot say whether the
+/// service is still alive, and it never covered the fallback server at all,
+/// which is how the renderer ended up posting to a dead port.
 #[tauri::command]
-pub fn read_asr_port_file() -> Option<String> {
-    // Shared lookup also validates that the file parses to a real port and
-    // picks the freshest file when several sidecar copies exist.
-    read_bound_asr_port().map(|port| port.to_string())
+pub async fn live_asr_port() -> Option<u16> {
+    // Probing real sockets on the transcription hot path, so keep it off the
+    // main thread.
+    tauri::async_runtime::spawn_blocking(serving_port)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Speak text aloud using Windows SAPI (fallback for WebView2 which may not
@@ -695,10 +760,10 @@ $s.Dispose()
 
         if let Some((child, stdin)) = guard.as_mut() {
             if let Some(stdin) = stdin.as_mut() {
-                let _ = writeln!(stdin, "{}", text.replace('\n', " ").replace('\r', " "));
+                let _ = writeln!(stdin, "{}", text.replace(['\n', '\r'], " "));
                 let _ = stdin.flush();
             } else if let Some(mut stdin) = child.stdin.take() {
-                let _ = writeln!(stdin, "{}", text.replace('\n', " ").replace('\r', " "));
+                let _ = writeln!(stdin, "{}", text.replace(['\n', '\r'], " "));
                 let _ = stdin.flush();
             }
         }
@@ -721,5 +786,85 @@ pub fn stop_tts() {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read as _;
+    use std::net::TcpListener;
+
+    /// A loopback listener on an ephemeral port, plus the port it took.
+    fn ephemeral_listener() -> (TcpListener, u16) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        (listener, port)
+    }
+
+    /// Serves canned HTTP responses on an ephemeral port, one per connection,
+    /// for as long as the test process lives.
+    fn serve(responder: impl Fn() -> String + Send + 'static) -> u16 {
+        let (listener, port) = ephemeral_listener();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let mut stream = stream;
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf); // request line is irrelevant here
+                let _ = stream.write_all(responder().as_bytes());
+            }
+        });
+        port
+    }
+
+    fn http_ok(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
+    /// The bug this guards: any service owning the port counted as a healthy
+    /// engine. The app then reported recognition as ready, never started the
+    /// engine, and the renderer posted into a port nothing served.
+    #[test]
+    fn a_listener_that_is_not_an_engine_is_not_healthy() {
+        // Answers HTTP 200 with valid JSON, like a plain web service would.
+        let port = serve(|| http_ok(r#"{"hello":"world"}"#));
+        assert!(health_body(port).is_none());
+    }
+
+    #[test]
+    fn a_listener_that_never_answers_is_not_healthy() {
+        let (listener, port) = ephemeral_listener();
+        std::thread::spawn(move || {
+            // Accept and stay silent: the request must time out, not hang forever.
+            if let Ok((_stream, _)) = listener.accept() {
+                std::thread::sleep(Duration::from_secs(3));
+            }
+        });
+        assert!(health_body(port).is_none());
+    }
+
+    #[test]
+    fn the_native_engine_health_payload_is_healthy() {
+        let port = serve(|| http_ok(r#"{"status":"ok","model":{"variant":"nemotron"}}"#));
+        let body = health_body(port).expect("engine payload must be recognised");
+        assert_eq!(
+            body.get("model")
+                .and_then(|m| m.get("variant"))
+                .and_then(|v| v.as_str()),
+            Some("nemotron")
+        );
+    }
+
+    #[test]
+    fn the_fallback_server_health_payload_is_healthy() {
+        let port = serve(|| {
+            http_ok(r#"{"status": "ok", "engine": "faster-whisper", "model": "small", "error": null}"#)
+        });
+        let body = health_body(port).expect("fallback payload must be recognised");
+        assert_eq!(body.get("model").and_then(|m| m.as_str()), Some("small"));
     }
 }

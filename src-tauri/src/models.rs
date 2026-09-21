@@ -567,7 +567,7 @@ pub async fn select_model(id_or_path: String) -> Result<InstalledModel, String> 
         None => {
             // A catalogue id that is really a quantisation of some model, so
             // "select q5_k_m" works the way the old flat list allowed.
-            if let Some((model, file)) = entries().iter().find_map(|m| {
+            if let Some((_model, file)) = entries().iter().find_map(|m| {
                 m.files
                     .iter()
                     .find(|f| f.quant.eq_ignore_ascii_case(selector))
@@ -646,7 +646,8 @@ pub async fn download_model(
 
     let saved = tauri::async_runtime::spawn_blocking(move || {
         let mut last_emit = std::time::Instant::now();
-        let result = download(model, file, &mut |downloaded, total| {
+        
+        download(model, file, &mut |downloaded, total| {
             // Throttle to ~10 Hz: emitting per 1 MB chunk would flood the
             // WebView with events the UI cannot render faster than this.
             if last_emit.elapsed() < std::time::Duration::from_millis(100) {
@@ -661,8 +662,7 @@ pub async fn download_model(
                     total,
                 },
             );
-        });
-        result
+        })
     })
     .await
     .map_err(|e| format!("загрузка прервана: {e}"))??;

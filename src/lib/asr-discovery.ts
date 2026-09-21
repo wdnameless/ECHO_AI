@@ -3,14 +3,18 @@ import { invoke } from "@tauri-apps/api/core";
 /**
  * Resolve the pluely-asr service base URL.
  *
- * The sidecar binds 9877 by default but falls back to 9878..9882 when the
- * default port is busy (stale instance, another app). It also writes the
- * actually-bound port next to its binary (asr-port file). Discovery order:
- *   1. port file (read via the Rust command) — probed for /health,
- *   2. sequential probe of the 9877..9882 range,
- * falling back to the hardcoded default 9877 only if nothing answers.
+ * Liveness lives in the backend: it probes `/health` on the native engine's
+ * ports (the one it recorded, then 9877..9882) and on the legacy python
+ * fallback, and reports whichever answers. The renderer asks for that answer
+ * instead of guessing — reading the sidecar's `asr-port` file meant trusting a
+ * port that nothing had to be serving, and the fallback server (which writes no
+ * port file at all) was invisible, which is how transcription ended up posting
+ * into a dead port while the app believed recognition was ready.
+ *
+ * The local probe below remains only as a fallback for environments where the
+ * command is unavailable, and mirrors the same order.
  * A short-lived negative cache avoids hammering closed ports on every
- * transcription while the sidecar is still loading the model.
+ * transcription while the service is still loading the model.
  */
 let cachedBase: string | null = null;
 let negativeCacheUntil = 0;
@@ -30,29 +34,29 @@ async function healthy(url: string): Promise<boolean> {
   }
 }
 
+/** Port the backend reports as serving, or null when it cannot tell us. */
+async function backendServingPort(): Promise<number | null> {
+  try {
+    const port = await invoke<number | null>("live_asr_port");
+    return typeof port === "number" && port > 0 && port <= 65535 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getAsrBaseUrl(): Promise<string> {
   if (cachedBase) return cachedBase;
   if (Date.now() < negativeCacheUntil) {
     return `http://127.0.0.1:${ASR_DEFAULT_PORT}`;
   }
 
-  // Ask the Rust side where the sidecar binary lives — it may report the
-  // port file even for an already-running rebound instance.
-  const candidates: number[] = [];
-  try {
-    const raw = await invoke<string | null>("read_asr_port_file");
-    const parsed = raw ? parseInt(String(raw).trim(), 10) : NaN;
-    if (!Number.isNaN(parsed) && parsed > 0 && parsed <= 65535) {
-      candidates.push(parsed);
-    }
-  } catch {
-    /* ignore - probe the range below */
-  }
-  for (let port = ASR_DEFAULT_PORT; port <= PROBE_RANGE_END; port++) {
-    if (!candidates.includes(port)) candidates.push(port);
+  const live = await backendServingPort();
+  if (live !== null) {
+    cachedBase = `http://127.0.0.1:${live}`;
+    return cachedBase;
   }
 
-  for (const port of candidates) {
+  for (let port = ASR_DEFAULT_PORT; port <= PROBE_RANGE_END; port++) {
     const base = `http://127.0.0.1:${port}`;
     if (await healthy(base)) {
       cachedBase = base;
@@ -71,8 +75,11 @@ export async function getAsrBaseUrl(): Promise<string> {
 export async function detectAsrPort(): Promise<number | null> {
   const base = await getAsrBaseUrl();
   if (await healthy(base)) {
-    const port = new URL(base).port;
-    return port ? parseInt(port, 10) : ASR_DEFAULT_PORT;
+    // Read the port off the resolved URL without a parser that throws: the
+    // string always comes from getAsrBaseUrl, but a null here is cheaper than
+    // an exception at a UI indicator.
+    const port = Number(/(\d+)$/.exec(base)?.[1]);
+    return Number.isFinite(port) && port > 0 ? port : ASR_DEFAULT_PORT;
   }
   return null;
 }
