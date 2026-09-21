@@ -30,6 +30,7 @@ import {
   getLanguageLabel,
 } from "@/lib/constants/languages";
 import { LanguageFilterDropdown } from "./LanguageFilterDropdown";
+import { resetAsrBaseUrlCache } from "@/lib/asr-discovery";
 import { cn } from "@/lib/utils";
 
 type SortOption = "name" | "accuracy" | "speed" | "size";
@@ -120,6 +121,8 @@ export const Models = () => {
 
     try {
       await downloadModel(model.id, file.quant);
+      // Downloading also activates the model and restarts the engine.
+      resetAsrBaseUrlCache();
       await loadModels();
     } catch (error) {
       console.error("Failed to download model:", error);
@@ -143,6 +146,9 @@ export const Models = () => {
   const handleSelectModel = async (file: InstalledModel) => {
     try {
       await selectModel(file.path);
+      // The engine restarts on the new file and may rebind another port, so the
+      // renderer must not keep posting to the port it resolved before.
+      resetAsrBaseUrlCache();
       await loadModels();
     } catch (error) {
       console.error("Failed to select model:", error);

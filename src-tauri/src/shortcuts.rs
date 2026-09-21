@@ -202,7 +202,6 @@ fn handle_toggle_window<R: Runtime>(app: &AppHandle<R>) {
                 eprintln!("Failed to emit focus-text-input event: {}", e);
             }
         }
-        return;
     }
 
     #[cfg(not(target_os = "windows"))]

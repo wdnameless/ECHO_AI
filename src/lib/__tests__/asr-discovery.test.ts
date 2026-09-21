@@ -1,6 +1,10 @@
-// Tests for ASR base URL discovery: the pluely-asr sidecar may bind a
-// fallback port (9878..9882) when 9877 is busy, so discovery must probe the
-// range and honour the asr-port file instead of hardcoding 9877.
+// Tests for ASR base URL discovery.
+//
+// The port is decided by the backend (`live_asr_port`), which probes /health
+// and knows about both the native engine and the legacy python fallback. The
+// renderer previously read the sidecar's asr-port file, so a stale file or a
+// service that never writes one (the fallback) left it posting into a dead
+// port while the app reported recognition as ready.
 
 import { getAsrBaseUrl, resetAsrBaseUrlCache } from "../asr-discovery";
 import type { Mock } from "vitest";
@@ -35,15 +39,24 @@ function mockHealth(healthyPorts: number[]): void {
 }
 
 describe("asr discovery", () => {
-  it("uses the port file when that port answers /health", async () => {
-    invokeMock.mockResolvedValue("9878");
-    mockHealth([9878]);
-    await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9878");
+  it("uses the port the backend reports", async () => {
+    invokeMock.mockResolvedValue(9880);
+    mockHealth([9880]);
+    await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9880");
+    expect(invokeMock).toHaveBeenCalledWith("live_asr_port");
   });
 
-  it("falls back to probing the range when the port file is stale", async () => {
-    // Port file claims 9877 (stale) but only 9879 is healthy.
-    invokeMock.mockResolvedValue("9877");
+  it("uses the fallback server's port when the engine is not available", async () => {
+    // No model installed: the python fallback serves on 8000. Nothing else
+    // listens, and the renderer must still find it.
+    invokeMock.mockResolvedValue(8000);
+    mockHealth([8000]);
+    await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:8000");
+  });
+
+  it("probes the range itself when the command is unavailable", async () => {
+    // Web preview / older backend: no command, so probe like before.
+    invokeMock.mockRejectedValue(new Error("command not found"));
     mockHealth([9879]);
     await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9879");
   });
@@ -55,12 +68,13 @@ describe("asr discovery", () => {
   });
 
   it("caches a healthy result until reset", async () => {
-    invokeMock.mockResolvedValue("9879");
+    invokeMock.mockResolvedValue(9879);
     mockHealth([9879]);
     await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9879");
-    // The sidecar dies and a different port appears: cache still holds.
+    // The engine restarts on another port: the cache still holds it until reset,
+    // which is what a model change does.
     mockHealth([9880]);
-    invokeMock.mockResolvedValue("9880");
+    invokeMock.mockResolvedValue(9880);
     await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9879");
     resetAsrBaseUrlCache();
     await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9880");

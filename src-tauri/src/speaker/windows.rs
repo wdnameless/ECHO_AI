@@ -95,7 +95,7 @@ fn find_device_by_id(direction: &Direction, device_id: &str) -> Option<wasapi::D
         if let Ok(device) = collection.get_device_at_index(i) {
             if let Ok(id) = device.get_id() {
                 if id == device_id {
-                    let name = device
+                    let _name = device
                         .get_friendlyname()
                         .unwrap_or_else(|_| "Unknown".to_string());
                     return Some(device);
@@ -198,7 +198,7 @@ impl SpeakerStream {
             let device = match device_id {
                 Some(ref id) => match find_device_by_id(&Direction::Render, id) {
                     Some(d) => {
-                        let name = d
+                        let _name = d
                             .get_friendlyname()
                             .unwrap_or_else(|_| "Unknown".to_string());
                         d
@@ -210,7 +210,7 @@ impl SpeakerStream {
                 None => get_default_device(&Direction::Render)?,
             };
 
-            let device_name = device
+            let _device_name = device
                 .get_friendlyname()
                 .unwrap_or_else(|_| "Unknown".to_string());
 
@@ -278,7 +278,7 @@ impl SpeakerStream {
                     if temp_queue.is_empty() {
                         diag_empty += 1;
                         diag_ticks += 1;
-                        if diag_ticks % 50 == 0 {
+                        if diag_ticks.is_multiple_of(50) {
                             eprintln!("[capture] tick={} empty_reads={} total_bytes={}", diag_ticks, diag_empty, diag_bytes);
                         }
                         continue;
@@ -286,7 +286,7 @@ impl SpeakerStream {
 
                     diag_bytes += temp_queue.len();
                     diag_ticks += 1;
-                    if diag_ticks % 50 == 0 {
+                    if diag_ticks.is_multiple_of(50) {
                         eprintln!("[capture] tick={} empty_reads={} total_bytes={}", diag_ticks, diag_empty, diag_bytes);
                     }
 

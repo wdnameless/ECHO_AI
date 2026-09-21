@@ -225,7 +225,7 @@ pub async fn transcribe_audio(
     let error_provider = provider.clone();
     let error_model = model.clone();
     match perform_user_audio_transcription(
-        &client,
+        client,
         &user_audio_config.url,
         &user_audio_config.user_token,
         &user_audio_config.model,
@@ -250,7 +250,7 @@ pub async fn transcribe_audio(
                     .unwrap_or(&user_audio_config.model);
 
                 match perform_user_audio_transcription(
-                    &client,
+                    client,
                     fallback_url,
                     fallback_token,
                     fallback_model,
@@ -760,7 +760,7 @@ pub async fn chat_stream_response(
     }
 
     // Emit completion event
-    let _ = on_event.send(format!("\u{0}__DONE__\u{0}"));
+    let _ = on_event.send("\u{0}__DONE__\u{0}".to_string());
 
     if stream_started && !full_response.is_empty() {
         tauri::async_runtime::spawn({
