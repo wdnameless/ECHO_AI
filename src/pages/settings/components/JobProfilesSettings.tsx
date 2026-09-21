@@ -16,10 +16,15 @@ import {
   SparklesIcon,
   SaveIcon,
   CheckIcon,
+  RotateCcwIcon,
 } from "lucide-react";
 import { useApp } from "@/contexts";
 import { cn } from "@/lib/utils";
-import { JobProfile } from "@/lib/storage/job-profiles";
+import {
+  JobProfile,
+  getRemovedBuiltinJobProfileIds,
+  restoreAllBuiltinJobProfiles,
+} from "@/lib/storage/job-profiles";
 
 export const JobProfilesSettings = () => {
   const {
@@ -30,10 +35,15 @@ export const JobProfilesSettings = () => {
     createJobProfile,
     deleteJobProfile,
     applyJobProfile,
+    refreshJobProfiles,
   } = useApp();
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<JobProfile | null>(null);
+  // Mirrors the persisted removal list; refreshed whenever profiles change.
+  const [hiddenBuiltinCount, setHiddenBuiltinCount] = useState(
+    () => getRemovedBuiltinJobProfileIds().length
+  );
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [appliedToastId, setAppliedToastId] = useState<string | null>(null);
@@ -186,30 +196,51 @@ export const JobProfilesSettings = () => {
                     <PenLineIcon className="w-3.5 h-3.5" />
                   </Button>
 
-                  {!p.isBuiltin && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteJobProfile(p.id);
-                        if (draft?.id === p.id) {
-                          setEditing(false);
-                          setDraft(null);
-                        }
-                      }}
-                      title="Удалить профиль"
-                    >
-                      <Trash2Icon className="w-3.5 h-3.5" />
-                    </Button>
-                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={jobProfiles.length <= 1}
+                    className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10 disabled:opacity-30"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteJobProfile(p.id);
+                      refreshJobProfiles();
+                      if (draft?.id === p.id) {
+                        setEditing(false);
+                        setDraft(null);
+                      }
+                    }}
+                    title={
+                      jobProfiles.length <= 1
+                        ? "Нельзя удалить последний профиль"
+                        : "Удалить профиль"
+                    }
+                  >
+                    <Trash2Icon className="w-3.5 h-3.5" />
+                  </Button>
                 </div>
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* Deleted built-ins can always be brought back */}
+      {hiddenBuiltinCount > 0 && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          onClick={() => {
+            restoreAllBuiltinJobProfiles();
+            refreshJobProfiles();
+            setHiddenBuiltinCount(0);
+          }}
+        >
+          <RotateCcwIcon className="w-3.5 h-3.5" />
+          Восстановить встроенные профили ({hiddenBuiltinCount})
+        </Button>
+      )}
 
       {/* Create New Profile Button / Form */}
       {!creating ? (

@@ -35,6 +35,29 @@ export const Providers = ({
   const apiKeyVar = variables?.find((v) => v?.key === "api_key");
 
   /**
+   * Values typed for each provider, keyed by provider id.
+   *
+   * Switching the provider used to reset `variables` to `{}`, so the model and
+   * reasoning effort the user had entered were silently lost the moment they
+   * looked at another provider and switched back.
+   */
+  const [variablesByProvider, setVariablesByProvider] = useState<
+    Record<string, Record<string, string>>
+  >({});
+
+  const selectProvider = useCallback(
+    (value: string) => {
+      setVariablesByProvider((prev) => ({
+        ...prev,
+        [providerId]: selectedAIProvider?.variables ?? {},
+      }));
+      const remembered = variablesByProvider[value] ?? {};
+      onSetSelectedAIProvider({ provider: value, variables: { ...remembered } });
+    },
+    [onSetSelectedAIProvider, providerId, selectedAIProvider?.variables, variablesByProvider]
+  );
+
+  /**
    * Ключ не хранится в настройках провайдера (иначе он уезжает в открытый
    * localStorage), поэтому поле ввода читает его из защищённого хранилища.
    */
@@ -85,6 +108,41 @@ export const Providers = ({
     return variables?.find((v) => v?.key === key);
   };
 
+  /**
+   * Reads a provider variable by the descriptor key.
+   *
+   * `extractVariables` lower-cases descriptor keys (`model`), while the stored
+   * selection is canonicalised to `MODEL`. Looking the key up verbatim therefore
+   * always missed, and the field rendered empty even though the value was saved.
+   */
+  const readVariable = useCallback(
+    (key: string): string => {
+      const stored = selectedAIProvider?.variables ?? {};
+      if (key in stored) return stored[key];
+      const upper = key.toUpperCase();
+      if (upper in stored) return stored[upper];
+      const match = Object.keys(stored).find((k) => k.toUpperCase() === upper);
+      return match ? stored[match] : "";
+    },
+    [selectedAIProvider?.variables]
+  );
+
+  /** Writes under the canonical UPPER_CASE key, so read and request paths agree. */
+  const writeVariable = useCallback(
+    (key: string, value: string) => {
+      if (!selectedAIProvider) return;
+      const upper = key.toUpperCase();
+      const next: Record<string, string> = { ...selectedAIProvider.variables };
+      // Drop any case-variant so canonicalisation cannot resurrect a stale value.
+      for (const existing of Object.keys(next)) {
+        if (existing !== upper && existing.toUpperCase() === upper) delete next[existing];
+      }
+      next[upper] = value;
+      onSetSelectedAIProvider({ ...selectedAIProvider, variables: next });
+    },
+    [onSetSelectedAIProvider, selectedAIProvider]
+  );
+
   const currentProviderId = selectedAIProvider?.provider || "";
   const providerModels = cachedModels[currentProviderId] || [];
 
@@ -130,10 +188,7 @@ export const Providers = ({
   return (
     <div className="space-y-3">
       <div className="space-y-2">
-        <Header
-          title="Select AI Provider"
-          description="Select your preferred AI service provider or custom providers to get started."
-        />
+        <p className="text-xs font-medium text-foreground">Активный провайдер</p>
         <Selection
           selected={selectedAIProvider?.provider}
           options={allAiProviders?.map((provider) => {
@@ -152,22 +207,16 @@ export const Providers = ({
           })}
           placeholder="Choose your AI provider"
           onChange={(value) => {
-            onSetSelectedAIProvider({
-              provider: value,
-              variables: {},
-            });
+            selectProvider(value);
             setFetchState({ status: "idle" });
           }}
         />
       </div>
 
       {localSelectedProvider ? (
-        <Header
-          title={`Method: ${
-            localSelectedProvider?.method || "Invalid"
-          }, Endpoint: ${localSelectedProvider?.url || "Invalid"}`}
-          description={`If you want to use different url or method, you can always create a custom provider.`}
-        />
+        <p className="text-[11px] text-muted-foreground break-all">
+          {localSelectedProvider?.method || "?"} {localSelectedProvider?.url || "URL не задан"}
+        </p>
       ) : null}
 
       {findKeyAndValue("api_key") ? (
@@ -225,8 +274,8 @@ export const Providers = ({
           )
           .map((variable) => {
             const getVariableValue = () => {
-              if (!variable?.key || !selectedAIProvider?.variables) return "";
-              return selectedAIProvider.variables[variable.key] || "";
+              if (!variable?.key) return "";
+              return readVariable(variable.key);
             };
 
             const isModelVar = variable?.key?.toLowerCase() === "model";
@@ -258,15 +307,8 @@ export const Providers = ({
                       } ${variable?.key?.replace(/_/g, " ") || "value"}`}
                       value={getVariableValue()}
                       onChange={(value) => {
-                        if (!variable?.key || !selectedAIProvider) return;
-
-                        onSetSelectedAIProvider({
-                          ...selectedAIProvider,
-                          variables: {
-                            ...selectedAIProvider.variables,
-                            [variable.key]: value,
-                          },
-                        });
+                        if (!variable?.key) return;
+                        writeVariable(variable.key, value);
                       }}
                     />
                     {isModelVar && (
@@ -314,14 +356,8 @@ export const Providers = ({
                         }))}
                         placeholder="Select fetched model or keep custom input above"
                         onChange={(value) => {
-                          if (!variable?.key || !selectedAIProvider) return;
-                          onSetSelectedAIProvider({
-                            ...selectedAIProvider,
-                            variables: {
-                              ...selectedAIProvider.variables,
-                              [variable.key]: value,
-                            },
-                          });
+                          if (!variable?.key) return;
+                          writeVariable(variable.key, value);
                         }}
                       />
                     </div>

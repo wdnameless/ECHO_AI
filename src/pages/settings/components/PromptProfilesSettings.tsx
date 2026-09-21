@@ -24,7 +24,12 @@ import {
 } from "lucide-react";
 import { useApp } from "@/contexts";
 import { cn } from "@/lib/utils";
-import { PromptProfile, SELF_EVOLUTION_PROFILE_ID } from "@/lib/storage/prompt-profiles";
+import {
+  PromptProfile,
+  SELF_EVOLUTION_PROFILE_ID,
+  getRemovedBuiltinProfileIds,
+  restoreAllBuiltinProfiles,
+} from "@/lib/storage/prompt-profiles";
 import {
   getUserFacts,
   getUserStylePreferences,
@@ -46,12 +51,17 @@ export const PromptProfilesSettings = () => {
     createPromptProfile,
     deletePromptProfile,
     resetPromptProfile,
+    refreshPromptProfiles,
   } = useApp();
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<PromptProfile | null>(null);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  // Mirrors the persisted removal list; refreshed together with the profile list.
+  const [hiddenBuiltinCount, setHiddenBuiltinCount] = useState(
+    () => getRemovedBuiltinProfileIds().length
+  );
   // Deleting a profile throws away a hand-written prompt, so it asks first.
   const [pendingDelete, setPendingDelete] = useState<PromptProfile | null>(null);
 
@@ -68,6 +78,12 @@ export const PromptProfilesSettings = () => {
 
   const activeProfile =
     promptProfiles.find((p) => p.id === activeProfileId) || promptProfiles[0];
+
+  /** Re-reads the deleted-built-ins bookkeeping from storage. */
+  const loadProfiles = useCallback(() => {
+    refreshPromptProfiles();
+    setHiddenBuiltinCount(getRemovedBuiltinProfileIds().length);
+  }, [refreshPromptProfiles]);
 
   const startEdit = useCallback((profile: PromptProfile) => {
     setDraft({ ...profile });
@@ -187,39 +203,51 @@ export const PromptProfilesSettings = () => {
                 <Icon className="size-4" />
               </div>
               <div className="min-w-0 flex-1">
+                {/* Name shrinks, the action icons stay pinned to the right so the
+                    title truncates instead of pushing the buttons out of reach. */}
                 <div className="flex items-center gap-1.5">
-                  <span className="text-sm font-semibold line-clamp-1">{profile.name}</span>
-                  {isActive && <CheckCircle2Icon className="size-4 text-primary shrink-0" />}
+                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+                    {profile.name}
+                  </span>
+                  {isActive && <CheckCircle2Icon className="size-4 shrink-0 text-primary" />}
                   {profile.isBuiltin && (
-                    <span className="text-[10px] text-muted-foreground/60 bg-muted/40 px-1 rounded">
+                    <span className="shrink-0 rounded bg-muted/40 px-1 text-[10px] text-muted-foreground/60">
                       built-in
                     </span>
                   )}
-                  {profile.isBuiltin ? (
+                  {profile.isBuiltin && (
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         resetPromptProfile(profile.id);
                       }}
-                      className="ml-auto p-1 text-muted-foreground hover:text-foreground hover:bg-muted rounded transition-colors"
+                      className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                       title="Сбросить встроенный профиль к заводским настройкам"
                     >
                       <RotateCcwIcon className="size-3.5" />
                     </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setPendingDelete(profile);
-                      }}
-                      className="ml-auto p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded transition-colors"
-                      title="Удалить профиль"
-                    >
-                      <Trash2Icon className="size-3.5" />
-                    </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPendingDelete(profile);
+                    }}
+                    disabled={promptProfiles.length <= 1}
+                    className={cn(
+                      "shrink-0 rounded p-1 transition-colors",
+                      "text-muted-foreground hover:text-destructive hover:bg-destructive/10",
+                      "disabled:pointer-events-none disabled:opacity-30"
+                    )}
+                    title={
+                      promptProfiles.length <= 1
+                        ? "Нельзя удалить последний профиль"
+                        : "Удалить профиль"
+                    }
+                  >
+                    <Trash2Icon className="size-3.5" />
+                  </button>
                 </div>
                 <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
                   {profile.description}
@@ -229,6 +257,22 @@ export const PromptProfilesSettings = () => {
           );
         })}
       </div>
+
+      {/* Deleted built-ins can always be brought back */}
+      {hiddenBuiltinCount > 0 && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          onClick={() => {
+            restoreAllBuiltinProfiles();
+            loadProfiles();
+          }}
+        >
+          <RotateCcwIcon className="size-3.5" />
+          Восстановить встроенные профили ({hiddenBuiltinCount})
+        </Button>
+      )}
 
       {/* Create new profile */}
       {creating ? (
@@ -558,8 +602,8 @@ export const PromptProfilesSettings = () => {
               Удалить профиль «{pendingDelete.name}»?
             </h3>
             <p className="text-xs text-muted-foreground">
-              Его системный промпт будет потерян. Встроенные профили удалить нельзя —
-              их можно только сбросить к заводским настройкам.
+              Его системный промпт будет потерян. Встроенные профили можно вернуть
+              кнопкой «Restore built-in profiles».
             </p>
             <div className="flex justify-end gap-2 pt-1">
               <Button size="sm" variant="outline" onClick={() => setPendingDelete(null)}>
@@ -570,6 +614,7 @@ export const PromptProfilesSettings = () => {
                 variant="destructive"
                 onClick={() => {
                   deletePromptProfile(pendingDelete.id);
+                  loadProfiles();
                   setPendingDelete(null);
                 }}
               >

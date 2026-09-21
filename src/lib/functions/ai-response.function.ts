@@ -49,6 +49,49 @@ function parseCurlCached(curl: string): any {
 }
 
 /**
+ * Turns an HTTP failure into something the user can act on.
+ *
+ * A bare "530 - error code: 1033" reads like an app bug, when it is Cloudflare
+ * reporting that the tunnel in front of the provider's origin is down. The raw
+ * text stays attached so nothing is hidden from someone debugging the provider.
+ */
+export function describeHttpFailure(
+  status: number,
+  statusText: string,
+  body: string
+): string {
+  const raw = body.trim();
+  const suffix = raw ? ` - ${raw}` : "";
+  // Cloudflare 1xxx codes arrive either as a status (530) or inside the body.
+  const isTunnelDown =
+    status === 530 ||
+    /error code:\s*1033/i.test(raw) ||
+    /argo tunnel error/i.test(raw);
+
+  if (isTunnelDown) {
+    return (
+      `Провайдер недоступен: туннель Cloudflare до его сервера не поднят ` +
+      `(530, код 1033). Это на стороне провайдера, а не приложения — ` +
+      `ключ и адрес в порядке, запрос до шлюза дошёл. Повторите позже или ` +
+      `выберите другого провайдера.${suffix}`
+    );
+  }
+
+  if (status === 401 || status === 403) {
+    return (
+      `Провайдер отклонил запрос (${status} ${statusText}): ключ не принят. ` +
+      `Проверьте API-ключ в настройках провайдера.${suffix}`
+    );
+  }
+
+  if (status === 429) {
+    return `Провайдер ограничил частоту запросов (429). Повторите через несколько секунд.${suffix}`;
+  }
+
+  return `API request failed: ${status} ${statusText}${suffix}`;
+}
+
+/**
  * Resolves model variable value across case-variants of the "model" key.
  * Resolution rule:
  * - If multiple case-variants exist with different non-empty values,
@@ -385,7 +428,32 @@ async function* streamAIResponse(params: {
         key !== "reasoning_effort" &&
         key !== "thinking_budget"
     );
-    const providerVariables = selectedProvider.variables ?? {};
+    const providerVariables: Record<string, string> = {
+      ...(selectedProvider.variables ?? {}),
+    };
+
+    // S4: после миграции ключ живёт в защищённом хранилище, а не в переменных
+    // провайдера. Читаем его ДО проверки обязательных переменных: иначе запрос
+    // отклонялся с «Не настроен API-ключ», хотя ключ уже был сохранён в
+    // хранилище ОС, и единственным выходом оставалось продублировать его в
+    // открытом localStorage.
+    const hasKeyInVariables = Object.entries(providerVariables).some(
+      ([k, v]) =>
+        k.toLowerCase().includes("api_key") && !!v && v.trim() !== ""
+    );
+    if (!hasKeyInVariables && selectedProvider.provider) {
+      const storedKey = await getSecret(
+        secretKey.aiProvider(selectedProvider.provider)
+      );
+      if (storedKey) {
+        const apiKeyName =
+          extractedVariables.find((v) =>
+            v.key.toLowerCase().includes("api_key")
+          )?.key ?? "api_key";
+        providerVariables[apiKeyName] = storedKey;
+      }
+    }
+
     for (const { key } of requiredVars) {
       const found = Object.entries(providerVariables).find(
         ([k, v]) =>
@@ -429,28 +497,13 @@ async function* streamAIResponse(params: {
       bodyObj[messagesKey] = finalMessages;
     }
 
-    const canonicalVars = canonicalizeVariables(selectedProvider.variables);
+    const canonicalVars = canonicalizeVariables(providerVariables);
     const userVariables = Object.fromEntries(
       Object.entries(canonicalVars).map(([key, value]) => [
         key.toUpperCase(),
         value,
       ])
     );
-
-    // S4: после миграции ключ живёт в защищённом хранилище, а не в
-    // переменных провайдера. Если ключа в переменных нет — читаем его из
-    // хранилища, чтобы запросы продолжали работать.
-    const hasApiKey =
-      typeof userVariables["API_KEY"] === "string" &&
-      userVariables["API_KEY"].length > 0;
-    if (!hasApiKey && selectedProvider.provider) {
-      const storedKey = await getSecret(
-        secretKey.aiProvider(selectedProvider.provider)
-      );
-      if (storedKey) {
-        userVariables["API_KEY"] = storedKey;
-      }
-    }
 
     // Zero-reasoning by default: "minimal" gives the fastest first token.
     // The user can still override via provider variables (e.g. REASONING_EFFORT=high)
@@ -589,10 +642,11 @@ async function* streamAIResponse(params: {
     }
 
     if (!response.ok) {
-      // One automatic retry on transient gateway errors (502/503/429):
-      // overloaded gateways recover within a few hundred milliseconds and
-      // the answer should never be lost to a blip.
-      if ([502, 503, 429].includes(response.status)) {
+      // One automatic retry on transient gateway errors (502/503/429/530):
+      // overloaded gateways recover within a few hundred milliseconds and the
+      // answer should never be lost to a blip. 530 is Cloudflare's tunnel
+      // failure, which also clears on its own once the tunnel reconnects.
+      if ([502, 503, 429, 530].includes(response.status)) {
         await new Promise((r) => setTimeout(r, 500));
         try {
           response = await fetchFunction(url, {
@@ -611,9 +665,11 @@ async function* streamAIResponse(params: {
         try {
           if (response) errorText = await response.text();
         } catch {}
-        yield `API request failed: ${response?.status ?? "network"} ${
-          response?.statusText ?? "error"
-        }${errorText ? ` - ${errorText}` : ""}`;
+        yield describeHttpFailure(
+          response?.status ?? 0,
+          response?.statusText ?? "error",
+          errorText
+        );
         return;
       }
     }
