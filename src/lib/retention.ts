@@ -19,9 +19,27 @@ export function calculateRetentionCutoff(
 }
 
 /**
- * Get current retention days setting. Checks localStorage first, then falls back to default.
+ * Get current retention days setting.
+ * SQLite `app_settings` is the authoritative source of truth.
+ * localStorage is maintained as a derived cache that cannot silently diverge.
  */
-export function getRetentionDays(): number {
+export async function getRetentionDays(): Promise<number> {
+  try {
+    const db = await getDatabase();
+    const rows = await db.select<{ value: string }[]>(
+      `SELECT value FROM app_settings WHERE key = 'retention_days' LIMIT 1`
+    );
+    if (rows && rows.length > 0) {
+      const parsed = parseInt(rows[0].value, 10);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        safeLocalStorage.setItem(RETENTION_STORAGE_KEY, parsed.toString());
+        return parsed;
+      }
+    }
+  } catch {
+    // Fall back to derived cache when SQLite is unreachable (e.g. unit tests or early boot)
+  }
+
   const stored = safeLocalStorage.getItem(RETENTION_STORAGE_KEY);
   if (stored === null || stored === undefined) {
     return DEFAULT_RETENTION_DAYS;
@@ -43,7 +61,6 @@ export function isRetentionExpired(updatedAtMs: number, cutoffMs: number | null)
  */
 export async function setRetentionDays(days: number): Promise<void> {
   const safeDays = Math.max(0, Math.floor(days));
-  safeLocalStorage.setItem(RETENTION_STORAGE_KEY, safeDays.toString());
 
   try {
     const db = await getDatabase();
@@ -56,6 +73,8 @@ export async function setRetentionDays(days: number): Promise<void> {
   } catch (err) {
     console.warn("[retention] Failed to sync retention setting to SQLite:", err);
   }
+
+  safeLocalStorage.setItem(RETENTION_STORAGE_KEY, safeDays.toString());
 }
 
 /**
@@ -69,7 +88,7 @@ export async function runRetentionCleanup(
   nowMs: number = Date.now()
 ): Promise<{ deletedConversations: number; cutoffMs: number | null }> {
   const retentionDays =
-    customRetentionDays !== undefined ? customRetentionDays : getRetentionDays();
+    customRetentionDays !== undefined ? customRetentionDays : await getRetentionDays();
 
   const cutoffMs = calculateRetentionCutoff(retentionDays, nowMs);
   if (cutoffMs === null) {

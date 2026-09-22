@@ -574,37 +574,45 @@ pub async fn select_model(id_or_path: String) -> Result<InstalledModel, String> 
                     .map(|f| (m, f))
             }) {
                 let target = target_path(file);
-                if target.is_file() {
-                    let mut settings = settings::load_settings();
-                    settings.selected_model = Some(target.to_string_lossy().to_string());
-                    settings::save_settings(&settings)?;
-                    crate::handy_server::restart_server().await?;
-                    return selected_model()
-                        .ok_or_else(|| "модель не найдена после выбора".to_string());
+                if !target.is_file() {
+                    return Err(format!("модель {} ещё не скачана", file.filename));
                 }
-                return Err(format!("модель {} ещё не скачана", file.filename));
+                target
+            } else {
+                // A selector that is not a model id may be a file the user supplied.
+                let candidate = PathBuf::from(selector);
+                if !candidate.is_file() {
+                    return Err(format!("файл модели не найден: {selector}"));
+                }
+                candidate
             }
-            // A selector that is not a model id may be a file the user supplied.
-            let candidate = PathBuf::from(selector);
-            if !candidate.is_file() {
-                return Err(format!("файл модели не найден: {selector}"));
-            }
-            candidate
         }
     };
 
     let mut settings = settings::load_settings();
+    let previous_model = settings.selected_model.clone();
     settings.selected_model = Some(path.to_string_lossy().to_string());
     settings::save_settings(&settings)?;
 
     // The engine loads the model at startup, so a change only takes effect
     // after a restart. Restarting here keeps the UI honest: picking a model and
     // getting silence would otherwise look like a broken download.
-    crate::handy_server::restart_server().await?;
+    if let Err(e) = crate::handy_server::restart_server().await {
+        let mut rollback = settings::load_settings();
+        rollback.selected_model = previous_model;
+        let _ = settings::save_settings(&rollback);
+        let _ = crate::handy_server::restart_server().await;
+        let model_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("модели");
+        return Err(format!(
+            "Не удалось запустить движок с моделью {model_name}: {e}. Восстановлен предыдущий выбор."
+        ));
+    }
 
     selected_model().ok_or_else(|| "модель не найдена после выбора".to_string())
 }
-
 /// Reports download progress to the UI while a model is being fetched.
 #[derive(Clone, Serialize)]
 struct DownloadProgress {
