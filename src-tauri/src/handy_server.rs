@@ -660,6 +660,14 @@ $s.Dispose()
             Err(_) => return,
         };
 
+        // A child that died keeps its handle: writes to its closed stdin fail
+        // silently, so speech output stayed broken until the app restarted.
+        if let Some((child, _)) = guard.as_mut() {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                *guard = None;
+            }
+        }
+
         // (Re)spawn the persistent process if it died.
         if guard.is_none() {
             let mut cmd = Command::new("powershell");
