@@ -958,11 +958,18 @@ mod download_tests {
     }
 
     /// A file entry whose digest matches `payload`.
+    ///
+    /// The name carries a per-call token: the digest alone is the same for two
+    /// tests that use one payload, and they would then race on the same file in
+    /// the models directory.
     fn entry_for(payload: &[u8]) -> ModelFile {
         use sha2::{Digest, Sha256};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
         let digest = format!("{:x}", Sha256::digest(payload));
+        let token = NEXT.fetch_add(1, Ordering::SeqCst);
         ModelFile {
-            filename: format!("test-{}.gguf", &digest[..8]),
+            filename: format!("test-{}-{token}.gguf", &digest[..8]),
             quant: "TEST".to_string(),
             size_bytes: payload.len() as u64,
             sha256: digest,
@@ -976,6 +983,9 @@ mod download_tests {
 
     #[test]
     fn a_clean_transfer_lands_and_verifies() {
+        let _settings = crate::settings::SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let payload: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
         let file = entry_for(&payload);
         cleanup(&file);
@@ -991,6 +1001,9 @@ mod download_tests {
 
     #[test]
     fn a_server_that_ignores_range_restarts_instead_of_appending() {
+        let _settings = crate::settings::SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Bytes are already on disk and the server answers 200 with the whole
         // payload instead of 206 with the remainder. Appending would splice two
         // copies together (1.5x the size), which the hash rejects — the retry
@@ -1030,6 +1043,9 @@ mod download_tests {
 
     #[test]
     fn a_truncated_body_is_retried_until_complete() {
+        let _settings = crate::settings::SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // A truncated response must not be accepted as final: the size does not
         // match the catalogue, so the transfer continues.
         let payload: Vec<u8> = (0..20_000u32).map(|i| (i % 13) as u8).collect();
@@ -1052,6 +1068,9 @@ mod download_tests {
 
     #[test]
     fn corrupt_bytes_are_rejected_and_not_kept() {
+        let _settings = crate::settings::SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Wrong bytes are not merely incomplete: keeping them would make every
         // retry fail identically, so the file must be discarded.
         let payload: Vec<u8> = (0..10_000u32).map(|i| (i % 29) as u8).collect();
@@ -1072,6 +1091,9 @@ mod download_tests {
 
     #[test]
     fn an_existing_file_is_returned_without_contacting_the_server() {
+        let _settings = crate::settings::SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let payload: Vec<u8> = (0..5_000u32).map(|i| (i % 7) as u8).collect();
         let file = entry_for(&payload);
         cleanup(&file);

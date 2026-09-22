@@ -7,7 +7,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_machine_uid::MachineUidExt;
 
 fn get_app_endpoint() -> Result<String, String> {
@@ -45,16 +45,13 @@ fn api_config_cache() -> &'static Mutex<Option<(ApiResponseConfig, std::time::In
 const API_CONFIG_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
 // Secure storage functions
-fn get_secure_storage_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
-
-    fs::create_dir_all(&app_data_dir)
-        .map_err(|e| format!("Failed to create app data directory: {}", e))?;
-
-    Ok(app_data_dir.join("secure_storage.json"))
+fn get_secure_storage_path(_app: &AppHandle) -> Result<PathBuf, String> {
+    let path = crate::settings::secure_storage_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create secure storage directory: {}", e))?;
+    }
+    Ok(path)
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]

@@ -19,6 +19,7 @@ fn get_pool_mutex() -> &'static Mutex<Option<SqlitePool>> {
 }
 
 fn get_db_path<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    // Same file the SQL plugin preloads and migrates, in every mode.
     let mut path = app
         .path()
         .app_config_dir()
