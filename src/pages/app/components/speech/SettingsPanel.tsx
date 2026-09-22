@@ -19,10 +19,7 @@ import {
   WandIcon,
   RotateCcwIcon,
   ChevronUpIcon,
-  FileUpIcon,
-  GraduationCapIcon,
 } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
 import { VadConfig } from "@/hooks/useSystemAudio";
 import {
   PROMPT_TEMPLATES,
@@ -128,12 +125,6 @@ export const SettingsPanel = ({
       max_recording_duration_secs: 180,
     };
     onUpdateVadConfig(defaultConfig);
-  };
-
-  const openDashboardPage = (route: string) => {
-    invoke("open_dashboard_page", { route }).catch((err) => {
-      console.error("Failed to open dashboard page:", err);
-    });
   };
 
   return (
@@ -304,51 +295,6 @@ export const SettingsPanel = ({
                 />
               </div>
             )}
-          </div>
-
-          {/* Interview & Documents Section */}
-          <div className="space-y-3 pt-3 border-t border-border/50">
-            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-              Interview & Documents
-            </h4>
-
-            <div className="space-y-2">
-              <Button
-                size="sm"
-                className="w-full text-xs"
-                onClick={() => openDashboardPage("/mock-interview")}
-              >
-                <GraduationCapIcon className="w-3.5 h-3.5 mr-1.5" />
-                Start Mock Interview
-              </Button>
-
-              <div className="flex gap-2">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="flex-1 text-xs"
-                  onClick={() => openDashboardPage("/settings")}
-                  title="Upload your resume for interview context"
-                >
-                  <FileUpIcon className="w-3.5 h-3.5 mr-1" />
-                  Resume
-                </Button>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="flex-1 text-xs"
-                  onClick={() => openDashboardPage("/settings")}
-                  title="Upload the job description for interview context"
-                >
-                  <FileUpIcon className="w-3.5 h-3.5 mr-1" />
-                  Job
-                </Button>
-              </div>
-              <p className="text-[10px] text-muted-foreground">
-                Documents open in the dashboard. Upload your resume and the
-                vacancy so the interview targets the role.
-              </p>
-            </div>
           </div>
 
           {/* Advanced Settings Toggle */}

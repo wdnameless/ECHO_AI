@@ -32,7 +32,6 @@ const Shortcuts = lazy(() => import("@/pages/shortcuts"));
 const Audio = lazy(() => import("@/pages/audio"));
 const Screenshot = lazy(() => import("@/pages/screenshot"));
 const Responses = lazy(() => import("@/pages/responses"));
-const MockInterview = lazy(() => import("@/pages/mock-interview"));
 const Models = lazy(() => import("@/pages/models"));
 
 /** Shown while a page chunk loads. Deliberately minimal and non-blocking. */
@@ -66,7 +65,6 @@ export default function AppRoutes() {
             <Route path="/responses" element={<Responses />} />
             <Route path="/models" element={<Models />} />
             <Route path="/dev-space" element={<DevSpace />} />
-            <Route path="/mock-interview" element={<MockInterview />} />
           </Route>
         </Routes>
       </Suspense>

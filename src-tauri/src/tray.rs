@@ -44,8 +44,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             }
             "quit" => {
                 crate::handy_server::stop_server();
-                crate::handy_server::stop_tts();
-                app.exit(0);
+                            app.exit(0);
             }
             _ => {}
         })

@@ -163,7 +163,6 @@ pub fn run() {
             handy_server::handy_server_status_detailed,
             handy_server::stt_readiness,
             handy_server::start_handy_server,
-            handy_server::speak_text,
             handy_server::live_asr_port,
             capture::capture_to_base64,
             capture::start_screen_capture,
@@ -274,7 +273,6 @@ pub fn run() {
             // that calls `exit`): no child must outlive the app.
             if let tauri::RunEvent::Exit = event {
                 handy_server::stop_server();
-                handy_server::stop_tts();
             }
         });
 }

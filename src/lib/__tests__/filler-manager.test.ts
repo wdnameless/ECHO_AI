@@ -8,7 +8,6 @@ describe("FillerManager", () => {
     vi.useFakeTimers();
     manager = new FillerManager({
       latencyThresholdMs: 1500,
-      audioPlaybackEnabled: false, // Disable audio for pure logic tests
     });
   });
 

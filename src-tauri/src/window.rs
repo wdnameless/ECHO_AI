@@ -207,7 +207,7 @@ pub fn open_dashboard(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 /// Shows the dashboard window and navigates it to the given route
-/// (e.g. "/settings" or "/mock-interview"). Route is validated to
+/// (e.g. "/settings" or "/models"). Route is validated to
 /// prevent navigation outside the app shell.
 #[tauri::command]
 pub fn open_dashboard_page(app: tauri::AppHandle, route: String) -> Result<(), String> {
@@ -222,7 +222,6 @@ pub fn open_dashboard_page(app: tauri::AppHandle, route: String) -> Result<(), S
         "/audio",
         "/responses",
         "/dev-space",
-        "/mock-interview",
     ];
     let normalized = if route.starts_with('/') {
         route

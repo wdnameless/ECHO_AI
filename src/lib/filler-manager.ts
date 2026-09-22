@@ -1,6 +1,5 @@
 import fillersData from "@/config/fillers.json";
 import { safeLocalStorage } from "./storage/helper";
-import { invoke } from "@tauri-apps/api/core";
 
 export interface FillerCategories {
   acknowledgment: string[];
@@ -12,7 +11,6 @@ export interface FillerCategories {
 export interface FillerManagerConfig {
   enabled: boolean;
   latencyThresholdMs: number; // default 1500ms (1.5s)
-  audioPlaybackEnabled: boolean; // whether TTS / audio playback is active
 }
 
 export type FillerStatus = "idle" | "monitoring" | "playing";
@@ -29,13 +27,11 @@ export type FillerListener = (state: FillerState) => void;
 export const FILLER_MANAGER_STORAGE_KEYS = {
   ENABLED: "filler_manager_enabled",
   LATENCY_THRESHOLD: "filler_manager_latency_threshold_ms",
-  AUDIO_ENABLED: "filler_manager_audio_enabled",
 } as const;
 
 export const DEFAULT_FILLER_MANAGER_CONFIG: FillerManagerConfig = {
   enabled: true,
   latencyThresholdMs: 1500,
-  audioPlaybackEnabled: true,
 };
 
 export class FillerManager {
@@ -73,12 +69,10 @@ export class FillerManager {
   private loadConfig(): FillerManagerConfig {
     const enabledRaw = safeLocalStorage.getItem(FILLER_MANAGER_STORAGE_KEYS.ENABLED);
     const latencyRaw = safeLocalStorage.getItem(FILLER_MANAGER_STORAGE_KEYS.LATENCY_THRESHOLD);
-    const audioRaw = safeLocalStorage.getItem(FILLER_MANAGER_STORAGE_KEYS.AUDIO_ENABLED);
 
     return {
       enabled: enabledRaw !== null ? enabledRaw === "true" : DEFAULT_FILLER_MANAGER_CONFIG.enabled,
       latencyThresholdMs: latencyRaw ? parseInt(latencyRaw, 10) || 1500 : DEFAULT_FILLER_MANAGER_CONFIG.latencyThresholdMs,
-      audioPlaybackEnabled: audioRaw !== null ? audioRaw === "true" : DEFAULT_FILLER_MANAGER_CONFIG.audioPlaybackEnabled,
     };
   }
 
@@ -86,7 +80,6 @@ export class FillerManager {
     this.config = { ...this.config, ...newConfig };
     safeLocalStorage.setItem(FILLER_MANAGER_STORAGE_KEYS.ENABLED, String(this.config.enabled));
     safeLocalStorage.setItem(FILLER_MANAGER_STORAGE_KEYS.LATENCY_THRESHOLD, String(this.config.latencyThresholdMs));
-    safeLocalStorage.setItem(FILLER_MANAGER_STORAGE_KEYS.AUDIO_ENABLED, String(this.config.audioPlaybackEnabled));
   }
 
   public getConfig(): FillerManagerConfig {
@@ -141,7 +134,10 @@ export class FillerManager {
   }
 
   /**
-   * Triggers filler phrase display and audio playback.
+   * Triggers the filler hint shown while the answer is being prepared.
+   *
+   * Screen only: the app must not speak. A phrase played over the speakers
+   * reaches the other side of a call, and no filler is worth that.
    */
   private triggerFiller(onTrigger?: (phrase: string) => void) {
     const phrase = this.getRandomPhrase();
@@ -154,43 +150,8 @@ export class FillerManager {
       onTrigger(phrase);
     }
 
-    if (this.config.audioPlaybackEnabled) {
-      this.playAudio(phrase);
-    }
-
-    // One filler per answer: no rotation. The phrase stays on screen and
-    // audio until the LLM stream starts (stop()) or the request ends.
-  }
-
-  /**
-   * Native audio playback: uses Web Speech API or Tauri speak_text command.
-   */
-  private playAudio(phrase: string) {
-    if (typeof window === "undefined") return;
-
-    if ("speechSynthesis" in window) {
-      try {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(phrase);
-        utterance.rate = 1.05;
-        const voices = window.speechSynthesis.getVoices();
-        const ruVoice = voices.find((v) => v.lang?.toLowerCase().startsWith("ru"));
-        if (ruVoice) utterance.voice = ruVoice;
-        utterance.onend = () => {
-          this.isPlaying = false;
-          this.notify();
-        };
-        utterance.onerror = () => {
-          this.isPlaying = false;
-          this.notify();
-        };
-        window.speechSynthesis.speak(utterance);
-      } catch (e) {
-        console.warn("[FillerManager] SpeechSynthesis error:", e);
-      }
-    } else {
-      invoke("speak_text", { text: phrase }).catch(() => {});
-    }
+    // One filler per answer: no rotation. The phrase stays on screen until the
+    // LLM stream starts (stop()) or the request ends.
   }
 
   /**
@@ -202,12 +163,6 @@ export class FillerManager {
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
-    }
-
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      try {
-        window.speechSynthesis.cancel();
-      } catch {}
     }
 
     this.isPlaying = false;

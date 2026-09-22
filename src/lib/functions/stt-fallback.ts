@@ -91,7 +91,8 @@ export async function transcribeWithFallback({
 
   // Local server is offline or failed - clear error, NO cloud fallback.
   throw new Error(
-    "Local STT server is not running. Starting it automatically or restart Echo AI. " +
-      "Cloud STT has been fully disabled - everything runs on local models."
+    "Локальный движок распознавания не отвечает. Если модель не выбрана — " +
+      "выберите её в «SST Models»; если выбрана — запустите захват заново " +
+      "или перезапустите Echo AI."
   );
 }
