@@ -68,12 +68,18 @@ const COMPONENTS = {
   a: ({ children, href, ...props }: AnchorProps) => {
     const handleClick = async (e: React.MouseEvent) => {
       e.preventDefault();
-      if (href) {
-        try {
-          await openUrl(href);
-        } catch (error) {
-          console.error("Failed to open URL:", error);
-        }
+      if (!href) return;
+      // Anything that is not a web link never reaches the OS opener: a relative
+      // or bare path in a rendered answer would otherwise launch a local file or
+      // a UNC share with no confirmation.
+      if (!/^(https?:|mailto:)/i.test(href.trim())) {
+        console.warn("[markdown] refusing to open non-web link:", href.slice(0, 80));
+        return;
+      }
+      try {
+        await openUrl(href);
+      } catch (error) {
+        console.error("Failed to open URL:", error);
       }
     };
 
