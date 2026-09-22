@@ -32,6 +32,31 @@ export interface LiveSegment {
 export const MAX_LIVE_SEGMENTS = 100;
 export const MAX_HISTORY_MESSAGES = 20;
 
+/**
+ * How long after a line stops growing a new result still continues it.
+ *
+ * A sentence spoken into a pause comes back in pieces; without a window each
+ * piece is a new row and the feed turns into a column of fragments.
+ */
+const LIVE_SEGMENT_CONTINUATION_MS = 8_000;
+
+/**
+ * Joins the text a line already has with the text that just arrived.
+ *
+ * Recognisers resend the whole utterance so far, so the common case is that the
+ * new text already contains the old one — take the longer of the two. Otherwise
+ * the new piece continues it and is appended.
+ */
+function mergeUtteranceText(existing: string, incoming: string): string {
+  const a = existing.trim();
+  const b = incoming.trim();
+  if (!a) return b;
+  if (!b) return a;
+  if (b.length >= a.length && b.toLowerCase().includes(a.toLowerCase())) return b;
+  if (a.toLowerCase().includes(b.toLowerCase())) return a;
+  return `${a} ${b}`;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -126,28 +151,35 @@ export function useConversationStore() {
           processedText = filterFillers(processedText, config.customFillers);
         }
       }
+      if (!processedText.trim()) return;
       const timestamp = Date.now();
       setLiveSegments((prev) => {
-        // For partial streaming (live speech), replace the LAST segment of the
-        // same source so words grow on ONE line instead of stacking duplicate
-        // partial transcriptions.
-        if (partial) {
-          const lastIdx = [...prev]
-            .reverse()
-            .findIndex((s) => s.source === source);
-          if (lastIdx !== -1) {
-            const idx = prev.length - 1 - lastIdx;
+        const lastIdx = [...prev]
+          .reverse()
+          .findIndex((s) => s.source === source);
+        const idx = lastIdx === -1 ? -1 : prev.length - 1 - lastIdx;
+
+        // One line per utterance, not one line per ASR result. The recogniser
+        // reports the same growing text twice - a streaming partial, then the
+        // final that supersedes it - and each used to become its own row, so a
+        // single sentence arrived as a column of fragments.
+        if (idx !== -1) {
+          const last = prev[idx];
+          const continuesSameUtterance =
+            last.partial ||
+            timestamp - last.timestamp <= LIVE_SEGMENT_CONTINUATION_MS;
+          if (continuesSameUtterance) {
             const updated = [...prev];
             updated[idx] = {
-              ...updated[idx],
-              text: processedText,
+              ...last,
+              text: mergeUtteranceText(last.text, processedText),
               timestamp,
-              partial: true,
+              partial,
             };
             return updated;
           }
         }
-        // Final segments are always appended as new lines.
+
         return [
           ...prev.slice(-(MAX_LIVE_SEGMENTS - 1)),
           {
