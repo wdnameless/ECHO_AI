@@ -57,6 +57,22 @@ fn health_body(port: u16) -> Option<serde_json::Value> {
 }
 
 /// Port the native engine is serving on, if it is.
+/// First port in the engine's range that nothing is listening on.
+///
+/// The engine used to be started on the default port unconditionally: with that
+/// port already taken it died on startup and stayed offline until the other
+/// process went away.
+fn free_engine_port() -> Option<u16> {
+    ENGINE_PORT_RANGE.into_iter().find(|port| !port_is_taken(*port))
+}
+
+fn port_is_taken(port: u16) -> bool {
+    let Ok(addr) = format!("127.0.0.1:{port}").parse::<std::net::SocketAddr>() else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
+}
+
 fn native_engine_port() -> Option<u16> {
     let mut candidates: Vec<u16> = Vec::new();
     if let Some(port) = read_bound_asr_port() {
@@ -383,11 +399,12 @@ fn spawn_pluely_asr() -> bool {
 
     #[cfg(target_os = "windows")]
     let spawn = {
+        let port = free_engine_port().unwrap_or(ENGINE_PORT);
         let mut cmd = Command::new(&asr_bin);
         cmd.arg("--model")
             .arg(&model_path)
             .arg("--port")
-            .arg("9877")
+            .arg(port.to_string())
             .arg("--bind")
             .arg("127.0.0.1")
             .stdout(Stdio::from(log_file.try_clone().expect("sidecar log clone")))
@@ -677,6 +694,9 @@ $s.Dispose()
                 .stderr(Stdio::null())
                 .creation_flags(0x08000000); // CREATE_NO_WINDOW
             if let Ok(mut child) = cmd.spawn() {
+                // Same kill-on-close job as the engine: a crashed app used to
+                // leave the speech process running with no window and no owner.
+                assign_job_object(&child);
                 let stdin = child.stdin.take();
                 *guard = Some((child, stdin));
             } else {
@@ -726,6 +746,20 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
         let port = listener.local_addr().expect("local addr").port();
         (listener, port)
+    }
+
+    #[test]
+    fn a_taken_engine_port_is_skipped() {
+        // The engine used to be spawned on the default port unconditionally and
+        // died on startup when something else held it, leaving speech offline.
+        let (listener, taken) = ephemeral_listener();
+        assert!(port_is_taken(taken), "the listener must look taken to the probe");
+
+        // Whatever port comes back must not be the one already in use.
+        let chosen = free_engine_port();
+        assert_ne!(chosen, Some(taken), "a busy port came back as free");
+        drop(listener);
+        assert!(!port_is_taken(taken), "a released port must probe free again");
     }
 
     /// Serves canned HTTP responses on an ephemeral port, one per connection,

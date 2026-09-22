@@ -78,6 +78,9 @@ export function useCustomAiProviders() {
     try {
       const success = removeCustomAiProvider(deleteConfirm);
       if (success) {
+        // The key lives in the backend store, not in the provider record:
+        // without this it stayed there with nothing left to reference it.
+        await removeSecret(secretKey.aiProvider(deleteConfirm)).catch(() => {});
         setDeleteConfirm(null);
         loadData(); // Refresh data
       }

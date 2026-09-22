@@ -173,6 +173,27 @@ describe("secret-store", () => {
 });
 
 describe("curl templates never keep a plaintext key", () => {
+  it("lifts a key out of a non-bearer auth header", () => {
+    // Providers that authenticate with x-api-key kept their plaintext key in
+    // localStorage: the sweep only knew the Bearer shape and reported nothing
+    // to move.
+    const curl = [
+      "curl https://api.example.test/v1/chat/completions \\",
+      '  -H "Content-Type: application/json" \\',
+      '  -H "x-api-key: sk-header-abcdef" \\',
+      `  -d '{"model": "m", "messages": []}'`,
+    ].join("\\n");
+
+    expect(curlHasLiteralSecret(curl)).toBe(true);
+    const { curl: sanitized, secret } = extractLiteralSecret(curl);
+    expect(secret).toBe("sk-header-abcdef");
+    expect(sanitized).toContain("x-api-key: {{API_KEY}}");
+    expect(sanitized).not.toContain("sk-header-abcdef");
+
+    // An already-sanitised template is left alone (idempotent).
+    expect(curlHasLiteralSecret(sanitized)).toBe(false);
+  });
+
   const PROVIDER_CURL = [
     "curl https://api.example.test/v1/chat/completions \\",
     '  -H "Content-Type: application/json" \\',

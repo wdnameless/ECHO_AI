@@ -778,10 +778,11 @@ export const useChatCompletion = (
   }, [handleScreenshotSubmit, hasActiveLicense]);
 
   useEffect(() => {
-    let unlisten: any;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
 
     const setupListener = async () => {
-      unlisten = await listen("captured-selection", async (event: any) => {
+      const fn = await listen<string>("captured-selection", async (event) => {
         // Only process if this context initiated the screenshot
         if (!screenshotInitiatedByThisContext.current) {
           return;
@@ -813,14 +814,19 @@ export const useChatCompletion = (
           }, 100);
         }
       });
+
+      if (cancelled) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
     };
 
     setupListener();
 
     return () => {
-      if (unlisten) {
-        unlisten();
-      }
+      cancelled = true;
+      unlisten?.();
     };
   }, [handleScreenshotSubmit]);
 

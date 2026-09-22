@@ -24,8 +24,8 @@ export interface UseSystemAudioKeyboardProps {
   startCapture: () => Promise<void>;
   stopCapture: () => Promise<void>;
   globalShortcuts: {
-    registerSystemAudioCallback: (cb: () => Promise<void>) => void;
-    registerAssistantAudioCallback?: (cb: () => Promise<void>) => void;
+    registerSystemAudioCallback: (cb: () => Promise<void>) => (() => void) | void;
+    registerAssistantAudioCallback?: (cb: () => Promise<void>) => (() => void) | void;
   };
 }
 
@@ -119,7 +119,7 @@ export function useSystemAudioKeyboard({
 
   // Global system audio shortcut (Dictation / Interview toggle)
   useEffect(() => {
-    globalShortcuts.registerSystemAudioCallback(async () => {
+    return globalShortcuts.registerSystemAudioCallback(async () => {
       if (capturing) {
         await stopCapture();
       } else {

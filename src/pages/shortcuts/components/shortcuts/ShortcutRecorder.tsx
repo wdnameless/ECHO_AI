@@ -143,28 +143,28 @@ export const ShortcutRecorder = ({
 
     const shortcutKey = recordedKeys.join("+");
 
-    // For move_window, skip validation as we'll add arrow keys in the backend
-    if (!isMoveWindow) {
-      // Validate with frontend
-      if (!validateShortcutKey(shortcutKey)) {
-        setError("Invalid shortcut combination");
+    // For move_window, validate modifier with an arrow key as registered by backend
+    const keyToValidate = isMoveWindow ? `${shortcutKey}+up` : shortcutKey;
+
+    // Validate with frontend
+    if (!validateShortcutKey(keyToValidate)) {
+      setError("Invalid shortcut combination");
+      return;
+    }
+
+    // Validate with backend
+    try {
+      const isValid = await invoke<boolean>("validate_shortcut_key", {
+        key: keyToValidate,
+      });
+
+      if (!isValid) {
+        setError("This shortcut combination is not supported");
         return;
       }
-
-      // Validate with backend
-      try {
-        const isValid = await invoke<boolean>("validate_shortcut_key", {
-          key: shortcutKey,
-        });
-
-        if (!isValid) {
-          setError("This shortcut combination is not supported");
-          return;
-        }
-      } catch (e) {
-        setError("Failed to validate shortcut");
-        return;
-      }
+    } catch (e) {
+      setError("Failed to validate shortcut");
+      return;
     }
 
     onSave(shortcutKey);

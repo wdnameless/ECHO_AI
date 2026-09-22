@@ -45,6 +45,15 @@ interface Model {
 const SELECTED_PLUELY_MODEL_STORAGE_KEY = "selected_pluely_model";
 const SELECTED_PLUELY_PROMPT_STORAGE_KEY = "selected_pluely_prompt";
 
+export const dispatchStorageChange = (key: string) => {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new StorageEvent("storage", { key }));
+  } catch {
+    window.dispatchEvent(new Event("storage"));
+  }
+};
+
 export const PluelyPrompts = () => {
   const {
     setSystemPrompt,
@@ -82,6 +91,7 @@ export const PluelyPrompts = () => {
   }, []);
 
   // Watch for changes in user's selected prompt and clear Echo AI selection if needed
+  // Watch for changes in user's selected prompt and sync Echo AI selection
   useEffect(() => {
     const checkUserPromptSelection = () => {
       const userSelectedPromptId = safeLocalStorage.getItem(
@@ -90,15 +100,33 @@ export const PluelyPrompts = () => {
       // If user has selected one of their own prompts, clear Echo AI prompt selection
       if (userSelectedPromptId) {
         setSelectedPluelyPrompt(null);
+      } else {
+        const stored = safeLocalStorage.getItem(
+          SELECTED_PLUELY_PROMPT_STORAGE_KEY
+        );
+        if (stored) {
+          try {
+            setSelectedPluelyPrompt(JSON.parse(stored));
+          } catch {
+            setSelectedPluelyPrompt(null);
+          }
+        } else {
+          setSelectedPluelyPrompt(null);
+        }
       }
     };
 
     // Check on mount
     checkUserPromptSelection();
 
-    // Listen for storage changes
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEYS.SELECTED_SYSTEM_PROMPT_ID) {
+    // Listen for storage changes (both cross-window and same-window)
+    const handleStorageChange = (e: Event) => {
+      const storageEvent = e as StorageEvent;
+      if (
+        !storageEvent.key ||
+        storageEvent.key === STORAGE_KEYS.SELECTED_SYSTEM_PROMPT_ID ||
+        storageEvent.key === SELECTED_PLUELY_PROMPT_STORAGE_KEY
+      ) {
         checkUserPromptSelection();
       }
     };
@@ -154,6 +182,10 @@ export const PluelyPrompts = () => {
         SELECTED_PLUELY_PROMPT_STORAGE_KEY,
         JSON.stringify(prompt)
       );
+
+      // Notify same-window and cross-window listeners of storage changes
+      dispatchStorageChange(STORAGE_KEYS.SELECTED_SYSTEM_PROMPT_ID);
+      dispatchStorageChange(SELECTED_PLUELY_PROMPT_STORAGE_KEY);
 
       // Find the model by modelId and select it
       const matchingModel = models.find(

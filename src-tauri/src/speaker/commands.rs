@@ -680,24 +680,6 @@ pub async fn get_capture_status(app: AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub async fn get_audio_sample_rate(_app: AppHandle) -> Result<u32, String> {
-    // Building a stream opens the device and dropping it waits for the capture
-    // thread to shut down; as a synchronous command that wait sat on the main
-    // thread and froze the window.
-    tauri::async_runtime::spawn_blocking(|| {
-        let input = SpeakerInput::new().map_err(|e| {
-            error!("Failed to create speaker input: {}", e);
-            format!("Failed to access system audio: {}", e)
-        })?;
-
-        let stream = input.stream();
-        Ok(stream.sample_rate())
-    })
-    .await
-    .map_err(|e| format!("Failed to read audio sample rate: {}", e))?
-}
-
-#[tauri::command]
 pub fn get_input_devices() -> Result<Vec<AudioDevice>, String> {
     crate::speaker::list_input_devices().map_err(|e| {
         error!("Failed to get input devices: {}", e);

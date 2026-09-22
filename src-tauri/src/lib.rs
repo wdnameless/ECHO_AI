@@ -202,7 +202,6 @@ pub fn run() {
             speaker::get_vad_config,
             speaker::update_vad_config,
             speaker::get_capture_status,
-            speaker::get_audio_sample_rate,
             speaker::get_input_devices,
             speaker::get_output_devices,
             vocab::get_corrections,

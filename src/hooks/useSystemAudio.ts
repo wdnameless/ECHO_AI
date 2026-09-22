@@ -283,6 +283,7 @@ export function useSystemAudio() {
 
   // 6. Mic WS Streaming Hook
   const {
+    micWsRef,
     micWsWantRef,
     micWsConnect,
     micWsFinalizeAndClose,
@@ -350,8 +351,14 @@ export function useSystemAudio() {
       micWsFinalizeAndClose();
     },
     onInterimTranscript: (text) => {
+      // The engine's own stream is the single source for dictation text: it is
+      // the path that gets corrected, while the webview recogniser lags behind
+      // and used to append a second, stale line into the same partial segment.
       const currentMode = micStateStore.getState().mode;
-      if (currentMode === "DICTATION") {
+      const liveStream = micWsRef.current;
+      const streamOwnsTheText =
+        !!liveStream && liveStream.readyState === WebSocket.OPEN;
+      if (currentMode === "DICTATION" && !streamOwnsTheText) {
         appendLiveSegment("me", text, true);
       }
     },
