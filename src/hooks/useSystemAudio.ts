@@ -418,8 +418,13 @@ export function useSystemAudio() {
       .reverse()
       .find((s) => s.source === "them" && !s.partial && s.text.trim());
 
-    const textToAnswer = lastThemSegment?.text || theirLastTranscription;
+    // Prefer what the assembler produced; fall back to the last finalised line.
+    const textToAnswer =
+      lastInterviewerQuestionRef.current?.trim() ||
+      lastThemSegment?.text ||
+      theirLastTranscription;
     if (!textToAnswer || !textToAnswer.trim()) return;
+    autoAskManagerRef.current?.cancel();
 
     if (lastThemSegment?.id) {
       await askAIForTranscript(lastThemSegment.id, textToAnswer, "them");

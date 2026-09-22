@@ -79,7 +79,6 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
   const [pendingScreenshot, setPendingScreenshot] = useState<string | null>(null);
   const pendingScreenshotRef = useRef<string | null>(null);
-  const latestPartialThemRef = useRef<{ text: string; timestamp: number }>({ text: "", timestamp: 0 });
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
 
@@ -281,8 +280,6 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
             });
             if (text && !isSttErrorMessage(text)) {
               const trimmed = text.trim();
-              latestPartialThemRef.current.text = trimmed;
-              latestPartialThemRef.current.timestamp = Date.now();
               onInterviewerSpeechActivity?.();
               appendLiveSegment("them", trimmed, true);
             }
