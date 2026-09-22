@@ -40,20 +40,55 @@ export const MAX_HISTORY_MESSAGES = 20;
  */
 const LIVE_SEGMENT_CONTINUATION_MS = 8_000;
 
+/** Words of a result, for comparing two readings of the same audio. */
+const words = (s: string): string[] =>
+  s
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+/** Share of `a`'s words that also appear in `b`, 0..1. */
+function overlapRatio(a: string[], b: string[]): number {
+  if (a.length === 0) return 0;
+  const bSet = new Set(b);
+  let hits = 0;
+  for (const w of a) if (bSet.has(w)) hits++;
+  return hits / a.length;
+}
+
 /**
- * Joins the text a line already has with the text that just arrived.
+ * Decides what a line becomes when another result arrives for it.
  *
- * Recognisers resend the whole utterance so far, so the common case is that the
- * new text already contains the old one — take the longer of the two. Otherwise
- * the new piece continues it and is appended.
+ * Three cases, and only the last one is a continuation:
+ * - the new text supersedes the old one (contains it, or reads the same audio:
+ *   recognisers re-word as the audio grows) → take it;
+ * - the old text is the fuller one → keep it;
+ * - otherwise the new piece continues the sentence → append it.
+ *
+ * The middle case is why a re-worded result must not be appended: appending made
+ * the line repeat itself ("...который оригинальной игре хотели здесь" twice),
+ * because the same audio came back phrased differently.
  */
 function mergeUtteranceText(existing: string, incoming: string): string {
   const a = existing.trim();
   const b = incoming.trim();
   if (!a) return b;
   if (!b) return a;
-  if (b.length >= a.length && b.toLowerCase().includes(a.toLowerCase())) return b;
-  if (a.toLowerCase().includes(b.toLowerCase())) return a;
+
+  const lowerA = a.toLowerCase();
+  const lowerB = b.toLowerCase();
+  if (lowerB.includes(lowerA)) return b;
+  if (lowerA.includes(lowerB)) return a;
+
+  // Re-worded reading of the same audio: keep whichever is longer, never both.
+  const aWords = words(a);
+  const bWords = words(b);
+  if (overlapRatio(aWords, bWords) >= 0.6 || overlapRatio(bWords, aWords) >= 0.6) {
+    return b.length >= a.length ? b : a;
+  }
+
   return `${a} ${b}`;
 }
 

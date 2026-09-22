@@ -12,6 +12,8 @@ import { useCallback, useRef } from "react";
 import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
 import { getResponseSettings } from "@/lib";
 import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
+import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
+import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
 const MIC_WS_RECONNECT_MS = 400;
 
 export interface UseMicWsStreamingProps {
@@ -32,6 +34,7 @@ export function useMicWsStreaming({
   const micWsFinalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const micWsClose = useCallback(() => {
+    releaseStream("me");
     if (micWsFinalizeTimerRef.current !== null) {
       clearTimeout(micWsFinalizeTimerRef.current);
       micWsFinalizeTimerRef.current = null;
@@ -77,6 +80,12 @@ export function useMicWsStreaming({
     micWsConnectRef.current = () => {
       void (async () => {
         if (!capturingRef.current) return;
+        // The sidecar serves one stream per model: if the system-audio channel
+        // owns it, wait rather than being refused.
+        if (!tryAcquireStream("me")) {
+          scheduleMicWsReconnect();
+          return;
+        }
         micWsClose();
         let base: string;
         try {
@@ -109,23 +118,9 @@ export function useMicWsStreaming({
           micWsStoppedByUsRef.current = false;
         };
         ws.onmessage = (ev) => {
-          if (typeof ev.data !== "string") return;
-          try {
-            const msg = JSON.parse(ev.data);
-            if (
-              msg.type === "text" &&
-              typeof msg.text === "string" &&
-              msg.text.trim()
-            ) {
-              // Streaming partial from the sidecar: show immediately.
-              onPartialTranscript(msg.text.trim());
-            } else if (msg.type === "error") {
-              console.warn("[mic-ws] server error:", msg.message);
-            }
-          } catch (err) {
-            console.warn("[mic-ws]", err);
-            // ignore malformed frames
-          }
+          // Streaming partial from the sidecar: show immediately. Status and
+          // latency frames on this socket feed the shared store.
+          handleAsrStreamFrame(ev.data, { onPartialTranscript });
         };
         ws.onclose = () => {
           if (micWsRef.current === ws) {
