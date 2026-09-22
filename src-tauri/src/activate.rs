@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tauri_plugin_machine_uid::MachineUidExt;
 use uuid::Uuid;
 
@@ -24,18 +24,9 @@ fn get_api_access_key() -> Result<String, String> {
     Ok("".to_string())
 }
 
-// Secure storage functions using Tauri's app data directory
-fn get_secure_storage_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
-
-    // Create the directory if it doesn't exist
-    fs::create_dir_all(&app_data_dir)
-        .map_err(|e| format!("Failed to create app data directory: {}", e))?;
-
-    Ok(app_data_dir.join("secure_storage.json"))
+// Secure storage file path resolved according to active mode (portable or app data)
+fn get_secure_storage_path(_app: &AppHandle) -> Result<PathBuf, String> {
+    crate::settings::ensure_secure_storage_path()
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]

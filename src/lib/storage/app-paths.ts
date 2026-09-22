@@ -14,6 +14,10 @@ export interface ResolvedPaths {
   models_dir: string;
   logs_dir: string;
   settings_path: string;
+  /** Secrets file in use, resolved the same way as the database. */
+  secrets_path: string;
+  /** Names of the files consolidated when portable mode was switched on. */
+  moved?: string[];
   writable: boolean;
 }
 
