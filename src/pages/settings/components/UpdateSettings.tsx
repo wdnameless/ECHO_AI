@@ -2,6 +2,7 @@ import { useState } from "react";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Button, Header } from "@/components";
+import { PortableUpdateNotice, useIsPortable } from "@/components/updater/PortableUpdateNotice";
 import { CheckCircle2Icon, DownloadIcon, Loader2Icon, RefreshCwIcon, AlertCircleIcon } from "lucide-react";
 
 export const UpdateSettings = () => {
@@ -10,6 +11,7 @@ export const UpdateSettings = () => {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
+  const isPortable = useIsPortable();
 
   const handleCheck = async () => {
     setChecking(true);
@@ -69,6 +71,12 @@ export const UpdateSettings = () => {
               ? `Найдена новая версия v${update.version}. Нажмите «Установить и перезапустить».`
               : "Проверьте обновления вручную или скачайте свежий билд."}
           </p>
+
+          {update && isPortable && (
+            <div className="pt-2">
+              <PortableUpdateNotice />
+            </div>
+          )}
           {error && (
             <p className="flex items-center gap-1 text-xs text-red-500 mt-1">
               <AlertCircleIcon className="w-3.5 h-3.5 shrink-0" />
