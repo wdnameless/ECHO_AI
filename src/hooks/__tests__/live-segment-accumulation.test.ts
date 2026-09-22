@@ -69,3 +69,41 @@ describe("live segment accumulation", () => {
     }
   });
 });
+
+describe("a re-worded result is not appended twice", () => {
+  it("keeps one line when the recogniser re-phrases the same audio", () => {
+    const { result } = renderHook(() => useConversationStore());
+
+    // Two readings of the same speech, different wording, heavy overlap: the
+    // earlier behaviour appended the second, so the line said the same thing
+    // twice (the report from the running app).
+    act(() =>
+      result.current.appendLiveSegment(
+        "them",
+        "который оригинальной игре хотели здесь сделать"
+      )
+    );
+    act(() =>
+      result.current.appendLiveSegment(
+        "them",
+        "который в оригинальной игре хотели здесь сделать"
+      )
+    );
+
+    expect(result.current.liveSegments).toHaveLength(1);
+    const text = result.current.liveSegments[0].text;
+    // The duplicated phrase must appear once, not twice.
+    expect(text.toLowerCase().split("оригинальной").length - 1).toBe(1);
+  });
+
+  it("still appends a piece that is genuinely new", () => {
+    const { result } = renderHook(() => useConversationStore());
+    act(() => result.current.appendLiveSegment("them", "Смотритель кошек."));
+    act(() =>
+      result.current.appendLiveSegment("them", "Отведи смертную душу в кольцо.")
+    );
+    expect(result.current.liveSegments[0].text).toBe(
+      "Смотритель кошек. Отведи смертную душу в кольцо."
+    );
+  });
+});

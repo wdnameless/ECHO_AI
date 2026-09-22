@@ -1,11 +1,12 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { safeLocalStorage, shouldUsePluelyAPI } from "@/lib";
+import { safeLocalStorage } from "@/lib";
 import { buildInitialPrompt } from "@/lib/vocab";
-import { isSttErrorMessage, transcribeWithFallback } from "@/lib/functions";
-import type { TYPE_PROVIDER } from "@/types";
+import { transcribeWithFallback } from "@/lib/functions";
 import { micStateStore } from "@/stores/mic-state";
+import { useThemWsStreaming } from "./useThemWsStreaming";
+import { withNoStream } from "@/lib/asr-gate";
 
 export interface VadConfig {
   enabled: boolean;
@@ -40,7 +41,6 @@ interface UseSystemAudioCaptureProps {
     provider: string;
     variables: Record<string, string>;
   };
-  allSttProviders: TYPE_PROVIDER[];
   appendLiveSegment: (source: "me" | "them", text: string, isPartial?: boolean) => void;
   onInterviewerTranscription: (text: string) => Promise<void>;
   onInterviewerSpeechActivity?: () => void;
@@ -54,7 +54,6 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   const {
     selectedAudioDevices,
     selectedSttProvider,
-    allSttProviders,
     appendLiveSegment,
     onInterviewerTranscription,
     onInterviewerSpeechActivity,
@@ -133,12 +132,16 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       try {
         setSegmentProcessing(true);
 
-        const sttPromise = transcribeWithFallback({
-          selectedProvider: selectedSttProvider,
-          audio: audioBlob,
-          priority: "high",
-          prompt: buildInitialPrompt(),
-        });
+        // A stream holds the model; the sidecar answers 500 "model busy" for
+        // HTTP transcription while one is open, so wait for it to finish.
+        const sttPromise = withNoStream(() =>
+          transcribeWithFallback({
+            selectedProvider: selectedSttProvider,
+            audio: audioBlob,
+            priority: "high",
+            prompt: buildInitialPrompt(),
+          })
+        );
 
         // Sidecar waits for the GPU lease up to 30s (busy-retry) and the
         // batch queue holds up to 40s; the race timeout must stay above the
@@ -218,11 +221,101 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     };
   });
 
+  // Live channel: Rust emits ~250 ms of fresh PCM per `speech-frame` while the
+  // interviewer speaks, and this forwards it to the sidecar's streaming socket.
+  // Without it the only live path re-transcribed the whole utterance once a
+  // second over HTTP - a second of delay per partial, and every result repeating
+  // the text that was already on screen.
+  const themWs = useThemWsStreaming({
+    capturingRef,
+    onPartialTranscript: (text) => {
+      onInterviewerSpeechActivity?.();
+      appendLiveSegment("them", text, true);
+    },
+    onFinalTranscript: (text) => {
+      onInterviewerSpeechActivity?.();
+      setTheirLastTranscription(text);
+      appendLiveSegment("them", text);
+    },
+  });
+  const themWsRef = useRef(themWs);
+  themWsRef.current = themWs;
+
+  useEffect(() => {
+    let frameUnlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    listen<number[]>("speech-frame", (event) => {
+      if (!capturingRef.current) return;
+      const bytes = new Uint8Array(event.payload);
+      if (bytes.length === 0) return;
+      themWsRef.current.feedFrame(bytes.buffer as ArrayBuffer);
+    })
+      .then((unlisten) => {
+        if (cancelled) {
+          unlisten();
+        } else {
+          frameUnlisten = unlisten;
+        }
+      })
+      .catch((err) => {
+        console.warn("[system-audio] frame listener failed:", err);
+      });
+
+    return () => {
+      cancelled = true;
+      if (frameUnlisten) frameUnlisten();
+    };
+  }, [capturingRef]);
+
+  // Stop the stream when capture stops; per-utterance start/stop is wired to the
+  // speech events below.
+  useEffect(() => {
+    if (!capturing) {
+      themWsRef.current.finalizeAndClose();
+    }
+  }, [capturing]);
+
+  useEffect(() => {
+    let startUnlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    // The interviewer started speaking: open the stream for this utterance.
+    listen("speech-start", () => {
+      if (!capturingRef.current) return;
+      themWsRef.current.beginUtterance();
+      themWsRef.current.start();
+    })
+      .then((unlisten) => {
+        if (cancelled) {
+          unlisten();
+        } else {
+          startUnlisten = unlisten;
+        }
+      })
+      .catch((err) => {
+        console.warn("[system-audio] speech-start listener failed:", err);
+      });
+
+    return () => {
+      cancelled = true;
+      if (startUnlisten) startUnlisten();
+    };
+  }, [capturingRef]);
+
   useEffect(() => {
     let speechUnlisten: (() => void) | undefined;
     let cancelled = false;
 
     listen("speech-detected", (event) => {
+      // The stream transcribed this utterance and the sidecar serves one stream
+      // per model: asking for the same audio over HTTP here would race the
+      // stream for the model (and collect "model busy"). Only an utterance the
+      // stream never answered falls back to the batch call.
+      if (themWsRef.current.isStreaming() || themWsRef.current.hasProducedText()) {
+        themWsRef.current.finalizeAndClose();
+        return;
+      }
       onInterviewerSpeechActivity?.();
       handleSpeechDetectedRef.current(event.payload as string);
     })
@@ -238,76 +331,11 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         setError("Failed to setup speech listener");
       });
 
-    let partialUnlisten: (() => void) | undefined;
-    let partialInFlight = false;
-    const partialQueue: string[] = [];
-    listen("speech-partial", (event) => {
-      onInterviewerSpeechActivity?.();
-      const b64 = event.payload as string;
-      if (!b64 || !capturingRef.current) return;
-      partialQueue.push(b64);
-      if (partialInFlight) return;
-      partialInFlight = true;
-
-      void (async () => {
-        while (partialQueue.length > 0) {
-          // Only the freshest queued partial matters: older ones describe
-          // audio the NEXT partial already includes (they are cumulative
-          // buffers), and each batch costs a GPU lease wait. Transcribing a
-          // backlog after a stall just burns the queue slot for nothing.
-          while (partialQueue.length > 1) partialQueue.shift();
-          const payload = partialQueue.shift()!;
-          const binaryString = atob(payload);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
-          }
-          const blob = new Blob([bytes], { type: "audio/wav" });
-          const usePluelyAPI = await shouldUsePluelyAPI();
-          try {
-            const prompt = buildInitialPrompt();
-            const text = await transcribeWithFallback({
-              provider: usePluelyAPI
-                ? undefined
-                : allSttProviders.find(
-                    (p) => p.id === selectedSttProvider.provider
-                  ),
-              selectedProvider: selectedSttProvider,
-              audio: blob,
-              allowCloudFallback: false,
-              priority: "low",
-              prompt,
-            });
-            if (text && !isSttErrorMessage(text)) {
-              const trimmed = text.trim();
-              onInterviewerSpeechActivity?.();
-              appendLiveSegment("them", trimmed, true);
-            }
-          } catch (err) {
-            console.warn("[system-audio]", err);
-          } finally {
-            partialInFlight = false;
-          }
-        }
-      })();
-    })
-      .then((unlisten) => {
-        if (cancelled) {
-          unlisten();
-        } else {
-          partialUnlisten = unlisten;
-        }
-      })
-      .catch((err) => {
-        console.warn("[system-audio]", err);
-      });
-
     return () => {
       cancelled = true;
       if (speechUnlisten) speechUnlisten();
-      if (partialUnlisten) partialUnlisten();
     };
-  }, [allSttProviders, selectedSttProvider, appendLiveSegment, onInterviewerSpeechActivity, setError]);
+  }, [appendLiveSegment, onInterviewerSpeechActivity, setError]);
   useEffect(() => {
     let progressUnlisten: (() => void) | undefined;
     let startUnlisten: (() => void) | undefined;

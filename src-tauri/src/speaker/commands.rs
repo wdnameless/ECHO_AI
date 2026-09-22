@@ -197,9 +197,10 @@ async fn run_vad_capture(
                 speech_buffer.extend_from_slice(&mono);
                 silence_chunks = 0; // Reset silence counter on any speech
 
-                // Live PCM frames for WS streaming: emit NEW audio since the
-                // last frame as base64(f32 LE @16kHz) every ~250ms. The
-                // frontend forwards these to pluely-asr /v1/asr/stream.
+                // Live PCM for the streaming socket: the audio since the last
+                // frame, f32 LE @16 kHz, every ~250 ms. Sent as raw bytes - the
+                // renderer pipes it straight into the socket, and the older
+                // base64 hop only added a decode per frame.
                 frames_since_frame += mono.len();
                 if frames_since_frame >= sr as usize / 4 {
                     let new_slice = &speech_buffer[frame_emitted_len..];
@@ -208,24 +209,15 @@ async fn run_vad_capture(
                     for f in &resampled {
                         bytes.extend_from_slice(&f.to_le_bytes());
                     }
-                    let _ = app.emit("speech-frame", B64.encode(&bytes));
+                    let _ = app.emit("speech-frame", bytes);
                     frame_emitted_len = speech_buffer.len();
                     frames_since_frame = 0;
                 }
 
-                // Live partial streaming: emit a chunk of accumulated audio
-                // roughly every second so the frontend can transcribe it in
-                // real time (word-by-word live captions).
-                if speech_buffer.len() - last_partial_samples >= sr as usize
-                    && speech_chunks >= config.min_speech_chunks
-                {
-                    last_partial_samples = speech_buffer.len();
-                    let normalized_buffer = normalize_audio_level(&speech_buffer, 0.1);
-                    let resampled = resample_to_16k(&normalized_buffer, sr);
-                    if let Ok(b64) = samples_to_wav_b64(16000, &resampled) {
-                        let _ = app.emit("speech-partial", b64);
-                    }
-                }
+                // No second live path: a 1 Hz re-transcription of the whole
+                // utterance over HTTP used to run alongside the stream, adding a
+                // second of delay and repeating text already on screen.
+                last_partial_samples = speech_buffer.len();
 
                 // Safety cap: force emit if exceeds 30s
                 if speech_buffer.len() > max_samples {

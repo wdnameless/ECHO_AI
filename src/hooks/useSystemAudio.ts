@@ -54,7 +54,6 @@ export function useSystemAudio() {
   // App context configuration
   const {
     selectedSttProvider,
-    allSttProviders,
     selectedAIProvider,
     allAiProviders,
     systemPrompt,
@@ -238,7 +237,6 @@ export function useSystemAudio() {
   } = useSystemAudioCapture({
     selectedAudioDevices,
     selectedSttProvider,
-    allSttProviders,
     appendLiveSegment,
     onInterviewerTranscription: handleBatchInterviewerTranscription,
     onInterviewerSpeechActivity: handleInterviewerSpeechActivity,
@@ -304,7 +302,6 @@ export function useSystemAudio() {
 
   useEffect(() => {
     let unlistenDetected: (() => void) | undefined;
-    let unlistenPartial: (() => void) | undefined;
 
     listen("speech-detected", () => {
       autoAskManagerRef.current?.cancel();
@@ -314,17 +311,8 @@ export function useSystemAudio() {
       })
       .catch(() => {});
 
-    listen("speech-partial", () => {
-      autoAskManagerRef.current?.cancel();
-    })
-      .then((u) => {
-        unlistenPartial = u;
-      })
-      .catch(() => {});
-
     return () => {
       if (unlistenDetected) unlistenDetected();
-      if (unlistenPartial) unlistenPartial();
       autoAskManagerRef.current?.cancel();
     };
   }, []);
