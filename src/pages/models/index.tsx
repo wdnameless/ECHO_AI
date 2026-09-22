@@ -13,6 +13,11 @@ import {
 } from "lucide-react";
 import { Input, Button } from "@/components";
 import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
   listModels,
   modelCatalog,
   selectedModel,
@@ -52,11 +57,6 @@ function describeLanguages(model: ModelEntry): string {
   }
   return `${unique.length} languages`;
 }
-function formatModelLanguages(model: ModelEntry): string | undefined {
-  const unique = getUniqueCapabilityLanguages(model.languages);
-  if (unique.length === 0) return undefined;
-  return unique.map((code) => getLanguageLabel(code) ?? code).join(", ");
-}
 function formatError(error: unknown, fallback: string): string {
   if (typeof error === "string" && error.trim()) {
     return error.trim();
@@ -72,6 +72,61 @@ function formatError(error: unknown, fallback: string): string {
 }
 
 
+/**
+ * Language badge with the full list behind it.
+ *
+ * The count alone made a correct language-filter match look wrong (a model
+ * listed under «Русский» while its description says «25 европейских языков»),
+ * so the list is one click away instead of being a claim the user has to take
+ * on faith.
+ */
+function ModelLanguages({
+  model,
+  matchedLanguage,
+}: {
+  model?: ModelEntry;
+  /** Recognition code of the active filter, e.g. `ru`; null when no filter. */
+  matchedLanguage?: string | null;
+}) {
+  const languages = getUniqueCapabilityLanguages(model?.languages);
+  // A model that speaks only the filtered language needs no second chip: the
+  // badge already says everything, and the repeat read as a filter bug.
+  const showMatched =
+    !!matchedLanguage && !(languages.length === 1 && languages[0] === matchedLanguage);
+
+  return (
+    <span className="flex items-center gap-1">
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            className="flex items-center gap-1 hover:text-foreground transition-colors"
+            title="Показать список языков"
+          >
+            <Languages className="w-3.5 h-3.5" />
+            {model ? describeLanguages(model) : "Offline"}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-64 p-3">
+          <p className="text-xs font-medium mb-2">
+            {model ? model.name : "Модель"}
+          </p>
+          <p className="text-[11px] text-muted-foreground max-h-48 overflow-y-auto leading-relaxed">
+            {languages.length > 0
+              ? languages.map((code) => getLanguageLabel(code) ?? code).join(", ")
+              : "Языки не указаны"}
+          </p>
+        </PopoverContent>
+      </Popover>
+      {showMatched && (
+        <span className="flex items-center gap-1">
+          {getLanguageLabel(matchedLanguage!) ?? matchedLanguage}
+        </span>
+      )}
+    </span>
+  );
+}
+
 export const Models = () => {
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [downloadedModels, setDownloadedModels] = useState<InstalledModel[]>([]);
@@ -80,10 +135,6 @@ export const Models = () => {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedLanguage, setSelectedLanguage] = useState<string>("all");
-  const selectedLanguageLabel =
-    selectedLanguage !== "all"
-      ? getLanguageLabel(selectedLanguage) ?? selectedLanguage
-      : null;
   const [sortBy, setSortBy] = useState<SortOption>("accuracy");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
 
@@ -428,18 +479,7 @@ export const Models = () => {
                     {/* Metadata & Actions row */}
                     <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-border/40 text-xs text-muted-foreground">
                       <div className="flex items-center gap-3">
-                        <span
-                          className="flex items-center gap-1"
-                          title={model ? formatModelLanguages(model) : undefined}
-                        >
-                          <Languages className="w-3.5 h-3.5" />
-                          {model ? describeLanguages(model) : "Offline"}
-                        </span>
-                        {selectedLanguageLabel && (
-                          <span className="flex items-center gap-1">
-                            {selectedLanguageLabel}
-                          </span>
-                        )}
+                        <ModelLanguages model={model} matchedLanguage={selectedLanguage === "all" ? null : selectedLanguage} />
                         {model?.capabilities.streaming && (
                           <span className="flex items-center gap-1">
                             <AudioLines className="w-3.5 h-3.5" />
@@ -532,18 +572,7 @@ export const Models = () => {
                     {/* Footer Row */}
                     <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-border/40 text-xs text-muted-foreground">
                       <div className="flex items-center gap-3">
-                        <span
-                          className="flex items-center gap-1"
-                          title={formatModelLanguages(model)}
-                        >
-                          <Languages className="w-3.5 h-3.5" />
-                          {describeLanguages(model)}
-                        </span>
-                        {selectedLanguageLabel && (
-                          <span className="flex items-center gap-1">
-                            {selectedLanguageLabel}
-                          </span>
-                        )}
+                        <ModelLanguages model={model} matchedLanguage={selectedLanguage === "all" ? null : selectedLanguage} />
                         {model.capabilities.streaming && (
                           <span className="flex items-center gap-1">
                             <AudioLines className="w-3.5 h-3.5" />
