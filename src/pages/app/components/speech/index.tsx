@@ -10,6 +10,7 @@ import {
   LoaderIcon,
   Settings2Icon,
   SettingsIcon,
+  SparklesIcon,
 } from "lucide-react";
 import { ModeSwitcher } from "./ModeSwitcher";
 import { ResultsSection } from "./ResultsSection";
@@ -56,8 +57,10 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     startNewConversation,
     setPendingScreenshot,
     resizeWindow,
+    autoAskMode = "auto",
+    setAutoAskMode,
+    answerLastInterviewerUtterance,
   } = props;
-
   const isVadMode = !isContinuousMode;
   const handleModeChange = (vadEnabled: boolean) => {
     if (setIsContinuousMode) {
@@ -78,6 +81,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     hasLicense: hasActiveLicense,
   });
 
+  const hasInterviewerUtterance = Boolean(theirLastTranscription?.trim());
   const handleRemoveScreenshot = () => {
     setScreenshotImage(null);
     setPendingScreenshot(null);
@@ -140,6 +144,64 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                         isAIProcessing
                       }
                     />
+                  )}
+
+                  {!setupRequired && (
+                    <>
+                      {/* Режим ответа: Авто / Вручную */}
+                      <div
+                        className="flex items-center bg-muted rounded-md p-0.5 gap-0.5 shrink-0"
+                        title="Режим ответа: Авто (по тишине 1 сек) или Вручную (по кнопке «Ответить»)"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => setAutoAskMode?.("auto")}
+                          className={cn(
+                            "px-2 py-1 text-[11px] font-medium rounded transition-all",
+                            autoAskMode === "auto"
+                              ? "bg-background shadow-sm text-foreground"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                        >
+                          Авто
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAutoAskMode?.("manual")}
+                          className={cn(
+                            "px-2 py-1 text-[11px] font-medium rounded transition-all",
+                            autoAskMode === "manual"
+                              ? "bg-background shadow-sm text-foreground"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                        >
+                          Вручную
+                        </button>
+                      </div>
+
+                      {/* Кнопка ответа на последнюю реплику собеседника */}
+                      <Button
+                        size="sm"
+                        variant="default"
+                        onClick={() => answerLastInterviewerUtterance?.()}
+                        disabled={isAIProcessing || !hasInterviewerUtterance}
+                        className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+                        title={
+                          !hasInterviewerUtterance
+                            ? "Нет реплики собеседника для ответа"
+                            : isAIProcessing
+                            ? "ИИ генерирует ответ..."
+                            : "Ответить на последнюю реплику собеседника"
+                        }
+                      >
+                        {isAIProcessing ? (
+                          <LoaderIcon className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <SparklesIcon className="w-3 h-3" />
+                        )}
+                        Ответить
+                      </Button>
+                    </>
                   )}
                 </div>
 

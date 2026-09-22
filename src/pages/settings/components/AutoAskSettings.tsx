@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { Header, Label } from "@/components";
-import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { SparklesIcon } from "lucide-react";
 import {
@@ -18,8 +17,10 @@ export const AutoAskSettings = () => {
     setConfig(getAutoAskConfig());
   }, []);
 
-  const handleToggle = (enabled: boolean) => {
-    const next = saveAutoAskConfig({ enabled });
+  // `mode` is the single switch: the meeting panel shows the same choice, so a
+  // second on/off flag here could disagree with it.
+  const handleModeChange = (mode: AutoAskConfig["mode"]) => {
+    const next = saveAutoAskConfig({ mode });
     setConfig(next);
   };
 
@@ -37,11 +38,30 @@ export const AutoAskSettings = () => {
         title="Auto-Ask Assistant"
         description="Automatically trigger AI answer when interviewer pauses speaking"
         rightSlot={
-          <Switch
-            checked={config.enabled}
-            onCheckedChange={handleToggle}
-            aria-label="Toggle Auto-Ask Assistant"
-          />
+          <div className="flex items-center bg-muted rounded-md p-0.5 gap-0.5">
+            <button
+              type="button"
+              onClick={() => handleModeChange("auto")}
+              className={`px-2 py-1 text-[11px] font-medium rounded transition-all ${
+                config.mode === "auto"
+                  ? "bg-background shadow-sm text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Авто
+            </button>
+            <button
+              type="button"
+              onClick={() => handleModeChange("manual")}
+              className={`px-2 py-1 text-[11px] font-medium rounded transition-all ${
+                config.mode === "manual"
+                  ? "bg-background shadow-sm text-foreground"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Вручную
+            </button>
+          </div>
         }
       />
 
@@ -53,12 +73,14 @@ export const AutoAskSettings = () => {
           <div>
             <Label className="text-sm font-medium">Automatic Query Dispatch</Label>
             <p className="text-xs text-muted-foreground">
-              Dispatches speech to AI once a question completes without pressing Ask AI button
+              {config.mode === "auto"
+                ? "Dispatches speech to AI once a question completes without pressing Ask AI button"
+                : "Answers only when you press the button in the meeting panel"}
             </p>
           </div>
         </div>
 
-        {config.enabled && (
+        {config.mode === "auto" && (
           <div className="space-y-2 pt-2 border-t border-border/50">
             <div className="flex items-center justify-between">
               <Label className="text-xs text-muted-foreground font-medium">
@@ -77,7 +99,7 @@ export const AutoAskSettings = () => {
               className="py-1"
             />
             <p className="text-[11px] text-muted-foreground">
-              Pause threshold to detect end of question (default 1.5s). Range: 0.5s - 5.0s.
+              Pause threshold before an answer is sent (default 1.0s). Range: 0.5s - 5.0s.
             </p>
           </div>
         )}

@@ -52,6 +52,11 @@ function describeLanguages(model: ModelEntry): string {
   }
   return `${unique.length} languages`;
 }
+function formatModelLanguages(model: ModelEntry): string | undefined {
+  const unique = getUniqueCapabilityLanguages(model.languages);
+  if (unique.length === 0) return undefined;
+  return unique.map((code) => getLanguageLabel(code) ?? code).join(", ");
+}
 function formatError(error: unknown, fallback: string): string {
   if (typeof error === "string" && error.trim()) {
     return error.trim();
@@ -75,6 +80,10 @@ export const Models = () => {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedLanguage, setSelectedLanguage] = useState<string>("all");
+  const selectedLanguageLabel =
+    selectedLanguage !== "all"
+      ? getLanguageLabel(selectedLanguage) ?? selectedLanguage
+      : null;
   const [sortBy, setSortBy] = useState<SortOption>("accuracy");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
 
@@ -419,10 +428,18 @@ export const Models = () => {
                     {/* Metadata & Actions row */}
                     <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-border/40 text-xs text-muted-foreground">
                       <div className="flex items-center gap-3">
-                        <span className="flex items-center gap-1">
+                        <span
+                          className="flex items-center gap-1"
+                          title={model ? formatModelLanguages(model) : undefined}
+                        >
                           <Languages className="w-3.5 h-3.5" />
                           {model ? describeLanguages(model) : "Offline"}
                         </span>
+                        {selectedLanguageLabel && (
+                          <span className="flex items-center gap-1">
+                            {selectedLanguageLabel}
+                          </span>
+                        )}
                         {model?.capabilities.streaming && (
                           <span className="flex items-center gap-1">
                             <AudioLines className="w-3.5 h-3.5" />
@@ -515,10 +532,18 @@ export const Models = () => {
                     {/* Footer Row */}
                     <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-border/40 text-xs text-muted-foreground">
                       <div className="flex items-center gap-3">
-                        <span className="flex items-center gap-1">
+                        <span
+                          className="flex items-center gap-1"
+                          title={formatModelLanguages(model)}
+                        >
                           <Languages className="w-3.5 h-3.5" />
                           {describeLanguages(model)}
                         </span>
+                        {selectedLanguageLabel && (
+                          <span className="flex items-center gap-1">
+                            {selectedLanguageLabel}
+                          </span>
+                        )}
                         {model.capabilities.streaming && (
                           <span className="flex items-center gap-1">
                             <AudioLines className="w-3.5 h-3.5" />

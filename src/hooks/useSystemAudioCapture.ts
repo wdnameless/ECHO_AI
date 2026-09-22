@@ -43,6 +43,7 @@ interface UseSystemAudioCaptureProps {
   allSttProviders: TYPE_PROVIDER[];
   appendLiveSegment: (source: "me" | "them", text: string, isPartial?: boolean) => void;
   onInterviewerTranscription: (text: string) => Promise<void>;
+  onInterviewerSpeechActivity?: () => void;
   setMyLastTranscription: (text: string) => void;
   setTheirLastTranscription: (text: string) => void;
   setIsAIProcessing: (v: boolean) => void;
@@ -56,6 +57,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     allSttProviders,
     appendLiveSegment,
     onInterviewerTranscription,
+    onInterviewerSpeechActivity,
     setMyLastTranscription,
     setTheirLastTranscription,
     setIsAIProcessing,
@@ -77,7 +79,6 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
   const [pendingScreenshot, setPendingScreenshot] = useState<string | null>(null);
   const pendingScreenshotRef = useRef<string | null>(null);
-  const latestPartialThemRef = useRef<{ text: string; timestamp: number }>({ text: "", timestamp: 0 });
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
 
@@ -202,22 +203,6 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     handleSpeechDetectedRef.current = async (base64Audio: string) => {
       try {
         if (!capturingRef.current) return;
-
-        // Fast path: if we already received a valid final/partial text from the streaming WS/partial STT
-        // within the recent window (last 3000ms), dispatch question to AI immediately without waiting for batch.
-        const now = Date.now();
-        const recentStreamingText =
-          latestPartialThemRef.current.text && (now - latestPartialThemRef.current.timestamp < 3000)
-            ? latestPartialThemRef.current.text
-            : "";
-
-        let fastPathDispatched = false;
-        if (recentStreamingText) {
-          fastPathDispatched = true;
-          // Fast-path dispatch to AI immediately!
-          void onInterviewerTranscription(recentStreamingText);
-        }
-
         const binaryString = atob(base64Audio);
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
@@ -225,16 +210,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         }
         const audioBlob = new Blob([bytes], { type: "audio/wav" });
 
-        if (fastPathDispatched) {
-          // Fast-path was taken: run batch transcribeSegment in the background to refine the subtitle feed
-          // without re-dispatching to AI (skipOnInterviewerTranscription = true)
-          void transcribeSegment(audioBlob, "them", { skipOnInterviewerTranscription: true }).catch((err) => {
-            console.warn("[system-audio] Background batch transcription error:", err);
-          });
-        } else {
-          // Fallback: no streaming text available yet -> wait for batch transcribeSegment as before
-          await transcribeSegment(audioBlob, "them");
-        }
+        await transcribeSegment(audioBlob, "them");
       } catch (err) {
         console.warn("[system-audio]", err);
         setError("Failed to process speech");
@@ -247,6 +223,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     let cancelled = false;
 
     listen("speech-detected", (event) => {
+      onInterviewerSpeechActivity?.();
       handleSpeechDetectedRef.current(event.payload as string);
     })
       .then((unlisten) => {
@@ -265,6 +242,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     let partialInFlight = false;
     const partialQueue: string[] = [];
     listen("speech-partial", (event) => {
+      onInterviewerSpeechActivity?.();
       const b64 = event.payload as string;
       if (!b64 || !capturingRef.current) return;
       partialQueue.push(b64);
@@ -302,8 +280,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
             });
             if (text && !isSttErrorMessage(text)) {
               const trimmed = text.trim();
-              latestPartialThemRef.current.text = trimmed;
-              latestPartialThemRef.current.timestamp = Date.now();
+              onInterviewerSpeechActivity?.();
               appendLiveSegment("them", trimmed, true);
             }
           } catch (err) {
@@ -330,8 +307,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       if (speechUnlisten) speechUnlisten();
       if (partialUnlisten) partialUnlisten();
     };
-  }, [allSttProviders, selectedSttProvider, appendLiveSegment, setError]);
-
+  }, [allSttProviders, selectedSttProvider, appendLiveSegment, onInterviewerSpeechActivity, setError]);
   useEffect(() => {
     let progressUnlisten: (() => void) | undefined;
     let startUnlisten: (() => void) | undefined;

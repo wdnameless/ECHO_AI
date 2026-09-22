@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
-  DEFAULT_AUTO_ASK_CONFIG,
   AUTO_ASK_STORAGE_KEYS,
   clampSilenceDuration,
   getAutoAskConfig,
@@ -14,6 +13,7 @@ describe("auto-ask", () => {
   beforeEach(() => {
     safeLocalStorage.removeItem(AUTO_ASK_STORAGE_KEYS.ENABLED);
     safeLocalStorage.removeItem(AUTO_ASK_STORAGE_KEYS.SILENCE_DURATION);
+    safeLocalStorage.removeItem(AUTO_ASK_STORAGE_KEYS.MODE);
     vi.useFakeTimers();
   });
 
@@ -23,39 +23,51 @@ describe("auto-ask", () => {
   });
 
   describe("config and storage", () => {
-    it("returns default config when storage is empty (opt-in default OFF)", () => {
+    it("answers on its own by default, with the mode switch as the opt-out", () => {
+      // The panel's Авто/Вручную control is what turns automatic answering off;
+      // `enabled` only survives for configs written by older builds.
       const config = getAutoAskConfig();
-      expect(config.enabled).toBe(false);
-      expect(config.silenceDurationMs).toBe(1500);
-      expect(DEFAULT_AUTO_ASK_CONFIG.enabled).toBe(false);
+      expect(config.enabled).toBe(true);
+      expect(config.mode).toBe("auto");
+      expect(config.silenceDurationMs).toBe(1000);
     });
 
     it("clamps silence duration to 500-5000 range", () => {
       expect(clampSilenceDuration(200)).toBe(500);
       expect(clampSilenceDuration(6000)).toBe(5000);
       expect(clampSilenceDuration(2500)).toBe(2500);
-      expect(clampSilenceDuration(NaN)).toBe(1500);
+      expect(clampSilenceDuration(NaN)).toBe(1000);
     });
 
     it("saves and retrieves config correctly", () => {
-      const saved = saveAutoAskConfig({ enabled: true, silenceDurationMs: 2000 });
+      const saved = saveAutoAskConfig({ enabled: true, silenceDurationMs: 2000, mode: "manual" });
       expect(saved.enabled).toBe(true);
       expect(saved.silenceDurationMs).toBe(2000);
+      expect(saved.mode).toBe("manual");
 
       const loaded = getAutoAskConfig();
       expect(loaded.enabled).toBe(true);
       expect(loaded.silenceDurationMs).toBe(2000);
+      expect(loaded.mode).toBe("manual");
     });
   });
 
   describe("shouldAutoAsk guards", () => {
-    it("blocks dispatch when auto-ask is disabled", () => {
-      const allowed = shouldAutoAsk({
+    it("blocks dispatch when auto-ask is disabled or mode is manual", () => {
+      const allowedDisabled = shouldAutoAsk({
         enabled: false,
         text: "Как работает сборщик мусора в Go?",
         isAIProcessing: false,
       });
-      expect(allowed).toBe(false);
+      expect(allowedDisabled).toBe(false);
+
+      const allowedManual = shouldAutoAsk({
+        enabled: true,
+        mode: "manual",
+        text: "Как работает сборщик мусора в Go?",
+        isAIProcessing: false,
+      });
+      expect(allowedManual).toBe(false);
     });
 
     it("blocks dispatch when AI is currently busy processing", () => {
@@ -139,7 +151,7 @@ describe("auto-ask", () => {
       let busy = false;
 
       const manager = new AutoAskManager({
-        getConfig: () => ({ enabled: true, silenceDurationMs: 1500 }),
+        getConfig: () => ({ enabled: true, silenceDurationMs: 1500, mode: "auto" }),
         onDispatch,
         isAIProcessing: () => busy,
       });
@@ -168,7 +180,7 @@ describe("auto-ask", () => {
       let busy = false;
 
       const manager = new AutoAskManager({
-        getConfig: () => ({ enabled: true, silenceDurationMs: 1000 }),
+        getConfig: () => ({ enabled: true, silenceDurationMs: 1000, mode: "auto" }),
         onDispatch,
         isAIProcessing: () => busy,
       });
@@ -185,11 +197,10 @@ describe("auto-ask", () => {
       const onDispatch = vi.fn();
 
       const manager = new AutoAskManager({
-        getConfig: () => ({ enabled: true, silenceDurationMs: 1000 }),
+        getConfig: () => ({ enabled: true, silenceDurationMs: 1000, mode: "auto" }),
         onDispatch,
         isAIProcessing: () => false,
       });
-
       manager.onFinalizedTranscript("Как оптимизировать SQL запрос?");
       manager.cancel();
 
