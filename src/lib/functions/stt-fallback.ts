@@ -10,7 +10,7 @@ import { TYPE_PROVIDER } from "@/types";
  * are NOT called automatically - ever. This permanently kills the 429
  * "rate limit reached" storms.
  *
- * Chain inside the local server (scripts/handy_stt_server.py):
+ * Chain inside the local server:
  *   1. faster-whisper (CTranslate2, GPU) - primary, model stays in memory
  *   2. Handy GPU model (Nemotron 3.5 ASR Streaming, Vulkan) - fallback
  *   3. local openai-whisper (CPU) - last resort

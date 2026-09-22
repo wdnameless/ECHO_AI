@@ -46,12 +46,12 @@ describe("asr discovery", () => {
     expect(invokeMock).toHaveBeenCalledWith("live_asr_port");
   });
 
-  it("uses the fallback server's port when the engine is not available", async () => {
-    // No model installed: the python fallback serves on 8000. Nothing else
-    // listens, and the renderer must still find it.
-    invokeMock.mockResolvedValue(8000);
-    mockHealth([8000]);
-    await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:8000");
+  it("uses a rebound port when the engine moved off the default", async () => {
+    // The engine rebounds (9878..9882) when its default port is taken; the
+    // renderer must follow the backend's answer rather than assume 9877.
+    invokeMock.mockResolvedValue(9881);
+    mockHealth([9881]);
+    await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9881");
   });
 
   it("probes the range itself when the command is unavailable", async () => {

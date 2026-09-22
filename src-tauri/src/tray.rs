@@ -43,6 +43,8 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = crate::window::open_dashboard_page(app.clone(), "/models".to_string());
             }
             "quit" => {
+                crate::handy_server::stop_server();
+                crate::handy_server::stop_tts();
                 app.exit(0);
             }
             _ => {}

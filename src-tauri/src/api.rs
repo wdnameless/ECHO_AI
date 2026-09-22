@@ -511,6 +511,50 @@ async fn perform_user_audio_transcription(
     Ok(body_text)
 }
 
+/// Buffers raw bytes from a streaming HTTP response and decodes complete lines
+/// (delimited by `\n`) as UTF-8. Incomplete lines and multi-byte UTF-8 sequences
+/// that cross chunk boundaries are retained in the byte buffer until subsequent
+/// chunks complete them, preventing U+FFFD corruption.
+#[derive(Default)]
+pub struct SseLineDecoder {
+    buffer: Vec<u8>,
+}
+
+impl SseLineDecoder {
+    pub fn new() -> Self {
+        Self { buffer: Vec::new() }
+    }
+    fn decode_lines(bytes: Vec<u8>) -> Vec<String> {
+        let decoded = match String::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
+        decoded
+            .split('\n')
+            .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+            .collect()
+    }
+
+    /// Appends incoming bytes and extracts all complete lines decoded as UTF-8.
+    pub fn process_chunk(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.buffer.extend_from_slice(chunk);
+        let Some(last_nl) = self.buffer.iter().rposition(|&b| b == b'\n') else {
+            return Vec::new();
+        };
+        let complete_bytes: Vec<u8> = self.buffer.drain(..=last_nl).collect();
+        Self::decode_lines(complete_bytes)
+    }
+
+    /// Flushes any remaining incomplete line at stream end.
+    pub fn flush(&mut self) -> Vec<String> {
+        if self.buffer.is_empty() {
+            return Vec::new();
+        }
+        let remaining = std::mem::take(&mut self.buffer);
+        Self::decode_lines(remaining)
+    }
+}
+
 #[tauri::command]
 pub async fn chat_stream_response(
     app: AppHandle,
@@ -680,66 +724,49 @@ pub async fn chat_stream_response(
     // Handle streaming response
     let mut stream = response.bytes_stream();
     let mut full_response = String::new();
-    let mut buffer = String::new();
+    let mut decoder = SseLineDecoder::new();
     let mut usage: Option<serde_json::Value> = None;
     let mut stream_started = false;
+
+    let mut handle_line = |line: &str| {
+        let trimmed_line = line.trim();
+        if !trimmed_line.starts_with("data: ") {
+            return;
+        }
+        let json_str = trimmed_line.strip_prefix("data: ").unwrap_or("");
+        if json_str == "[DONE]" || json_str.is_empty() {
+            return;
+        }
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
+            if usage.is_none() {
+                if let Some(collected) = parsed.get("usage") {
+                    if !collected.is_null() {
+                        usage = Some(collected.clone());
+                    }
+                }
+            }
+            if let Some(choices) = parsed.get("choices").and_then(|c| c.as_array()) {
+                if let Some(first_choice) = choices.first() {
+                    if let Some(delta) = first_choice.get("delta") {
+                        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+                            full_response.push_str(content);
+                            // Push the chunk straight through the
+                            // channel - no event bus, no polling.
+                            let _ = on_event.send(content.to_string());
+                            stream_started = true;
+                        }
+                    }
+                }
+            }
+        }
+    };
 
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(bytes) => {
-                let chunk_str = String::from_utf8_lossy(&bytes);
-                buffer.push_str(&chunk_str);
-
-                // Process complete lines
-                let lines: Vec<&str> = buffer.split('\n').collect();
-                let incomplete_line = lines.last().unwrap_or(&"").to_string();
-
-                for line in &lines[..lines.len() - 1] {
-                    // Process all but the last (potentially incomplete) line
-                    let trimmed_line = line.trim();
-
-                    if trimmed_line.starts_with("data: ") {
-                        let json_str = trimmed_line.strip_prefix("data: ").unwrap_or("");
-
-                        if json_str == "[DONE]" {
-                            break;
-                        }
-
-                        if !json_str.is_empty() {
-                            // Try to parse the JSON and extract content
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str)
-                            {
-                                if usage.is_none() {
-                                    if let Some(collected) = parsed.get("usage") {
-                                        if !collected.is_null() {
-                                            usage = Some(collected.clone());
-                                        }
-                                    }
-                                }
-                                if let Some(choices) =
-                                    parsed.get("choices").and_then(|c| c.as_array())
-                                {
-                                    if let Some(first_choice) = choices.first() {
-                                        if let Some(delta) = first_choice.get("delta") {
-                                            if let Some(content) =
-                                                delta.get("content").and_then(|c| c.as_str())
-                                            {
-                                                full_response.push_str(content);
-                                                // Push the chunk straight through the
-                                                // Channel - no event bus, no polling.
-                                                let _ = on_event.send(content.to_string());
-                                                stream_started = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                for line in decoder.process_chunk(&bytes) {
+                    handle_line(&line);
                 }
-
-                // Update buffer with incomplete line
-                buffer = incomplete_line;
             }
             Err(e) => {
                 let sources = vec![e.to_string()];
@@ -757,6 +784,13 @@ pub async fn chat_stream_response(
                 return Err(final_message);
             }
         }
+    }
+
+    // A trailing line without its newline still belongs to this response, so it
+    // is handled before the completion marker: a consumer that stops reading on
+    // that marker would otherwise never see it.
+    for line in decoder.flush() {
+        handle_line(&line);
     }
 
     // Emit completion event
@@ -1221,4 +1255,68 @@ pub async fn get_activity(app: AppHandle) -> Result<serde_json::Value, String> {
         .json::<serde_json::Value>()
         .await
         .map_err(|e| format!("Failed to parse activity response: {}", e))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sse_line_decoder_preserves_multibyte_cyrillic_character_split_across_chunks() {
+        let mut decoder = SseLineDecoder::new();
+
+        // In UTF-8, 'Я' is 2 bytes: [0xD0, 0xAF].
+        // Chunk 1 has line content up to the first byte of 'Я'.
+        // Chunk 2 continues with the second byte of 'Я' followed by the rest and \n\n.
+        let chunk1: &[u8] = b"data: {\"choices\":[{\"delta\":{\"content\":\"\xD0";
+        let chunk2: &[u8] = b"\xAF\"}}]}\n\n";
+
+        let lines1 = decoder.process_chunk(chunk1);
+        assert!(lines1.is_empty(), "Chunk without newline must yield no lines");
+
+        let lines2 = decoder.process_chunk(chunk2);
+        let non_empty: Vec<&str> = lines2.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+        assert_eq!(non_empty.len(), 1);
+        assert_eq!(non_empty[0], "data: {\"choices\":[{\"delta\":{\"content\":\"Я\"}}]}");
+        assert!(!non_empty[0].contains('\u{FFFD}'), "Character must not be replaced with U+FFFD");
+    }
+
+    /// The oracle's gap: a 3-byte character split across three chunks, with the
+    /// line completed only in the last one and never newline-terminated.
+    #[test]
+    fn sse_line_decoder_preserves_a_character_split_across_three_chunks() {
+        let mut decoder = SseLineDecoder::new();
+        // "→" is E2 86 92 in UTF-8.
+        let line = "data: {\"t\":\"→\"}";
+        let bytes = line.as_bytes();
+        let arrow = line.find('→').expect("arrow present");
+
+        assert!(decoder.process_chunk(&bytes[..arrow + 1]).is_empty());
+        assert!(decoder.process_chunk(&bytes[arrow + 1..arrow + 2]).is_empty());
+
+        let mut lines = decoder.process_chunk(&bytes[arrow + 2..]);
+        lines.extend(decoder.flush());
+        assert!(
+            lines.iter().any(|l| l.contains('→')),
+            "arrow lost: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn sse_line_decoder_handles_multiple_lines_and_split_tail() {
+        let mut decoder = SseLineDecoder::new();
+
+        // Cyrillic 'п' is [0xD0, 0xBF]
+        let chunk1 = "data: line 1\ndata: line 2\ndata: cut: ".as_bytes().to_vec();
+        let mut chunk1_with_half_char = chunk1;
+        chunk1_with_half_char.push(0xD0);
+
+        let lines1 = decoder.process_chunk(&chunk1_with_half_char);
+        let non_empty1: Vec<&str> = lines1.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+        assert_eq!(non_empty1, vec!["data: line 1", "data: line 2"]);
+
+        let chunk2: &[u8] = b"\xBF end\n";
+        let lines2 = decoder.process_chunk(chunk2);
+        let non_empty2: Vec<&str> = lines2.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
+        assert_eq!(non_empty2, vec!["data: cut: п end"]);
+    }
 }

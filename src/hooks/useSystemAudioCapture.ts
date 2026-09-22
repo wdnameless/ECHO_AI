@@ -154,11 +154,6 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
         if (transcription.trim()) {
           const currentMicMode = micStateStore.getState().mode;
-          if (source === "me" && currentMicMode === "ASSISTANT") {
-            micStateStore.emitTranscript(transcription);
-            setError("");
-            return;
-          }
           if (source === "me" && currentMicMode === "IDLE") {
             // Ignore transcript if mic is idle
             setError("");

@@ -171,7 +171,7 @@ pub fn run() {
         .setup(|app| {
             // Setup main window positioning
             window::setup_main_window(app).expect("Failed to setup main window");
-            // Auto-start the local Handy STT server (whisper over HTTP on :8000)
+            // Auto-start the local Handy STT engine
             handy_server::ensure_server_running();
             // Setup System Tray icon & menu
             if let Err(e) = tray::setup_tray(app.handle()) {
@@ -278,8 +278,16 @@ pub fn run() {
     }
 
     builder
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            // Reached on every exit path (tray quit, window close, a command
+            // that calls `exit`): no child must outlive the app.
+            if let tauri::RunEvent::Exit = event {
+                handy_server::stop_server();
+                handy_server::stop_tts();
+            }
+        });
 }
 
 #[cfg(target_os = "macos")]

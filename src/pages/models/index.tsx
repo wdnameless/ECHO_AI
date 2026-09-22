@@ -8,6 +8,8 @@ import {
   Download,
   Loader2,
   Search,
+  AlertCircle,
+  X,
 } from "lucide-react";
 import { Input, Button } from "@/components";
 import {
@@ -50,6 +52,20 @@ function describeLanguages(model: ModelEntry): string {
   }
   return `${unique.length} languages`;
 }
+function formatError(error: unknown, fallback: string): string {
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    const msg = error.message;
+    if (typeof msg === "string" && msg.trim()) return msg.trim();
+  }
+  return fallback;
+}
+
 
 export const Models = () => {
   const [models, setModels] = useState<ModelEntry[]>([]);
@@ -65,6 +81,7 @@ export const Models = () => {
   const [downloadingModelId, setDownloadingModelId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Load models on mount
   const loadModels = useCallback(async () => {
@@ -82,6 +99,7 @@ export const Models = () => {
       setReadiness(ready);
     } catch (error) {
       console.error("Failed to load models:", error);
+      setErrorMessage(formatError(error, "Failed to load models"));
     } finally {
       setIsLoading(false);
     }
@@ -118,6 +136,7 @@ export const Models = () => {
 
     setDownloadingModelId(model.id);
     setDownloadProgress(0);
+    setErrorMessage(null);
 
     try {
       await downloadModel(model.id, file.quant);
@@ -126,6 +145,7 @@ export const Models = () => {
       await loadModels();
     } catch (error) {
       console.error("Failed to download model:", error);
+      setErrorMessage(formatError(error, `Failed to download model ${model.name}`));
     } finally {
       setDownloadingModelId(null);
       setDownloadProgress(0);
@@ -134,16 +154,19 @@ export const Models = () => {
 
   // Handle model deletion
   const handleDelete = async (file: InstalledModel) => {
+    setErrorMessage(null);
     try {
       await deleteModel(file.file_name);
       await loadModels();
     } catch (error) {
       console.error("Failed to delete model:", error);
+      setErrorMessage(formatError(error, `Failed to delete model ${file.file_name}`));
     }
   };
 
   // Handle selecting / activating a model
   const handleSelectModel = async (file: InstalledModel) => {
+    setErrorMessage(null);
     try {
       await selectModel(file.path);
       // The engine restarts on the new file and may rebind another port, so the
@@ -152,6 +175,7 @@ export const Models = () => {
       await loadModels();
     } catch (error) {
       console.error("Failed to select model:", error);
+      setErrorMessage(formatError(error, `Failed to select model ${file.file_name}`));
     }
   };
 
@@ -251,6 +275,24 @@ export const Models = () => {
           />
         </div>
       </header>
+      {/* Error banner */}
+      {errorMessage && (
+        <div className="mt-2 mb-1 p-3 bg-destructive/10 border border-destructive/20 rounded-xl text-sm text-destructive flex items-center justify-between gap-2 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertCircle className="w-4 h-4 shrink-0" />
+            <span className="truncate">{errorMessage}</span>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 shrink-0 text-destructive hover:text-destructive hover:bg-destructive/20 rounded-lg"
+            onClick={() => setErrorMessage(null)}
+            title="Dismiss error"
+          >
+            <X className="w-3.5 h-3.5" />
+          </Button>
+        </div>
+      )}
 
       {/* Scrollable Model Lists */}
       <div className="flex-1 overflow-y-auto pr-2 pb-16 space-y-6 pt-2">

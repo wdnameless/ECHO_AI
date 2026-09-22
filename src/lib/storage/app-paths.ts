@@ -83,13 +83,14 @@ export const setPaths = (paths: {
   engine_dir?: string | null;
   models_dir?: string | null;
   logs_dir?: string | null;
-}) =>
-  invoke<ResolvedPaths>("set_paths", {
-    dataRoot: paths.data_root ?? null,
-    engineDir: paths.engine_dir ?? null,
-    modelsDir: paths.models_dir ?? null,
-    logsDir: paths.logs_dir ?? null,
-  });
+}) => {
+  const payload: Record<string, string | null> = {};
+  if (paths.data_root !== undefined) payload.dataRoot = paths.data_root;
+  if (paths.engine_dir !== undefined) payload.engineDir = paths.engine_dir;
+  if (paths.models_dir !== undefined) payload.modelsDir = paths.models_dir;
+  if (paths.logs_dir !== undefined) payload.logsDir = paths.logs_dir;
+  return invoke<ResolvedPaths>("set_paths", payload);
+};
 
 /** Opens the native folder picker; resolves to `null` when cancelled. */
 export const pickDirectory = (title?: string) =>

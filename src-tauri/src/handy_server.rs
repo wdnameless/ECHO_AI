@@ -32,17 +32,11 @@ pub static STT_SERVER: Mutex<Option<Child>> = Mutex::new(None);
 const ENGINE_PORT: u16 = 9877;
 const ENGINE_PORT_RANGE: std::ops::RangeInclusive<u16> = ENGINE_PORT..=9882;
 
-/// Port of the legacy python fallback server (`scripts/handy_stt_server.py`),
-/// used only when no engine binary or no model is available.
-const LEGACY_PORT: u16 = 8000;
-
 /// Health of a loopback ASR service, as JSON.
 ///
 /// An accepted TCP connection is not evidence of a working engine: any service
-/// can own a port, and the legacy port is a popular one. Treating it as
-/// evidence made the app declare recognition ready, never start the engine, and
-/// leave the renderer posting to a port nothing served. Both servers answer
-/// `{"status": "ok", ...}` on `/health`, so that is what liveness means here.
+/// can own a port. The engine answers `{"status": "ok", ...}` on `/health`,
+/// so that is what liveness means here.
 fn health_body(port: u16) -> Option<serde_json::Value> {
     let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().ok()?;
     // Cheap gate first: a closed port costs one failed connect, not a request.
@@ -74,11 +68,10 @@ fn native_engine_port() -> Option<u16> {
         .find(|port| health_body(*port).is_some())
 }
 
-/// Port any usable ASR service is serving on: the native engine first, then the
-/// legacy python fallback. The renderer resolves its base URL from this same
-/// answer, so both sides agree on where speech is sent.
+/// Port the native engine is serving on. The renderer resolves its base URL
+/// from this same answer, so both sides agree on where speech is sent.
 pub fn serving_port() -> Option<u16> {
-    native_engine_port().or_else(|| health_body(LEGACY_PORT).map(|_| LEGACY_PORT))
+    native_engine_port()
 }
 
 fn is_running() -> bool {
@@ -167,47 +160,6 @@ fn find_pluely_asr() -> Option<String> {
         ));
     }
 
-    candidates
-        .into_iter()
-        .find(|p| std::path::Path::new(p).is_file())
-}
-
-/// Locate a usable python interpreter.
-fn find_python() -> Option<String> {
-    let candidates = [
-        "python",
-        "python3",
-        r"C:\Python312\python.exe",
-        r"C:\Python311\python.exe",
-        r"C:\Python310\python.exe",
-        r"C:\Program Files\Python312\python.exe",
-        r"C:\Program Files\Python311\python.exe",
-        r"C:\Program Files\Python310\python.exe",
-        r"C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe",
-    ];
-    candidates
-        .iter()
-        .find(|c| Command::new(c).arg("--version").output().map(|o| o.status.success()).unwrap_or(false))
-        .map(|s| s.to_string())
-}
-
-/// Locate the bundled script (dev tree or installed bundle).
-fn find_script() -> Option<String> {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let mut candidates = vec![
-        format!("{}/../scripts/handy_stt_server.py", manifest),
-        format!("{}/scripts/handy_stt_server.py", manifest),
-        format!("{}/resources/handy_stt_server.py", manifest),
-    ];
-    // Installed bundle: look next to the running executable.
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(format!("{}/resources/handy_stt_server.py", dir.display()));
-            candidates.push(format!("{}/handy_stt_server.py", dir.display()));
-            candidates.push(format!("{}/_up_/scripts/handy_stt_server.py", dir.display()));
-            candidates.push(format!("{}/scripts/handy_stt_server.py", dir.display()));
-        }
-    }
     candidates
         .into_iter()
         .find(|p| std::path::Path::new(p).is_file())
@@ -501,12 +453,6 @@ fn start_sidecar_watchdog() {
 
 /// Start the local Handy STT server if it isn't already running.
 pub fn ensure_server_running() {
-    // The native engine is what the renderer resolves first, so it wins whenever
-    // a model allows it. The legacy fallback must not count as "already running"
-    // here: an install that started without a model (fallback serving on :8000)
-    // used to keep running the fallback -- or keep failing with a network error,
-    // when the renderer never probed that port -- even after a model was
-    // installed and the GPU engine became possible.
     if native_engine_port().is_some() {
         start_sidecar_watchdog();
         return;
@@ -518,47 +464,6 @@ pub fn ensure_server_running() {
         return;
     }
 
-    // No engine binary or no model: the fallback is what is left, and it may
-    // already be serving from an earlier run of this app.
-    if health_body(LEGACY_PORT).is_some() {
-        start_sidecar_watchdog();
-        return;
-    }
-
-    let Some(python) = find_python() else {
-        eprintln!("handy_server: python not found, skipping");
-        start_sidecar_watchdog();
-        return;
-    };
-    let Some(script) = find_script() else {
-        eprintln!("handy_server: script not found, skipping");
-        start_sidecar_watchdog();
-        return;
-    };
-
-    #[cfg(target_os = "windows")]
-    let spawn = {
-        let mut cmd = Command::new(python);
-        cmd.arg(&script)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(0x08000000); // CREATE_NO_WINDOW
-        cmd.spawn()
-    };
-
-    #[cfg(not(target_os = "windows"))]
-    let spawn = Command::new(python).arg(&script).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
-
-    match spawn {
-        Ok(child) => {
-            eprintln!("[tauri] Handy STT server started (pid {})", child.id());
-            track_server(child);
-        }
-        Err(e) => eprintln!("[tauri] failed to start Handy STT server: {}", e),
-    }
-
-    // The fallback must not be a dead end: the engine can become possible later
-    // (the user installs a model), and the watchdog is what switches to it.
     start_sidecar_watchdog();
 }
 
@@ -578,8 +483,7 @@ pub fn stop_server() {
 
 /// Waits until the engine port stops responding, up to `timeout`.
 ///
-/// Waits on the engine rather than on any ASR service: a fallback server left
-/// running would otherwise keep this loop spinning for the whole timeout.
+/// Waits on the engine to shut down.
 fn wait_for_shutdown(timeout: Duration) {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
@@ -677,8 +581,7 @@ pub fn handy_server_status_detailed() -> serde_json::Value {
     let Some(port) = serving_port() else {
         return serde_json::json!({ "online": false, "model": "" });
     };
-    // The python fallback reports the model as a string, the native engine as an
-    // object with `variant` — the badge needs a name either way.
+    // Extract the model name from the health payload.
     let model = health_body(port)
         .and_then(|v| match v.get("model") {
             Some(serde_json::Value::String(s)) => Some(s.clone()),
@@ -699,11 +602,7 @@ pub fn start_handy_server() -> bool {
 }
 
 /// Port the ASR service is serving on right now, for the renderer to build its
-/// base URL — the native engine first, then the legacy fallback.
-///
-/// Replaces reading the sidecar's `asr-port` file: a file cannot say whether the
-/// service is still alive, and it never covered the fallback server at all,
-/// which is how the renderer ended up posting to a dead port.
+/// base URL.
 #[tauri::command]
 pub async fn live_asr_port() -> Option<u16> {
     // Probing real sockets on the transcription hot path, so keep it off the
@@ -860,11 +759,11 @@ mod tests {
     }
 
     #[test]
-    fn the_fallback_server_health_payload_is_healthy() {
+    fn string_model_health_payload_is_healthy() {
         let port = serve(|| {
-            http_ok(r#"{"status": "ok", "engine": "faster-whisper", "model": "small", "error": null}"#)
+            http_ok(r#"{"status": "ok", "model": "small", "error": null}"#)
         });
-        let body = health_body(port).expect("fallback payload must be recognised");
+        let body = health_body(port).expect("health payload must be recognised");
         assert_eq!(body.get("model").and_then(|m| m.as_str()), Some("small"));
     }
 }

@@ -48,7 +48,6 @@
     "resources": [
       "info.plist",
       "pluely.desktop",
-      "../scripts/handy_stt_server.py",
       "resources/pluely-asr.exe",
       "resources/*.dll"
     ],

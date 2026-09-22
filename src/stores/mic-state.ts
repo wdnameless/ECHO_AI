@@ -10,7 +10,6 @@ export interface MicState {
 }
 
 type Listener = (state: MicState) => void;
-type TranscriptListener = (text: string) => void;
 
 
 let state: MicState = {
@@ -21,7 +20,6 @@ let state: MicState = {
 };
 
 const listeners = new Set<Listener>();
-const transcriptListeners = new Set<TranscriptListener>();
 
 
 function emit(): void {
@@ -80,22 +78,6 @@ export const micStateStore = {
       updatedAt: Date.now(),
     };
     emit();
-  },
-  emitTranscript(text: string): void {
-    for (const listener of Array.from(transcriptListeners)) {
-      try {
-        listener(text);
-      } catch {
-        /* isolate subscriber failures */
-      }
-    }
-  },
-
-  onTranscript(listener: TranscriptListener): () => void {
-    transcriptListeners.add(listener);
-    return () => {
-      transcriptListeners.delete(listener);
-    };
   },
 
   reset(): void {

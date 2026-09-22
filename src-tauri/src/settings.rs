@@ -131,6 +131,19 @@ fn implied_portable_root() -> Option<PathBuf> {
 fn settings_path_for(root: &Path) -> PathBuf {
     root.join(SETTINGS_FILE)
 }
+/// The anchor directory where settings.json lives.
+///
+/// Precedence: genuine portable root when one is active, otherwise app data.
+/// The settings file stays in this fixed anchor so `locate_settings_file`
+/// always finds it; `data_root` specifies where engine, models, and logs live.
+pub fn settings_root() -> PathBuf {
+    if let Some(portable) = implied_portable_root() {
+        portable
+    } else {
+        app_data_root()
+    }
+}
+
 
 /// Reads settings, returning defaults when the file is missing or unreadable.
 ///
@@ -159,16 +172,16 @@ pub fn locate_settings_file() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
-/// Writes settings to the active root.
+/// Writes settings to the persistent settings anchor.
 ///
-/// When the user has not chosen a root yet, the portable root wins if one is
-/// implied (env or marker), otherwise app data — the same precedence used for
-/// reading, so a settings change does not migrate the file somewhere else.
+/// If an existing settings file is already located, it is updated in place;
+/// otherwise it is written to the fixed settings root (`settings_root()`).
 pub fn save_settings(settings: &AppSettings) -> Result<PathBuf, String> {
-    let root = active_root(settings);
-    std::fs::create_dir_all(&root)
-        .map_err(|e| format!("не удалось создать каталог {}: {e}", root.display()))?;
-    let path = settings_path_for(&root);
+    let path = locate_settings_file().unwrap_or_else(|| settings_path_for(&settings_root()));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("не удалось создать каталог {}: {e}", parent.display()))?;
+    }
     let body = serde_json::to_string_pretty(settings)
         .map_err(|e| format!("не удалось сериализовать настройки: {e}"))?;
     std::fs::write(&path, body)
@@ -217,10 +230,10 @@ pub fn is_writable(dir: &Path) -> bool {
 /// Resolves every directory the app needs, creating them on demand.
 pub fn resolve(settings: &AppSettings) -> ResolvedPaths {
     let root = active_root(settings);
-    let kind = if root == app_data_root() {
-        RootKind::AppData
-    } else {
+    let kind = if implied_portable_root().is_some() {
         RootKind::Portable
+    } else {
+        RootKind::AppData
     };
 
     let pick = |override_path: &Option<String>, fallback: PathBuf| -> PathBuf {
@@ -247,7 +260,10 @@ pub fn resolve(settings: &AppSettings) -> ResolvedPaths {
         engine_dir: engine_dir.to_string_lossy().to_string(),
         models_dir: models_dir.to_string_lossy().to_string(),
         logs_dir: logs_dir.to_string_lossy().to_string(),
-        settings_path: settings_path_for(&root).to_string_lossy().to_string(),
+        settings_path: locate_settings_file()
+            .unwrap_or_else(|| settings_path_for(&settings_root()))
+            .to_string_lossy()
+            .to_string(),
     }
 }
 
@@ -315,10 +331,10 @@ pub mod commands {
         logs_dir: Option<String>,
     ) -> Result<ResolvedPaths, String> {
         let mut settings = load_settings();
-        settings.data_root = normalize(data_root);
-        settings.engine_dir = normalize(engine_dir);
-        settings.models_dir = normalize(models_dir);
-        settings.logs_dir = normalize(logs_dir);
+        apply_path_override(&mut settings.data_root, data_root);
+        apply_path_override(&mut settings.engine_dir, engine_dir);
+        apply_path_override(&mut settings.models_dir, models_dir);
+        apply_path_override(&mut settings.logs_dir, logs_dir);
 
         // Refuse a models directory that cannot be written: the user would
         // otherwise only discover it when a multi-gigabyte download fails.
@@ -334,11 +350,19 @@ pub mod commands {
         Ok(resolved)
     }
 
-    /// Turns empty and whitespace-only values into `None`.
-    fn normalize(value: Option<String>) -> Option<String> {
-        value
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
+    /// Applies a partial path override:
+    /// - `None` means the field was omitted from the request, leaving existing value intact.
+    /// - `Some("")` (empty/whitespace) clears the override, resetting to `None`.
+    /// - `Some("path")` updates the override with the trimmed path.
+    pub fn apply_path_override(target: &mut Option<String>, incoming: Option<String>) {
+        if let Some(val) = incoming {
+            let trimmed = val.trim();
+            if trimmed.is_empty() {
+                *target = None;
+            } else {
+                *target = Some(trimmed.to_string());
+            }
+        }
     }
 
     /// Opens the native folder picker and returns the chosen directory.
@@ -428,6 +452,34 @@ mod tests {
         if implied_portable_root().is_none() {
             assert_eq!(resolved.root_kind, RootKind::AppData);
         }
+    }
+    #[test]
+    fn arbitrary_data_root_is_not_reported_as_portable() {
+        let settings = AppSettings {
+            data_root: Some(r"D:\TMP\echo-root".to_string()),
+            ..Default::default()
+        };
+        let resolved = resolve(&settings);
+        if implied_portable_root().is_none() {
+            assert_eq!(resolved.root_kind, RootKind::AppData);
+        }
+    }
+
+    #[test]
+    fn partial_update_preserves_omitted_fields_and_clears_on_empty() {
+        let mut target = Some("D:/root".to_string());
+
+        // Omitted (None) leaves value unchanged
+        commands::apply_path_override(&mut target, None);
+        assert_eq!(target.as_deref(), Some("D:/root"));
+
+        // Provided path updates value
+        commands::apply_path_override(&mut target, Some("E:/other".to_string()));
+        assert_eq!(target.as_deref(), Some("E:/other"));
+
+        // Empty string clears override
+        commands::apply_path_override(&mut target, Some("   ".to_string()));
+        assert_eq!(target, None);
     }
 
     #[test]
