@@ -786,12 +786,15 @@ pub async fn chat_stream_response(
         }
     }
 
-    // Emit completion event
-    let _ = on_event.send("\u{0}__DONE__\u{0}".to_string());
-
+    // A trailing line without its newline still belongs to this response, so it
+    // is handled before the completion marker: a consumer that stops reading on
+    // that marker would otherwise never see it.
     for line in decoder.flush() {
         handle_line(&line);
     }
+
+    // Emit completion event
+    let _ = on_event.send("\u{0}__DONE__\u{0}".to_string());
 
     if stream_started && !full_response.is_empty() {
         tauri::async_runtime::spawn({
@@ -1275,6 +1278,27 @@ mod tests {
         assert_eq!(non_empty.len(), 1);
         assert_eq!(non_empty[0], "data: {\"choices\":[{\"delta\":{\"content\":\"Я\"}}]}");
         assert!(!non_empty[0].contains('\u{FFFD}'), "Character must not be replaced with U+FFFD");
+    }
+
+    /// The oracle's gap: a 3-byte character split across three chunks, with the
+    /// line completed only in the last one and never newline-terminated.
+    #[test]
+    fn sse_line_decoder_preserves_a_character_split_across_three_chunks() {
+        let mut decoder = SseLineDecoder::new();
+        // "→" is E2 86 92 in UTF-8.
+        let line = "data: {\"t\":\"→\"}";
+        let bytes = line.as_bytes();
+        let arrow = line.find('→').expect("arrow present");
+
+        assert!(decoder.process_chunk(&bytes[..arrow + 1]).is_empty());
+        assert!(decoder.process_chunk(&bytes[arrow + 1..arrow + 2]).is_empty());
+
+        let mut lines = decoder.process_chunk(&bytes[arrow + 2..]);
+        lines.extend(decoder.flush());
+        assert!(
+            lines.iter().any(|l| l.contains('→')),
+            "arrow lost: {lines:?}"
+        );
     }
 
     #[test]

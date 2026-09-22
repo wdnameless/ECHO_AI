@@ -504,7 +504,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (savedSelectedStt) {
       setSelectedSttProvider(JSON.parse(savedSelectedStt));
     } else {
-      // Default to the local Handy STT server (whisper over HTTP on :8000)
+      // Default to the local speech engine
       const defaultStt = {
         provider: "handy-local-whisper",
         variables: {},
