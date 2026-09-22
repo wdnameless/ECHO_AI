@@ -49,4 +49,23 @@ describe("live segment accumulation", () => {
     act(() => result.current.appendLiveSegment("them", "   "));
     expect(result.current.liveSegments).toHaveLength(0);
   });
+
+  it("starts a new line once the continuation window has passed", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useConversationStore());
+
+      act(() => result.current.appendLiveSegment("them", "Первое предложение"));
+      // Past the window: a new sentence must not be glued to the previous one.
+      act(() => {
+        vi.advanceTimersByTime(20_000);
+      });
+      act(() => result.current.appendLiveSegment("them", "Совсем другая мысль"));
+
+      expect(result.current.liveSegments).toHaveLength(2);
+      expect(result.current.liveSegments[1].text).toBe("Совсем другая мысль");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
