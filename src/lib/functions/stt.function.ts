@@ -53,6 +53,9 @@ function parseCurlCached(curl: string): ParsedSttCurl {
   if (cached !== undefined) return cached;
   // Проверенное приведение: разборщик принимает только строку curl, а форму
   // результата мы описываем сами (см. ParsedSttCurl).
+  // SAFETY: curl2Json разбирает произвольный curl и не типизирован; поля, которые
+  // мы читаем, проверяются ниже (url/headers/method заполняются всегда), поэтому
+  // приведение к нашему описанию формы безопасно.
   const parsed = curl2Json(curl) as unknown as ParsedSttCurl;
   if (curlParseCache.size >= CURL_PARSE_CACHE_MAX) {
     const oldest = curlParseCache.keys().next().value;
@@ -351,7 +354,11 @@ export async function fetchSTT(params: STTParams): Promise<string> {
       let errText = "";
       try {
         errText = await response.text();
-      } catch {}
+      } catch (readError) {
+        // A body that cannot be read still leaves the status code, which is
+        // what the message below reports.
+        console.warn("[stt] failed to read the error body:", readError);
+      }
       let errMsg: string;
       try {
         const errObj = JSON.parse(errText);
@@ -398,7 +405,10 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     const transcription = (getByPath(data, path) || "").trim();
 
     if (!transcription) {
-      return [...warnings, "No transcription found"].join("; ");
+      // Empty audio is a failed recognition, not speech: returning it as plain
+      // text put the phrase "No transcription found" into the transcript feed as
+      // if the interviewer had said it.
+      return `${STT_ERROR_PREFIX}: No transcription found in the audio`;
     }
 
     // Return transcription with any warnings
