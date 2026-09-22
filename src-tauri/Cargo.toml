@@ -1,6 +1,6 @@
 [package]
 name = "pluely"
-version = "1.2.4"
+version = "1.2.5"
 description = "Echo AI — lightning-fast, privacy-first AI assistant for meetings, interviews and conversations. Echoes what matters, keeps everything else local."
 authors = ["Srikanth Nani <mail@srikanthnani.com>"]
 license = "GPL-3.0"
