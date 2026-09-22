@@ -35,10 +35,10 @@ fn http_client() -> &'static reqwest::Client {
 
 // Cache for /api/response config: removes a network round-trip before every
 // chat and transcription request. TTL 10 minutes.
-static API_CONFIG_CACHE: OnceLock<Mutex<Option<(ApiResponseConfig, std::time::Instant)>>> =
+static API_CONFIG_CACHE: OnceLock<Mutex<Option<(String, ApiResponseConfig, std::time::Instant)>>> =
     OnceLock::new();
 
-fn api_config_cache() -> &'static Mutex<Option<(ApiResponseConfig, std::time::Instant)>> {
+fn api_config_cache() -> &'static Mutex<Option<(String, ApiResponseConfig, std::time::Instant)>> {
     API_CONFIG_CACHE.get_or_init(|| Mutex::new(None))
 }
 
@@ -305,12 +305,19 @@ async fn fetch_api_response_config(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<ApiResponseConfig, String> {
-    // Serve from cache when fresh (10 min TTL).
+    // Serve from cache when fresh (10 min TTL) and for the same target: an
+    // unkeyed cache kept handing back the previous provider's endpoint and token
+    // to whoever switched provider or model in the settings.
+    let cache_key = format!(
+        "{}|{}",
+        provider.as_deref().unwrap_or_default(),
+        model.as_deref().unwrap_or_default()
+    );
     {
         let cache = api_config_cache();
         if let Ok(guard) = cache.lock() {
-            if let Some((config, at)) = guard.as_ref() {
-                if at.elapsed() < API_CONFIG_CACHE_TTL {
+            if let Some((key, config, at)) = guard.as_ref() {
+                if key == &cache_key && at.elapsed() < API_CONFIG_CACHE_TTL {
                     return Ok(config.clone());
                 }
             }
@@ -320,7 +327,11 @@ async fn fetch_api_response_config(
     // Get environment variables
     let app_endpoint = get_app_endpoint()?;
     let api_access_key = get_api_access_key()?;
-    let machine_id: String = app.machine_uid().get_machine_uid().unwrap().id.unwrap();
+    // A machine without a readable uid must not take the whole request down.
+    let machine_id: String = match app.machine_uid().get_machine_uid() {
+        Ok(id) => id.id.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
 
     // Get stored credentials
     let (license_key, instance_id, _) = get_stored_credentials(app).await?;
@@ -387,7 +398,7 @@ async fn fetch_api_response_config(
     {
         let cache = api_config_cache();
         if let Ok(mut guard) = cache.lock() {
-            *guard = Some((api_config.clone(), std::time::Instant::now()));
+            *guard = Some((cache_key, api_config.clone(), std::time::Instant::now()));
         }
     }
 
@@ -1099,7 +1110,10 @@ pub async fn create_system_prompt(
     let app_endpoint = get_app_endpoint()?;
     let api_access_key = get_api_access_key()?;
     let (license_key, instance_id, _) = get_stored_credentials(&app).await?;
-    let machine_id: String = app.machine_uid().get_machine_uid().unwrap().id.unwrap();
+    let machine_id: String = match app.machine_uid().get_machine_uid() {
+        Ok(id) => id.id.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
     let app_version: String = app.package_info().version.to_string();
     // Make HTTP request to models endpoint
     let client = http_client();

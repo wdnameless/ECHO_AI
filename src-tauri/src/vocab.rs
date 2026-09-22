@@ -39,10 +39,17 @@ async fn get_or_init_pool<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Sqlit
     if let Some(parent) = db_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let conn_str = format!("sqlite://{}", db_path.to_string_lossy());
+    // Connect by filename: a `sqlite://` string breaks on a Windows drive letter,
+    // and this pool shares the file with the SQL plugin, so it needs WAL and a
+    // wait instead of an immediate "database is locked".
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true)
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .busy_timeout(std::time::Duration::from_secs(5));
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(&conn_str)
+        .connect_with(options)
         .await
         .map_err(|e| format!("Failed to connect to sqlite: {}", e))?;
 

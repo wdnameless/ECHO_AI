@@ -208,7 +208,7 @@ export function useAIStreaming({
       // pass through.
       const sinceLastResponse = Date.now() - lastAIResponseAtRef.current;
       const isQuestionStart =
-        /^(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|расскажи|объясни|what|how|why|where|when|who|which|can you|could you|tell me|explain)\b/i.test(
+        /^(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|расскажи|объясни|what|how|why|where|when|who|which|can you|could you|tell me|explain)(?=$|[^\p{L}\p{N}])/iu.test(
           question.trim()
         );
       if (

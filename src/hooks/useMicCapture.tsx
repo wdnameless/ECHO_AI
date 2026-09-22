@@ -160,8 +160,11 @@ function MicVADBridge({
         }
         // Only push React state when the speaking flag actually flips -
         // avoids a full re-render on every audio frame (~30-100 fps).
+        //
+        // This flag drives the indicator only. The audio gate below follows the
+        // VAD lifecycle instead: a single frame under the threshold used to cut
+        // the stream mid-word and throw away the partial buffer with it.
         const speaking = probs.isSpeech > 0.6;
-        speakingNow = speaking;
         if (speaking !== lastSpeakingRef.current) {
           lastSpeakingRef.current = speaking;
           onStateChangeRef.current({
@@ -173,6 +176,7 @@ function MicVADBridge({
         }
       },
       onSpeechStart: () => {
+        speakingNow = true;
         onMicSpeechStartRef.current?.();
         try {
           recognition?.start();
@@ -181,6 +185,7 @@ function MicVADBridge({
         }
       },
       onSpeechEnd: (audio: Float32Array) => {
+        speakingNow = false;
         onMicSpeechStopRef.current?.();
         const audioBlob = floatArrayToWav(audio, 16000, "wav");
         onMicSegmentRef.current(audioBlob);
@@ -327,6 +332,12 @@ function MicVADBridge({
 
     return () => {
       cancelled = true;
+      try {
+        // The recogniser keeps the microphone open on its own otherwise.
+        recognition?.abort();
+      } catch (err) {
+        console.warn("[mic-vad]", err);
+      }
       vad?.destroy();
       vadRef.current = null;
       listeningRef.current = false;

@@ -117,6 +117,11 @@ export function useAudioLifecycle({
       }
     } catch (err) {
       console.warn("[audio-capture]", err);
+      // The flag is set optimistically before the backend is asked, so a failure
+      // here has to take it back: otherwise the UI claims to record while
+      // nothing is being captured.
+      setCapturing(false);
+      setIsSystemProcessing(false);
       const errorMessage = err instanceof Error ? err.message : String(err);
       setError(errorMessage);
       setIsPopoverOpen(true);

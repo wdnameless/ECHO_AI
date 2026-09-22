@@ -69,6 +69,20 @@ describe("QuestionAssembler", () => {
     }
   });
 
+  it("starts a new question when a Russian one opens with an interrogative word", () => {
+    const a = new QuestionAssembler({ gapMs: 1000 });
+    const first = a.push(seg("Расскажи про свой опыт с Postgres?", T));
+    expect(first.kind).toBe("emitted");
+
+    // Long pause, then a fresh question that opens with an interrogative word.
+    // The follow-up detector leans on a word boundary, and ASCII \b finds no
+    // boundary in Cyrillic: without the fix the answered question came back
+    // glued to this one, and the AI answered both as a single request.
+    const r = a.push(seg("Как вы обычно оптимизируете запросы", T + 2000));
+    expect(r.kind).toBe("pending");
+    expect(a.current?.text).toBe("Как вы обычно оптимизируете запросы");
+  });
+
   it("discards STT duplicate fragments", () => {
     const a = new QuestionAssembler({ duplicateSimilarityThreshold: 0.7 });
     a.push(seg("Расскажите про ваш опыт", T));

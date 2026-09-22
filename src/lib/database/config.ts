@@ -10,21 +10,30 @@ import Database from "@tauri-apps/plugin-sql";
  * follow the runtime path first.
  */
 let dbInstance: Database | null = null;
+let dbLoading: Promise<Database> | null = null;
 
 /**
  * Get database instance
+ *
+ * Concurrent callers share one load: two `Database.load` calls in flight run the
+ * plugin's migrations twice, which races on `_sqlx_migrations` and locks the file.
  */
-export async function getDatabase(): Promise<Database> {
-  if (!dbInstance) {
-    try {
-      dbInstance = await Database.load("sqlite:pluely.db");
-    } catch (error) {
-      throw new Error(
-        `Failed to initialize database: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    }
+export function getDatabase(): Promise<Database> {
+  if (dbInstance) return Promise.resolve(dbInstance);
+  if (!dbLoading) {
+    dbLoading = Database.load("sqlite:pluely.db")
+      .then((db) => {
+        dbInstance = db;
+        return db;
+      })
+      .catch((error) => {
+        dbLoading = null;
+        throw new Error(
+          `Failed to initialize database: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      });
   }
-  return dbInstance;
+  return dbLoading;
 }

@@ -203,9 +203,7 @@ impl SpeakerStream {
                             .unwrap_or_else(|_| "Unknown".to_string());
                         d
                     }
-                    None => {
-                        get_default_device(&Direction::Render).expect("No default render device")
-                    }
+                    None => get_default_device(&Direction::Render)?,
                 },
                 None => get_default_device(&Direction::Render)?,
             };
