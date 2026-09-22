@@ -171,6 +171,7 @@ export const Models = () => {
 
   // Listen to download progress
   useEffect(() => {
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     void listen<ModelDownloadProgress>("model-download-progress", (event) => {
       const p = event.payload;
@@ -179,9 +180,13 @@ export const Models = () => {
         setDownloadProgress(pct);
       }
     }).then((fn) => {
-      unlisten = fn;
+      if (cancelled) fn();
+      else unlisten = fn;
     });
-    return () => unlisten?.();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   // Map of downloaded model files

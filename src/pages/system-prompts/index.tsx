@@ -23,9 +23,11 @@ import {
 } from "lucide-react";
 import { DeleteSystemPrompt } from "./Delete";
 import { CreateEditDialog } from "./CreateEditDialog";
-import { PluelyPrompts } from "./PluelyPrompts";
-import { useState } from "react";
+import { PluelyPrompts, dispatchStorageChange } from "./PluelyPrompts";
+import { useState, useRef, useEffect } from "react";
 import { PageLayout } from "@/layouts";
+import { STORAGE_KEYS } from "@/config";
+import { safeLocalStorage } from "@/lib";
 
 const SystemPrompts = () => {
   const {
@@ -39,6 +41,39 @@ const SystemPrompts = () => {
     handleSelectPrompt,
     clearError,
   } = useSystemPrompts();
+  const pendingSelectIdRef = useRef<number | null>(null);
+  const [syncedSelectedPromptId, setSyncedSelectedPromptId] = useState<number | null>(selectedPromptId);
+
+  useEffect(() => {
+    setSyncedSelectedPromptId(selectedPromptId);
+  }, [selectedPromptId]);
+
+  useEffect(() => {
+    const handleStorageChange = (e: Event) => {
+      const storageEvent = e as StorageEvent;
+      if (!storageEvent.key || storageEvent.key === STORAGE_KEYS.SELECTED_SYSTEM_PROMPT_ID) {
+        const stored = safeLocalStorage.getItem(STORAGE_KEYS.SELECTED_SYSTEM_PROMPT_ID);
+        setSyncedSelectedPromptId(stored ? Number(stored) : null);
+      }
+    };
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
+  }, []);
+
+  // Auto-select newly created prompt once prompts list updates
+  useEffect(() => {
+    if (pendingSelectIdRef.current !== null) {
+      const promptToSelect = prompts.find(
+        (p) => p.id === pendingSelectIdRef.current
+      );
+      if (promptToSelect) {
+        setSyncedSelectedPromptId(promptToSelect.id);
+        handleSelectPrompt(promptToSelect.id);
+        dispatchStorageChange(STORAGE_KEYS.SELECTED_SYSTEM_PROMPT_ID);
+        pendingSelectIdRef.current = null;
+      }
+    }
+  }, [prompts, handleSelectPrompt]);
 
   const [search, setSearch] = useState("");
   const [isCreateEditDialogOpen, setIsCreateEditDialogOpen] = useState(false);
@@ -111,8 +146,8 @@ const SystemPrompts = () => {
           name: form.name,
           prompt: form.prompt,
         });
-        // Auto-select the newly created prompt
-        handleSelectPrompt(newPrompt.id);
+        // Auto-select the newly created prompt once the list updates
+        pendingSelectIdRef.current = newPrompt.id;
       }
 
       setForm({ name: "", prompt: "" });
@@ -151,7 +186,9 @@ const SystemPrompts = () => {
    * Handle selecting a prompt card
    */
   const handleCardClick = (promptId: number) => {
+    setSyncedSelectedPromptId(promptId);
     handleSelectPrompt(promptId);
+    dispatchStorageChange(STORAGE_KEYS.SELECTED_SYSTEM_PROMPT_ID);
   };
 
   /**
@@ -201,7 +238,7 @@ const SystemPrompts = () => {
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4 pb-4">
           {filteredPrompts.reverse().map((prompt) => {
-            const isSelected = selectedPromptId === prompt.id;
+            const isSelected = syncedSelectedPromptId === prompt.id;
             return (
               <Card
                 key={prompt.id}

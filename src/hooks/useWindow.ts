@@ -66,6 +66,7 @@ export const useWindowResize = () => {
   useEffect(() => {
     let isDragging = false;
     let popoverWasOpen = false;
+    let heightBeforePopover = 54;
 
     const handleMouseDown = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -81,7 +82,7 @@ export const useWindowResize = () => {
         isDragging = false;
 
         setTimeout(() => {
-          if (!isAnyPopoverOpen()) {
+          if (!isAnyPopoverOpen() && heightBeforePopover <= 54) {
             resizeWindow(false);
           }
         }, 100);
@@ -91,13 +92,21 @@ export const useWindowResize = () => {
     const observer = new MutationObserver(() => {
       const popoverOpen = isAnyPopoverOpen();
       // Only collapse the window when a popover transitions from open to
-      // closed. New messages / streaming text must NOT trigger a resize.
-      if (popoverWasOpen && !popoverOpen) {
-        resizeWindow(false);
+      // closed. Keep the height the user had instead of collapsing it.
+      if (!popoverWasOpen && popoverOpen) {
+        heightBeforePopover = window.innerHeight;
+      } else if (popoverWasOpen && !popoverOpen) {
+        if (heightBeforePopover <= 54) {
+          resizeWindow(false);
+        } else {
+          void invoke("set_window_height", {
+            window: getCurrentWebviewWindow(),
+            height: heightBeforePopover,
+          });
+        }
       }
       popoverWasOpen = popoverOpen;
     });
-
     // Only the popover wrappers matter, and Radix mounts them as direct children
     // of <body>. Observing the whole subtree with attributes made this fire on
     // every streaming subtitle mutation, so it is deliberately shallow.

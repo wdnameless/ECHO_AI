@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Download,
   RefreshCw,
@@ -128,8 +128,25 @@ export const Updater = () => {
   }, []);
 
   // Handle window resizing when popover opens/closes
+  const initialMount = useRef(true);
+  const heightBeforeOpenRef = useRef<number | null>(null);
+
   useEffect(() => {
-    resizeWindow(isPopoverOpen);
+    if (initialMount.current) {
+      initialMount.current = false;
+      return;
+    }
+    if (isPopoverOpen) {
+      heightBeforeOpenRef.current = window.innerHeight;
+      resizeWindow(true);
+    } else {
+      const prevHeight = heightBeforeOpenRef.current;
+      if (prevHeight !== null && prevHeight > 54) {
+        // Keep the height the user had instead of letting close path collapse it
+        return;
+      }
+      resizeWindow(false);
+    }
   }, [isPopoverOpen, resizeWindow]);
 
   // Helper functions for button state

@@ -45,6 +45,8 @@ const View = () => {
     hasLicense: hasActiveLicense,
   });
   const [messages, setMessages] = useState<ChatConversation | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const messageCount = messages?.messages?.length ?? 0;
 
   const {
     handleDeleteConfirm,
@@ -64,11 +66,19 @@ const View = () => {
   );
 
   useEffect(() => {
+    let active = true;
     const getMessages = async () => {
+      setIsLoading(true);
       const conversation = await getConversationById(conversationId as string);
-      setMessages(conversation || null);
+      if (active) {
+        setMessages(conversation || null);
+        setIsLoading(false);
+      }
     };
     getMessages();
+    return () => {
+      active = false;
+    };
   }, [conversationId]);
 
   useEffect(() => {
@@ -92,7 +102,11 @@ const View = () => {
       isMainTitle={false}
       allowBackButton={true}
       title={messages?.title || ""}
-      description={`${messages?.messages.length} messages in this conversation`}
+      description={
+        isLoading
+          ? "Loading messages..."
+          : `${messageCount} messages in this conversation`
+      }
       rightSlot={
         <div className="flex flex-row items-center gap-2">
           <Button
@@ -147,7 +161,14 @@ const View = () => {
         </div>
       }
     >
-      {messages?.messages.length === 0 ? (
+      {isLoading ? (
+        <Empty
+          isLoading={true}
+          icon={MessageCircleIcon}
+          title="Loading messages..."
+          description="Fetching conversation messages"
+        />
+      ) : messageCount === 0 ? (
         <Empty
           isLoading={false}
           icon={MessageCircleIcon}

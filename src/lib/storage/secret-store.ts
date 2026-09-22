@@ -62,9 +62,17 @@ export async function removeSecret(key: string): Promise<void> {
  */
 const LITERAL_BEARER = /(Bearer\s+)(?!\{\{)([^\s"'\\]+)/i;
 
+/**
+ * Auth headers that carry a key of their own (`x-api-key: sk-...`), which the
+ * bearer pattern never saw: those templates kept a plaintext key in localStorage
+ * while the sweep reported nothing to move.
+ */
+const LITERAL_AUTH_HEADER =
+  /(-H\s+["']?(?:x-api-key|api-key|xi-api-key|openai-api-key)\s*:\s*)(?!\{\{)([^\s"']+)/i;
+
 /** True when the template carries a real key instead of the placeholder. */
 export function curlHasLiteralSecret(curl: string): boolean {
-  return LITERAL_BEARER.test(curl || "");
+  return LITERAL_BEARER.test(curl || "") || LITERAL_AUTH_HEADER.test(curl || "");
 }
 
 /**
@@ -78,12 +86,24 @@ export function extractLiteralSecret(curl: string): {
   curl: string;
   secret: string | null;
 } {
-  const match = LITERAL_BEARER.exec(curl || "");
-  if (!match) return { curl, secret: null };
-  return {
-    curl: (curl || "").replace(LITERAL_BEARER, "$1{{API_KEY}}"),
-    secret: match[2],
-  };
+  const source = curl || "";
+  const bearer = LITERAL_BEARER.exec(source);
+  if (bearer) {
+    return {
+      curl: source.replace(LITERAL_BEARER, "$1{{API_KEY}}"),
+      secret: bearer[2],
+    };
+  }
+
+  const header = LITERAL_AUTH_HEADER.exec(source);
+  if (header) {
+    return {
+      curl: source.replace(LITERAL_AUTH_HEADER, "$1{{API_KEY}}"),
+      secret: header[2],
+    };
+  }
+
+  return { curl, secret: null };
 }
 
 /** Flag for the one-time curl-template sweep, separate from the variables sweep. */

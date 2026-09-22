@@ -45,13 +45,15 @@ export const ShortcutManager = () => {
 
     const newBinding = { ...binding, enabled };
     const updatedBindings = { ...bindings, [actionId]: newBinding };
+
+    // Apply to backend first
+    const success = await applyShortcuts(updatedBindings);
+    if (!success) return;
+
     setBindings(updatedBindings);
 
-    // Update storage
+    // Update storage only after backend accepts
     updateShortcutBinding(actionId, binding.key, enabled);
-
-    // Apply to backend
-    await applyShortcuts(updatedBindings);
   };
 
   const handleSaveShortcut = async (actionId: string, key: string) => {
@@ -73,13 +75,17 @@ export const ShortcutManager = () => {
     };
     const newBinding = { ...binding, key };
     const updatedBindings = { ...bindings, [actionId]: newBinding };
+
+    // Apply to backend before persisting to storage
+    const success = await applyShortcuts(updatedBindings);
+    if (!success) {
+      return;
+    }
+
     setBindings(updatedBindings);
 
-    // Update storage
+    // Update storage only after backend accepts
     updateShortcutBinding(actionId, key, binding.enabled);
-
-    // Apply to backend
-    await applyShortcuts(updatedBindings);
 
     // Close editor and clear conflicts
     setEditingAction(null);
@@ -88,15 +94,17 @@ export const ShortcutManager = () => {
 
   const applyShortcuts = async (
     updatedBindings: Record<string, ShortcutBinding>
-  ) => {
+  ): Promise<boolean> => {
     setIsApplying(true);
     try {
       await invoke("update_shortcuts", {
         config: { bindings: updatedBindings },
       });
+      return true;
     } catch (error) {
       console.error("Failed to apply shortcuts:", error);
       setConflicts([`Failed to apply shortcuts: ${error}`]);
+      return false;
     } finally {
       setIsApplying(false);
     }
@@ -107,7 +115,11 @@ export const ShortcutManager = () => {
     try {
       const defaultConfig = resetShortcutsToDefaults();
 
-      await applyShortcuts(defaultConfig.bindings);
+      const success = await applyShortcuts(defaultConfig.bindings);
+      if (!success) {
+        loadShortcuts();
+        return;
+      }
 
       setBindings(defaultConfig.bindings);
       setConflicts([]);

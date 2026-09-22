@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   Header,
   Button,
@@ -44,6 +44,9 @@ export const JobProfilesSettings = () => {
   const [hiddenBuiltinCount, setHiddenBuiltinCount] = useState(
     () => getRemovedBuiltinJobProfileIds().length
   );
+  useEffect(() => {
+    setHiddenBuiltinCount(getRemovedBuiltinJobProfileIds().length);
+  }, [jobProfiles]);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
   const [appliedToastId, setAppliedToastId] = useState<string | null>(null);
@@ -205,6 +208,7 @@ export const JobProfilesSettings = () => {
                       e.stopPropagation();
                       deleteJobProfile(p.id);
                       refreshJobProfiles();
+                      setHiddenBuiltinCount(getRemovedBuiltinJobProfileIds().length);
                       if (draft?.id === p.id) {
                         setEditing(false);
                         setDraft(null);
