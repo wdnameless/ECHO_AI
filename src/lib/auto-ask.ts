@@ -1,19 +1,27 @@
 import { safeLocalStorage } from "./storage/helper";
 import { isFillerOrBackchannel } from "./speech-filter";
 
+export type AutoAskMode = "auto" | "manual";
+
 export interface AutoAskConfig {
   enabled: boolean;
   silenceDurationMs: number;
+  mode: AutoAskMode;
 }
 
 export const AUTO_ASK_STORAGE_KEYS = {
   ENABLED: "auto_ask_enabled",
   SILENCE_DURATION: "auto_ask_silence_duration_ms",
+  MODE: "auto_ask_mode",
 } as const;
 
+/// Auto answering is the behaviour users already expect from the meeting panel;
+/// the mode switch is what turns it off, so `enabled` only stays for configs
+/// written by older builds.
 export const DEFAULT_AUTO_ASK_CONFIG: AutoAskConfig = {
-  enabled: false,
-  silenceDurationMs: 1500,
+  enabled: true,
+  silenceDurationMs: 1000,
+  mode: "auto",
 };
 
 export const AUTO_ASK_MIN_SILENCE_MS = 500;
@@ -29,6 +37,7 @@ export function clampSilenceDuration(ms: number): number {
 export function getAutoAskConfig(): AutoAskConfig {
   const enabledRaw = safeLocalStorage.getItem(AUTO_ASK_STORAGE_KEYS.ENABLED);
   const silenceRaw = safeLocalStorage.getItem(AUTO_ASK_STORAGE_KEYS.SILENCE_DURATION);
+  const modeRaw = safeLocalStorage.getItem(AUTO_ASK_STORAGE_KEYS.MODE);
 
   const enabled = enabledRaw !== null ? enabledRaw === "true" : DEFAULT_AUTO_ASK_CONFIG.enabled;
   let silenceDurationMs = DEFAULT_AUTO_ASK_CONFIG.silenceDurationMs;
@@ -40,9 +49,13 @@ export function getAutoAskConfig(): AutoAskConfig {
     }
   }
 
+  const mode: AutoAskMode =
+    modeRaw === "manual" || modeRaw === "auto" ? modeRaw : DEFAULT_AUTO_ASK_CONFIG.mode;
+
   return {
     enabled,
     silenceDurationMs,
+    mode,
   };
 }
 
@@ -54,16 +67,19 @@ export function saveAutoAskConfig(config: Partial<AutoAskConfig>): AutoAskConfig
       typeof config.silenceDurationMs === "number"
         ? clampSilenceDuration(config.silenceDurationMs)
         : current.silenceDurationMs,
+    mode: config.mode === "auto" || config.mode === "manual" ? config.mode : current.mode,
   };
 
   safeLocalStorage.setItem(AUTO_ASK_STORAGE_KEYS.ENABLED, String(next.enabled));
   safeLocalStorage.setItem(AUTO_ASK_STORAGE_KEYS.SILENCE_DURATION, String(next.silenceDurationMs));
+  safeLocalStorage.setItem(AUTO_ASK_STORAGE_KEYS.MODE, next.mode);
 
   return next;
 }
 
 export interface ShouldAutoAskParams {
-  enabled: boolean;
+  enabled?: boolean;
+  mode?: AutoAskMode;
   text: string;
   isAIProcessing: boolean;
 }
@@ -72,9 +88,9 @@ export interface ShouldAutoAskParams {
  * Validates if the given finalized transcript passes all guards to be automatically dispatched to AI.
  */
 export function shouldAutoAsk(params: ShouldAutoAskParams): boolean {
-  const { enabled, text, isAIProcessing } = params;
+  const { enabled = true, mode = "auto", text, isAIProcessing } = params;
 
-  if (!enabled) {
+  if (enabled === false || mode === "manual") {
     return false;
   }
 
@@ -124,13 +140,7 @@ export class AutoAskManager {
    * Debounces the dispatch until silence duration completes.
    */
   public onFinalizedTranscript(text: string): void {
-    const config = this.options.getConfig ? this.options.getConfig() : getAutoAskConfig();
-
-    if (!shouldAutoAsk({
-      enabled: config.enabled,
-      text,
-      isAIProcessing: this.options.isAIProcessing(),
-    })) {
+    if (!this.isEligible(text)) {
       this.cancel();
       return;
     }
@@ -138,6 +148,7 @@ export class AutoAskManager {
     this.pendingText = text.trim();
     this.cancelTimer();
 
+    const config = this.options.getConfig ? this.options.getConfig() : getAutoAskConfig();
     this.timer = setTimeout(() => {
       this.flush();
     }, config.silenceDurationMs);
@@ -148,18 +159,20 @@ export class AutoAskManager {
     this.cancelTimer();
     this.pendingText = null;
 
-    if (!textToDispatch) return;
-
-    const config = this.options.getConfig ? this.options.getConfig() : getAutoAskConfig();
-    if (!shouldAutoAsk({
-      enabled: config.enabled,
-      text: textToDispatch,
-      isAIProcessing: this.options.isAIProcessing(),
-    })) {
-      return;
-    }
+    if (!textToDispatch || !this.isEligible(textToDispatch)) return;
 
     void this.options.onDispatch(textToDispatch);
+  }
+
+  private isEligible(text: string): boolean {
+    const config = this.options.getConfig ? this.options.getConfig() : getAutoAskConfig();
+    // `mode` is authoritative; `enabled` only survives for configs written by
+    // older builds, so a stale flag cannot silence the Авто switch.
+    return shouldAutoAsk({
+      mode: config.mode,
+      text,
+      isAIProcessing: this.options.isAIProcessing(),
+    });
   }
 
   public cancel(): void {

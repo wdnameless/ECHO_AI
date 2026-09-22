@@ -7,10 +7,17 @@
  */
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useWindowResize, useGlobalShortcuts } from ".";
 import { useApp } from "@/contexts";
 import { isExplicitAskEligible } from "@/lib/transcript-stabilizer";
-import { generateConversationId, getAutoAskConfig, AutoAskManager } from "@/lib";
+import {
+  generateConversationId,
+  getAutoAskConfig,
+  saveAutoAskConfig,
+  AutoAskManager,
+  AutoAskMode,
+} from "@/lib";
 import { useMicCapture } from "./useMicCapture";
 import {
   useConversationStore,
@@ -91,6 +98,51 @@ export function useSystemAudio() {
     (question: string, source: "me" | "them") => Promise<void>
   >(async () => {});
 
+  // Permission to send is decided here. What the question is, and when a pause
+  // ended it, stays the assembler's job: it flushes on silence gaps, so a
+  // fragmented utterance is answered once, as one question.
+  const isAIProcessingRef = useRef(false);
+  const lastInterviewerQuestionRef = useRef<string | null>(null);
+
+  const autoAskManagerRef = useRef<AutoAskManager | null>(null);
+  if (!autoAskManagerRef.current) {
+    autoAskManagerRef.current = new AutoAskManager({
+      getConfig: getAutoAskConfig,
+      isAIProcessing: () => isAIProcessingRef.current,
+      onDispatch: (question) => {
+        void handleTriggerAIRef.current(question, "them");
+      },
+    });
+  }
+
+  const [autoAskMode, setAutoAskModeState] = useState<AutoAskMode>(
+    () => getAutoAskConfig().mode
+  );
+
+  const setAutoAskMode = useCallback((mode: AutoAskMode) => {
+    saveAutoAskConfig({ mode });
+    setAutoAskModeState(mode);
+    // Leaving auto drops anything already waiting for its silence window.
+    if (mode === "manual") {
+      autoAskManagerRef.current?.cancel();
+    }
+  }, []);
+
+  const dispatchAssembledQuestion = useCallback(
+    async (question: string, source: "me" | "them") => {
+      if (source !== "them") {
+        await handleTriggerAIRef.current(question, source);
+        return;
+      }
+      // The manual button answers this question; in auto mode the manager holds
+      // it for the silence window and drops it when the mode changes or speech
+      // resumes.
+      lastInterviewerQuestionRef.current = question;
+      autoAskManagerRef.current?.onFinalizedTranscript(question);
+    },
+    []
+  );
+
   const {
     activeFiller,
     pendingUtteranceId,
@@ -101,9 +153,25 @@ export function useSystemAudio() {
     resetQuestionAssembly,
     handleInterviewerTranscription,
   } = useQuestionPipeline({
-    onTriggerAI: (q, s) => handleTriggerAIRef.current(q, s),
+    onTriggerAI: dispatchAssembledQuestion,
     liveSegmentsRef,
   });
+
+  /**
+   * A finished utterance arms the silence window on its own text; the assembler
+   * may replace it with the merged question while the window is still open.
+   *
+   * The assembler alone is not enough: it holds a question as "pending" while
+   * the text still reads unfinished, and with no other trigger a long monologue
+   * would never be answered at all.
+   */
+  const handleBatchInterviewerTranscription = useCallback(
+    async (transcription: string) => {
+      await handleInterviewerTranscription(transcription);
+      autoAskManagerRef.current?.onFinalizedTranscript(transcription);
+    },
+    [handleInterviewerTranscription]
+  );
 
   // 4. System Audio & Microphone Capture Subsystem
   const handleAbortAIRef = useRef<() => void>(() => {});
@@ -145,7 +213,8 @@ export function useSystemAudio() {
     selectedSttProvider,
     allSttProviders,
     appendLiveSegment,
-    onInterviewerTranscription: handleInterviewerTranscription,
+    onInterviewerTranscription: handleBatchInterviewerTranscription,
+    onInterviewerSpeechActivity: () => autoAskManagerRef.current?.cancel(),
     setMyLastTranscription,
     setTheirLastTranscription,
     setIsAIProcessing: (v) => handleSetIsAIProcessingRef.current(v),
@@ -201,36 +270,36 @@ export function useSystemAudio() {
       }
     },
   });
-  // Auto-Ask manager for hands-free interviewer question dispatch
-  const autoAskManagerRef = useRef<AutoAskManager | null>(null);
-  if (!autoAskManagerRef.current) {
-    autoAskManagerRef.current = new AutoAskManager({
-      getConfig: getAutoAskConfig,
-      onDispatch: (question) => {
-        void handleTriggerAIRef.current(question, "them");
-      },
-      isAIProcessing: () => isAIProcessingRef.current,
-    });
-  }
-
-  const isAIProcessingRef = useRef(false);
   useEffect(() => {
     isAIProcessingRef.current = isAIProcessing;
   }, [isAIProcessing]);
 
-  const prevSegmentsLengthRef = useRef(0);
   useEffect(() => {
-    if (liveSegments.length > prevSegmentsLengthRef.current) {
-      const newSegments = liveSegments.slice(prevSegmentsLengthRef.current);
-      for (const segment of newSegments) {
-        if (segment.source === "them" && segment.text) {
-          autoAskManagerRef.current?.onFinalizedTranscript(segment.text);
-        }
-      }
-    }
-    prevSegmentsLengthRef.current = liveSegments.length;
-  }, [liveSegments]);
+    let unlistenDetected: (() => void) | undefined;
+    let unlistenPartial: (() => void) | undefined;
 
+    listen("speech-detected", () => {
+      autoAskManagerRef.current?.cancel();
+    })
+      .then((u) => {
+        unlistenDetected = u;
+      })
+      .catch(() => {});
+
+    listen("speech-partial", () => {
+      autoAskManagerRef.current?.cancel();
+    })
+      .then((u) => {
+        unlistenPartial = u;
+      })
+      .catch(() => {});
+
+    return () => {
+      if (unlistenDetected) unlistenDetected();
+      if (unlistenPartial) unlistenPartial();
+      autoAskManagerRef.current?.cancel();
+    };
+  }, []);
 
   const isProcessing = isMicProcessing || isSystemProcessing;
   const lastTranscription =
@@ -342,6 +411,28 @@ export function useSystemAudio() {
       clearFiller,
     ]
   );
+  const answerLastInterviewerUtterance = useCallback(async () => {
+    if (isAIProcessing) return;
+
+    const lastThemSegment = [...(liveSegmentsRef.current || [])]
+      .reverse()
+      .find((s) => s.source === "them" && !s.partial && s.text.trim());
+
+    const textToAnswer = lastThemSegment?.text || theirLastTranscription;
+    if (!textToAnswer || !textToAnswer.trim()) return;
+
+    if (lastThemSegment?.id) {
+      await askAIForTranscript(lastThemSegment.id, textToAnswer, "them");
+    } else {
+      await triggerAIForQuestion(textToAnswer, "them");
+    }
+  }, [
+    isAIProcessing,
+    theirLastTranscription,
+    askAIForTranscript,
+    triggerAIForQuestion,
+    liveSegmentsRef,
+  ]);
 
   useEffect(() => {
     if (micCapture.stream) {
@@ -477,5 +568,8 @@ export function useSystemAudio() {
     micBridge: micCapture.bridge,
     pendingScreenshot,
     setPendingScreenshot,
+    autoAskMode,
+    setAutoAskMode,
+    answerLastInterviewerUtterance,
   };
 }
