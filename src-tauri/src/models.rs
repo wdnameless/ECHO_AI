@@ -357,6 +357,16 @@ fn attempt(
 ///
 /// Blocks the calling thread; callers run this on a worker thread so the UI
 /// stays responsive. Interrupted transfers resume instead of restarting, which
+/// Downloads into the resolved models directory, for the real download path.
+pub fn download_from(
+    url: &str,
+    file: &ModelFile,
+    progress: ProgressFn<'_>,
+) -> Result<PathBuf, String> {
+    let dir = PathBuf::from(settings::resolved_paths().models_dir);
+    download_into(&dir, url, file, progress)
+}
+
 /// matters for the multi-gigabyte models.
 pub fn download(
     model: &ModelEntry,
@@ -371,12 +381,18 @@ pub fn download(
 /// Split from `download` so the transfer logic — resume, retries, the
 /// server-ignored-the-range case — can be exercised against a local server
 /// without reaching the network.
-pub fn download_from(
+/// Downloads a file into an explicit directory.
+///
+/// Split from `download_from` so the transfer logic can be exercised in a
+/// scratch directory: these tests used to write into the user's models folder
+/// and leave files behind that the model list then showed as downloads.
+pub fn download_into(
+    base_dir: &Path,
     url: &str,
     file: &ModelFile,
     progress: ProgressFn<'_>,
 ) -> Result<PathBuf, String> {
-    let target_path = target_path(file);
+    let target_path = base_dir.join(&file.filename);
     if target_path.is_file() {
         return Ok(target_path);
     }
@@ -976,35 +992,46 @@ mod download_tests {
         }
     }
 
-    fn cleanup(file: &ModelFile) {
-        let _ = std::fs::remove_file(target_path(file));
-        let _ = std::fs::remove_file(target_path(file).with_extension("gguf.part"));
+    /// A scratch directory for one transfer, removed even when the test panics.
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new(name: &str) -> Self {
+            let p = std::env::temp_dir().join(format!("pluely-dl-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).expect("scratch dir");
+            Self(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
     }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
 
     #[test]
     fn a_clean_transfer_lands_and_verifies() {
-        let _settings = crate::settings::SETTINGS_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let payload: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
+        let scratch = ScratchDir::new("a_clean_transfer_lands_and_verifies");
+                let payload: Vec<u8> = (0..40_000u32).map(|i| (i % 251) as u8).collect();
         let file = entry_for(&payload);
-        cleanup(&file);
 
         let hits = Arc::new(AtomicUsize::new(0));
         let url = serve(payload.clone(), Behaviour::Normal, hits.clone());
 
-        let saved = download_from(&url, &file, &mut |_, _| {}).expect("download");
+        let saved = download_into(scratch.path(), &url, &file, &mut |_, _| {}).expect("download");
         assert_eq!(std::fs::metadata(&saved).expect("meta").len(), payload.len() as u64);
         assert_eq!(sha256_file(&saved).expect("hash"), file.sha256);
-        cleanup(&file);
     }
 
     #[test]
     fn a_server_that_ignores_range_restarts_instead_of_appending() {
-        let _settings = crate::settings::SETTINGS_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Bytes are already on disk and the server answers 200 with the whole
+        let scratch = ScratchDir::new("a_server_that_ignores_range_restarts_instead_of_appending");
+                // Bytes are already on disk and the server answers 200 with the whole
         // payload instead of 206 with the remainder. Appending would splice two
         // copies together (1.5x the size), which the hash rejects — the retry
         // would then download everything again. The guard restarts the file
@@ -1015,9 +1042,8 @@ mod download_tests {
         // re-transferring half a gigabyte.
         let payload: Vec<u8> = (0..30_000u32).map(|i| (i % 97) as u8).collect();
         let file = entry_for(&payload);
-        cleanup(&file);
 
-        let partial = target_path(&file).with_extension("gguf.part");
+        let partial = scratch.path().join(&file.filename).with_extension("gguf.part");
         std::fs::create_dir_all(partial.parent().expect("parent")).expect("mkdir");
         let half = payload.len() / 2;
         std::fs::write(&partial, &payload[..half]).expect("write partial");
@@ -1025,7 +1051,7 @@ mod download_tests {
         let hits = Arc::new(AtomicUsize::new(0));
         let url = serve(payload.clone(), Behaviour::IgnoresRange, hits.clone());
 
-        let saved = download_from(&url, &file, &mut |_, _| {}).expect("download");
+        let saved = download_into(scratch.path(), &url, &file, &mut |_, _| {}).expect("download");
 
         assert_eq!(
             std::fs::metadata(&saved).expect("meta").len(),
@@ -1038,79 +1064,66 @@ mod download_tests {
             1,
             "the partial file must be restarted, not appended to and re-fetched"
         );
-        cleanup(&file);
     }
 
     #[test]
     fn a_truncated_body_is_retried_until_complete() {
-        let _settings = crate::settings::SETTINGS_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // A truncated response must not be accepted as final: the size does not
+        let scratch = ScratchDir::new("a_truncated_body_is_retried_until_complete");
+                // A truncated response must not be accepted as final: the size does not
         // match the catalogue, so the transfer continues.
         let payload: Vec<u8> = (0..20_000u32).map(|i| (i % 13) as u8).collect();
         let file = entry_for(&payload);
-        cleanup(&file);
 
         let hits = Arc::new(AtomicUsize::new(0));
         let url = serve(payload.clone(), Behaviour::Truncates, hits.clone());
 
-        let result = download_from(&url, &file, &mut |_, _| {});
+        let result = download_into(scratch.path(), &url, &file, &mut |_, _| {});
         assert!(result.is_err(), "an incomplete body must not be accepted");
         assert!(
             hits.load(Ordering::SeqCst) > 1,
             "the transfer must be retried"
         );
         // The partial data is kept so a later attempt can resume.
-        assert!(target_path(&file).with_extension("gguf.part").is_file());
-        cleanup(&file);
+        assert!(scratch.path().join(&file.filename).with_extension("gguf.part").is_file());
     }
 
     #[test]
     fn corrupt_bytes_are_rejected_and_not_kept() {
-        let _settings = crate::settings::SETTINGS_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // Wrong bytes are not merely incomplete: keeping them would make every
+        let scratch = ScratchDir::new("corrupt_bytes_are_rejected_and_not_kept");
+                // Wrong bytes are not merely incomplete: keeping them would make every
         // retry fail identically, so the file must be discarded.
         let payload: Vec<u8> = (0..10_000u32).map(|i| (i % 29) as u8).collect();
         let file = entry_for(&payload);
-        cleanup(&file);
 
         let hits = Arc::new(AtomicUsize::new(0));
         let url = serve(payload.clone(), Behaviour::Corrupts, hits);
 
-        let result = download_from(&url, &file, &mut |_, _| {});
+        let result = download_into(scratch.path(), &url, &file, &mut |_, _| {});
         assert!(result.is_err(), "corrupt bytes must be rejected");
         assert!(
-            !target_path(&file).is_file(),
+            !scratch.path().join(&file.filename).is_file(),
             "a corrupt file must not be left in place"
         );
-        cleanup(&file);
     }
 
     #[test]
     fn an_existing_file_is_returned_without_contacting_the_server() {
-        let _settings = crate::settings::SETTINGS_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let payload: Vec<u8> = (0..5_000u32).map(|i| (i % 7) as u8).collect();
+        let scratch = ScratchDir::new("an_existing_file_is_returned_without_contacting_the_server");
+                let payload: Vec<u8> = (0..5_000u32).map(|i| (i % 7) as u8).collect();
         let file = entry_for(&payload);
-        cleanup(&file);
 
         let hits = Arc::new(AtomicUsize::new(0));
         let url = serve(payload.clone(), Behaviour::Normal, hits.clone());
 
-        download_from(&url, &file, &mut |_, _| {}).expect("first");
+        download_into(scratch.path(), &url, &file, &mut |_, _| {}).expect("first");
         let hits_after_first = hits.load(Ordering::SeqCst);
 
-        download_from(&url, &file, &mut |_, _| {}).expect("second");
+        download_into(scratch.path(), &url, &file, &mut |_, _| {}).expect("second");
 
         assert_eq!(
             hits.load(Ordering::SeqCst),
             hits_after_first,
             "a present file must not trigger another request"
         );
-        cleanup(&file);
     }
 }
