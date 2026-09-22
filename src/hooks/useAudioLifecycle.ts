@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { sttReadiness } from "@/lib/storage/app-paths";
 import type { VadConfig } from "./useSystemAudioCapture";
 
 export interface UseAudioLifecycleProps {
@@ -74,6 +75,18 @@ export function useAudioLifecycle({
   const startCapture = useCallback(async () => {
     try {
       setError("");
+
+      // No speech model, nothing to recognize: the engine cannot start and every
+      // segment would come back as an error. Say so before the microphone and
+      // the system audio loopback are opened.
+      const readiness = await sttReadiness();
+      if (!readiness.model_found) {
+        setError(
+          "Модель распознавания не выбрана. Откройте «SST Models» и скачайте модель — без неё запись не начнётся."
+        );
+        setIsPopoverOpen(true);
+        return;
+      }
 
       const hasAccess = await invoke<boolean>("check_system_audio_access");
       if (!hasAccess) {

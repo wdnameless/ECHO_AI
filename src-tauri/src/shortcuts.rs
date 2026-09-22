@@ -634,7 +634,6 @@ fn handle_move_window<R: Runtime>(app: &AppHandle<R>, direction: &str) {
 #[tauri::command]
 pub fn exit_app(app_handle: tauri::AppHandle) {
     crate::handy_server::stop_server();
-    crate::handy_server::stop_tts();
     app_handle.exit(0);
 }
 

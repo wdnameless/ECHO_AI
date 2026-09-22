@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -649,96 +648,11 @@ pub async fn live_asr_port() -> Option<u16> {
         .flatten()
 }
 
-/// Speak text aloud using Windows SAPI (fallback for WebView2 which may not
-/// expose the Web Speech API). Uses a single long-lived PowerShell process
-/// that reads lines from stdin - avoids the ~300-500ms process spawn per phrase.
-pub static TTS_PROCESS: Mutex<Option<(Child, Option<std::process::ChildStdin>)>> =
-    Mutex::new(None);
-
-#[tauri::command]
-pub fn speak_text(text: String) {
-    #[cfg(target_os = "windows")]
-    {
-        let script = r#"
-Add-Type -AssemblyName System.Speech
-$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
-$s.SetOutputToDefaultAudioDevice()
-while ($true) {
-    $line = [Console]::In.ReadLine()
-    if ($null -eq $line) { break }
-    if ($line -eq "__QUIT__") { break }
-    try { $s.Speak($line) } catch {}
-}
-$s.Dispose()
-"#;
-
-        let mut guard = match TTS_PROCESS.lock() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-
-        // A child that died keeps its handle: writes to its closed stdin fail
-        // silently, so speech output stayed broken until the app restarted.
-        if let Some((child, _)) = guard.as_mut() {
-            if matches!(child.try_wait(), Ok(Some(_))) {
-                *guard = None;
-            }
-        }
-
-        // (Re)spawn the persistent process if it died.
-        if guard.is_none() {
-            let mut cmd = Command::new("powershell");
-            cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .creation_flags(0x08000000); // CREATE_NO_WINDOW
-            if let Ok(mut child) = cmd.spawn() {
-                // Same kill-on-close job as the engine: a crashed app used to
-                // leave the speech process running with no window and no owner.
-                assign_job_object(&child);
-                let stdin = child.stdin.take();
-                *guard = Some((child, stdin));
-            } else {
-                return;
-            }
-        }
-
-        if let Some((child, stdin)) = guard.as_mut() {
-            if let Some(stdin) = stdin.as_mut() {
-                let _ = writeln!(stdin, "{}", text.replace(['\n', '\r'], " "));
-                let _ = stdin.flush();
-            } else if let Some(mut stdin) = child.stdin.take() {
-                let _ = writeln!(stdin, "{}", text.replace(['\n', '\r'], " "));
-                let _ = stdin.flush();
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = text;
-    }
-}
-
-/// Kill the persistent TTS process (called on app exit).
-pub fn stop_tts() {
-    if let Ok(mut guard) = TTS_PROCESS.lock() {
-        if let Some((mut child, mut stdin)) = guard.take() {
-            if let Some(stdin) = stdin.as_mut() {
-                let _ = writeln!(stdin, "__QUIT__");
-                let _ = stdin.flush();
-            }
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Read as _;
+    use std::io::Write as _;
     use std::net::TcpListener;
 
     /// A loopback listener on an ephemeral port, plus the port it took.
