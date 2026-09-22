@@ -191,7 +191,9 @@ pub fn close_overlay_window(app: tauri::AppHandle) -> Result<(), String> {
 
     // Emit an event to the main window to signal that the overlay has been closed
     if let Some(main_window) = app.get_webview_window("main") {
-        main_window.emit("capture-closed", ()).unwrap();
+        if let Err(e) = main_window.emit("capture-closed", ()) {
+            log::warn!("failed to emit capture-closed: {}", e);
+        }
     }
 
     Ok(())

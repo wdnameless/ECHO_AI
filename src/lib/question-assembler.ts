@@ -158,7 +158,7 @@ export class QuestionAssembler {
     if (Date.now() - this.lastEmitted.ts > FOLLOWUP_MERGE_MS) return false;
     if (text.endsWith("?")) return false;
     if (text.length >= 90) return false;
-    return !/^(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|расскажи|объясни|опиши|расскажи|what|how|why|where|when|who|which|can|could|would|tell|describe|explain|do|does|did|have|has)\b/i.test(
+    return !/^(почему|зачем|как|что|кто|где|когда|сколько|какой|какая|какие|расскажи|объясни|опиши|расскажи|what|how|why|where|when|who|which|can|could|would|tell|describe|explain|do|does|did|have|has)(?=$|[^\p{L}\p{N}])/iu.test(
       text
     );
   }

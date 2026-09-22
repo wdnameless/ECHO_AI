@@ -29,6 +29,7 @@ vi.mock("@/lib", () => ({
 
 vi.mock("@/lib/asr-discovery", () => ({
   getAsrBaseUrl: async () => "http://127.0.0.1:9877",
+  resetAsrBaseUrlCache: () => {},
 }));
 
 vi.mock("@/lib/host-trust-gate", () => ({

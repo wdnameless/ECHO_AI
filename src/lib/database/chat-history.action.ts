@@ -110,7 +110,7 @@ export async function createConversation(
     );
 
     // Insert all messages
-    for (const message of conversation.messages) {
+    for (const message of orderedByTime(conversation.messages)) {
       if (!validateMessage(message)) {
         console.warn("Skipping invalid message in conversation creation");
         continue;
@@ -136,10 +136,9 @@ export async function createConversation(
     return conversation;
   } catch (error) {
     console.error("Failed to create conversation:", error);
-    // Rollback: delete conversation if message insertion failed
-    await db
-      .execute("DELETE FROM conversations WHERE id = ?", [conversation.id])
-      .catch(() => {});
+    // No rollback delete here: the same id can be created concurrently from
+    // another window, and this catch also fires on a UNIQUE violation — which
+    // would wipe the conversation the other window had just written.
     throw error;
   }
 }
@@ -272,63 +271,45 @@ export async function updateConversation(
       throw new Error("Conversation not found");
     }
 
-    // Get existing messages for backup
-    const existingMessages = await db.select<DbMessage[]>(
-      "SELECT * FROM messages WHERE conversation_id = ?",
-      [conversation.id]
-    );
-
-    // Delete existing messages
-    await db.execute("DELETE FROM messages WHERE conversation_id = ?", [
-      conversation.id,
-    ]);
-
-    // Insert updated messages
-    try {
-      for (const message of conversation.messages) {
-        if (!validateMessage(message)) {
-          console.warn("Skipping invalid message in conversation update");
-          continue;
-        }
-
-        const attachedFilesJson = message.attachedFiles
-          ? JSON.stringify(message.attachedFiles)
-          : null;
-
-        await db.execute(
-          "INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES (?, ?, ?, ?, ?, ?)",
-          [
-            message.id,
-            conversation.id,
-            message.role,
-            message.content,
-            message.timestamp,
-            attachedFilesJson,
-          ]
-        );
+    // The new rows go in before the old ones come out. The plugin offers no
+    // transaction across IPC calls, and deleting first left the conversation
+    // empty — every message gone — if the app exited in between.
+    const keptIds: string[] = [];
+    for (const message of orderedByTime(conversation.messages)) {
+      if (!validateMessage(message)) {
+        console.warn("Skipping invalid message in conversation update");
+        continue;
       }
-    } catch (messageError) {
-      // Rollback: restore original messages
-      console.error(
-        "Failed to insert new messages, restoring backup:",
-        messageError
+
+      const attachedFilesJson = message.attachedFiles
+        ? JSON.stringify(message.attachedFiles)
+        : null;
+
+      await db.execute(
+        "INSERT OR REPLACE INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+          message.id,
+          conversation.id,
+          message.role,
+          message.content,
+          message.timestamp,
+          attachedFilesJson,
+        ]
       );
-      for (const msg of existingMessages) {
-        await db
-          .execute(
-            "INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-              msg.id,
-              msg.conversation_id,
-              msg.role,
-              msg.content,
-              msg.timestamp,
-              msg.attached_files,
-            ]
-          )
-          .catch(() => {});
-      }
-      throw messageError;
+      keptIds.push(message.id);
+    }
+
+    if (keptIds.length === 0) {
+      await db.execute("DELETE FROM messages WHERE conversation_id = ?", [
+        conversation.id,
+      ]);
+    } else {
+      await db.execute(
+        `DELETE FROM messages WHERE conversation_id = ? AND id NOT IN (${keptIds
+          .map(() => "?")
+          .join(", ")})`,
+        [conversation.id, ...keptIds]
+      );
     }
 
     return conversation;
@@ -336,6 +317,16 @@ export async function updateConversation(
     console.error("Failed to update conversation:", error);
     throw error;
   }
+}
+
+/**
+ * Oldest first: the messages table stamps `conversations.updated_at` for every
+ * inserted row, so the last row decides the value. Newest-first input left
+ * conversations looking older than their newest message, and retention then
+ * purged a chat that was in active use.
+ */
+function orderedByTime<T extends { timestamp: number }>(messages: T[]): T[] {
+  return [...messages].sort((a, b) => a.timestamp - b.timestamp);
 }
 
 /**

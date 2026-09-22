@@ -542,7 +542,16 @@ pub struct SttReadiness {
 /// build — so the UI needs a first-class way to tell the user what is missing
 /// instead of showing a silent "offline" badge.
 #[tauri::command]
-pub fn stt_readiness() -> SttReadiness {
+pub async fn stt_readiness() -> SttReadiness {
+    // `is_running` probes real sockets with a timeout, and a synchronous command
+    // runs on the main thread: the window froze for up to a second every time the
+    // speech panel asked. Same answer, off the UI thread.
+    tauri::async_runtime::spawn_blocking(stt_readiness_blocking)
+        .await
+        .unwrap_or_else(|_| stt_readiness_blocking())
+}
+
+fn stt_readiness_blocking() -> SttReadiness {
     let paths = crate::settings::resolved_paths();
     let model_path = find_model_path();
     let engine_running = is_running();
@@ -570,14 +579,24 @@ pub fn stt_readiness() -> SttReadiness {
 
 /// Status for the frontend.
 #[tauri::command]
-pub fn handy_server_status() -> bool {
-    is_running()
+pub async fn handy_server_status() -> bool {
+    tauri::async_runtime::spawn_blocking(is_running)
+        .await
+        .unwrap_or(false)
 }
 
 /// Detailed status for the frontend: whether the service that the renderer will
 /// actually use is up, plus the model it reports on `/health`.
 #[tauri::command]
-pub fn handy_server_status_detailed() -> serde_json::Value {
+pub async fn handy_server_status_detailed() -> serde_json::Value {
+    // Polled by the renderer; each call walks the port range with a timeout per
+    // port, so it must not sit on the main thread.
+    tauri::async_runtime::spawn_blocking(handy_server_status_detailed_blocking)
+        .await
+        .unwrap_or_else(|_| serde_json::json!({ "online": false, "model": "" }))
+}
+
+fn handy_server_status_detailed_blocking() -> serde_json::Value {
     let Some(port) = serving_port() else {
         return serde_json::json!({ "online": false, "model": "" });
     };

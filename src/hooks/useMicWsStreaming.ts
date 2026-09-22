@@ -9,7 +9,7 @@
  */
 
 import { useCallback, useRef } from "react";
-import { getAsrBaseUrl } from "@/lib/asr-discovery";
+import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
 import { getResponseSettings } from "@/lib";
 import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
 const MIC_WS_RECONNECT_MS = 400;
@@ -29,7 +29,13 @@ export function useMicWsStreaming({
   const micWsStoppedByUsRef = useRef(false);
   const micWsConnectRef = useRef<() => void>(() => {});
 
+  const micWsFinalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const micWsClose = useCallback(() => {
+    if (micWsFinalizeTimerRef.current !== null) {
+      clearTimeout(micWsFinalizeTimerRef.current);
+      micWsFinalizeTimerRef.current = null;
+    }
     const ws = micWsRef.current;
     micWsRef.current = null;
     if (
@@ -128,6 +134,8 @@ export function useMicWsStreaming({
           scheduleMicWsReconnect();
         };
         ws.onerror = () => {
+          // A refused connection means the cached base URL is stale.
+          resetAsrBaseUrlCache();
           try {
             ws.close();
           } catch (err) {
@@ -151,7 +159,15 @@ export function useMicWsStreaming({
         // connection already dying - fall through to close
       }
       // Give the server a moment to flush the 'final' event, then close.
-      setTimeout(() => micWsClose(), 400);
+      // Kept in a ref: the user can start the next utterance inside these 400 ms,
+      // and an orphaned timer then closed the socket that had just been opened.
+      if (micWsFinalizeTimerRef.current !== null) {
+        clearTimeout(micWsFinalizeTimerRef.current);
+      }
+      micWsFinalizeTimerRef.current = setTimeout(() => {
+        micWsFinalizeTimerRef.current = null;
+        micWsClose();
+      }, 400);
     } else {
       micWsClose();
     }

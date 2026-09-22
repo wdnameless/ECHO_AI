@@ -102,7 +102,12 @@ export function useSystemAudio() {
   // ended it, stays the assembler's job: it flushes on silence gaps, so a
   // fragmented utterance is answered once, as one question.
   const isAIProcessingRef = useRef(false);
-  const lastInterviewerQuestionRef = useRef<string | null>(null);
+  /** Newest text the assembler produced, with its arrival time. */
+  const lastInterviewerQuestionRef = useRef<{ text: string; at: number } | null>(null);
+  /** Newest finalised interviewer segment, so the manual button can pick the newer text. */
+  const lastInterviewerSegmentRef = useRef<{ text: string; at: number } | null>(null);
+  /** What the assembler armed the manager with for the utterance being handled. */
+  const assembledForUtteranceRef = useRef<string | null>(null);
 
   const autoAskManagerRef = useRef<AutoAskManager | null>(null);
   if (!autoAskManagerRef.current) {
@@ -137,7 +142,8 @@ export function useSystemAudio() {
       // The manual button answers this question; in auto mode the manager holds
       // it for the silence window and drops it when the mode changes or speech
       // resumes.
-      lastInterviewerQuestionRef.current = question;
+      lastInterviewerQuestionRef.current = { text: question, at: Date.now() };
+      assembledForUtteranceRef.current = question;
       autoAskManagerRef.current?.onFinalizedTranscript(question);
     },
     []
@@ -167,8 +173,16 @@ export function useSystemAudio() {
    */
   const handleBatchInterviewerTranscription = useCallback(
     async (transcription: string) => {
+      assembledForUtteranceRef.current = null;
+      lastInterviewerSegmentRef.current = { text: transcription, at: Date.now() };
       await handleInterviewerTranscription(transcription);
-      autoAskManagerRef.current?.onFinalizedTranscript(transcription);
+      // The assembler may have merged this fragment with earlier ones and
+      // armed the manager with the full question; only when it did not is the
+      // raw segment the best text available. Without this check the tail
+      // fragment overwrote the merged question and the AI answered a fragment.
+      if (assembledForUtteranceRef.current === null) {
+        autoAskManagerRef.current?.onFinalizedTranscript(transcription);
+      }
     },
     [handleInterviewerTranscription]
   );
@@ -176,6 +190,19 @@ export function useSystemAudio() {
   // 4. System Audio & Microphone Capture Subsystem
   const handleAbortAIRef = useRef<() => void>(() => {});
   const handleSetIsAIProcessingRef = useRef<(v: boolean) => void>(() => {});
+
+  /**
+   * These two end up in the capture hook's effect dependencies, so they have to
+   * keep their identity: an inline arrow made every render tear the Tauri event
+   * listeners down and re-register them, dropping the speech events that arrived
+   * in between.
+   */
+  const handleInterviewerSpeechActivity = useCallback(() => {
+    autoAskManagerRef.current?.cancel();
+  }, []);
+  const handleSetIsAIProcessing = useCallback((value: boolean) => {
+    handleSetIsAIProcessingRef.current(value);
+  }, []);
 
   const {
     capturing,
@@ -214,10 +241,10 @@ export function useSystemAudio() {
     allSttProviders,
     appendLiveSegment,
     onInterviewerTranscription: handleBatchInterviewerTranscription,
-    onInterviewerSpeechActivity: () => autoAskManagerRef.current?.cancel(),
+    onInterviewerSpeechActivity: handleInterviewerSpeechActivity,
     setMyLastTranscription,
     setTheirLastTranscription,
-    setIsAIProcessing: (v) => handleSetIsAIProcessingRef.current(v),
+    setIsAIProcessing: handleSetIsAIProcessing,
     setError,
   });
 
@@ -418,11 +445,15 @@ export function useSystemAudio() {
       .reverse()
       .find((s) => s.source === "them" && !s.partial && s.text.trim());
 
-    // Prefer what the assembler produced; fall back to the last finalised line.
+    // Whichever text is newer decides: a question the assembler merged earlier
+    // must not outrank the line the interviewer has just finished, and a fresh
+    // merged question must not be replaced by its own tail fragment.
+    const assembled = lastInterviewerQuestionRef.current;
+    const segment = lastInterviewerSegmentRef.current;
+    const freshest =
+      segment && (!assembled || segment.at >= assembled.at) ? segment.text : null;
     const textToAnswer =
-      lastInterviewerQuestionRef.current?.trim() ||
-      lastThemSegment?.text ||
-      theirLastTranscription;
+      (freshest || assembled?.text || lastThemSegment?.text || theirLastTranscription || "").trim();
     if (!textToAnswer || !textToAnswer.trim()) return;
     autoAskManagerRef.current?.cancel();
 

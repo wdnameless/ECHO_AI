@@ -231,7 +231,10 @@ pub async fn activate_license_api(
 
     // Generate UUID for instance name
     let instance_name = Uuid::new_v4().to_string();
-    let machine_id: String = app.machine_uid().get_machine_uid().unwrap().id.unwrap();
+    let machine_id: String = match app.machine_uid().get_machine_uid() {
+        Ok(id) => id.id.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
     let app_version: String = env!("CARGO_PKG_VERSION").to_string();
     // Prepare activation request
     let activation_request = ActivationRequest {
@@ -289,7 +292,10 @@ pub async fn deactivate_license_api(app: AppHandle) -> Result<ActivationResponse
     // Get payment endpoint and API access key from environment
     let payment_endpoint = get_payment_endpoint()?;
     let api_access_key = get_api_access_key()?;
-    let machine_id: String = app.machine_uid().get_machine_uid().unwrap().id.unwrap();
+    let machine_id: String = match app.machine_uid().get_machine_uid() {
+        Ok(id) => id.id.unwrap_or_default(),
+        Err(_) => String::new(),
+    };
     let (license_key, instance_id, _) = get_stored_credentials(&app).await?;
     let app_version: String = env!("CARGO_PKG_VERSION").to_string();
     let deactivation_request = ActivationRequest {
@@ -352,13 +358,16 @@ pub async fn validate_license_api(_app: AppHandle) -> Result<ValidateResponse, S
 
 #[tauri::command]
 pub fn mask_license_key_cmd(license_key: String) -> String {
-    if license_key.len() <= 8 {
-        return "*".repeat(license_key.len());
+    if license_key.chars().count() <= 8 {
+        return "*".repeat(license_key.chars().count());
     }
 
-    let first_four = &license_key[..4];
-    let last_four = &license_key[license_key.len() - 4..];
-    let middle_stars = "*".repeat(license_key.len() - 8);
+    // Counted in characters, not bytes: slicing a key that contains any
+    // non-ASCII character on a byte offset panics.
+    let chars: Vec<char> = license_key.chars().collect();
+    let first_four: String = chars[..4].iter().collect();
+    let last_four: String = chars[chars.len() - 4..].iter().collect();
+    let middle_stars = "*".repeat(chars.len() - 8);
 
     format!("{}{}{}", first_four, middle_stars, last_four)
 }

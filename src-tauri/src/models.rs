@@ -708,19 +708,22 @@ pub async fn download_model(
 /// Deletes a model file by name, refusing paths outside the models directory.
 #[tauri::command]
 pub fn delete_model(file_name: String) -> Result<Vec<InstalledModel>, String> {
-    delete(&file_name)?;
-
-    // Clearing the selection keeps the engine from being pointed at a file
-    // that no longer exists.
     let mut settings = settings::load_settings();
-    if settings
+    let is_active = settings
         .selected_model
         .as_deref()
-        .is_some_and(|p| p.ends_with(&file_name))
-    {
+        .is_some_and(|p| p.ends_with(&file_name));
+
+    // Windows refuses to unlink a file that is still open, and the engine holds
+    // the active model — so let go of it first, and clear the selection before
+    // the file is gone rather than after.
+    if is_active {
+        crate::handy_server::stop_server();
         settings.selected_model = None;
         settings::save_settings(&settings)?;
     }
+
+    delete(&file_name)?;
 
     Ok(list_installed())
 }

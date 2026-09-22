@@ -5,7 +5,7 @@ import {
 } from "./common.function";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
-import { getAsrBaseUrl } from "@/lib/asr-discovery";
+import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
 
 import { TYPE_PROVIDER } from "@/types";
 import curl2Json from "@bany/curl-to-json";
@@ -375,6 +375,9 @@ export async function fetchSTT(params: STTParams): Promise<string> {
       // but the cause is on this machine and the user can act on it: either no
       // speech model is configured, or the sidecar never came up.
       if (isLocalAsr && unreachable) {
+        // The engine may have come back on another port in its range; without
+        // this, the cached base keeps every later request on the dead one.
+        resetAsrBaseUrlCache();
         const explanation = await describeLocalAsrFailure();
         if (explanation) throw new Error(explanation);
       }
