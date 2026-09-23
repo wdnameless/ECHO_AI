@@ -16,6 +16,12 @@ import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
 import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
 const MIC_WS_RECONNECT_MS = 400;
 
+/**
+ * Maximum number of PCM frames buffered while WebSocket is connecting or waiting
+ * for stream lock. At 250ms per frame, 24 frames = ~6 seconds of speech preserved.
+ */
+export const MAX_MIC_BUFFERED_FRAMES = 24;
+
 export interface UseMicWsStreamingProps {
   capturingRef: React.MutableRefObject<boolean>;
   onPartialTranscript: (text: string) => void;
@@ -27,6 +33,7 @@ export function useMicWsStreaming({
 }: UseMicWsStreamingProps) {
   const micWsRef = useRef<WebSocket | null>(null);
   const micWsWantRef = useRef(false);
+  const micFrameBufferRef = useRef<ArrayBuffer[]>([]);
   const micWsReconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const micWsStoppedByUsRef = useRef(false);
   const micWsConnectRef = useRef<() => void>(() => {});
@@ -58,7 +65,11 @@ export function useMicWsStreaming({
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(pcm);
     } else if (capturingRef.current && micWsWantRef.current) {
-      recordLostSegment();
+      if (micFrameBufferRef.current.length >= MAX_MIC_BUFFERED_FRAMES) {
+        micFrameBufferRef.current.shift();
+        recordLostSegment();
+      }
+      micFrameBufferRef.current.push(pcm);
     }
   }, [capturingRef]);
 
@@ -116,6 +127,14 @@ export function useMicWsStreaming({
           ws.send(JSON.stringify({ type: "config", language: lang }));
           micWsRef.current = ws;
           micWsStoppedByUsRef.current = false;
+
+          // Flush buffered frames queued while socket was connecting or model was locked
+          while (micFrameBufferRef.current.length > 0) {
+            const buffered = micFrameBufferRef.current.shift();
+            if (buffered && ws.readyState === WebSocket.OPEN) {
+              ws.send(buffered);
+            }
+          }
         };
         ws.onmessage = (ev) => {
           // Streaming partial from the sidecar: show immediately. Status and
@@ -144,6 +163,7 @@ export function useMicWsStreaming({
   }, [capturingRef, micWsClose, scheduleMicWsReconnect, onPartialTranscript]);
 
   const micWsFinalizeAndClose = useCallback(() => {
+    micFrameBufferRef.current = [];
     const ws = micWsRef.current;
     micWsStoppedByUsRef.current = true;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -170,6 +190,7 @@ export function useMicWsStreaming({
 
   const cleanupMicWs = useCallback(() => {
     micWsWantRef.current = false;
+    micFrameBufferRef.current = [];
     if (micWsReconnectTimerRef.current) {
       clearTimeout(micWsReconnectTimerRef.current);
       micWsReconnectTimerRef.current = null;

@@ -98,6 +98,8 @@ export async function createConversation(
   const db = await getDatabase();
 
   try {
+    await db.execute("BEGIN TRANSACTION");
+
     // Insert conversation
     await db.execute(
       "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
@@ -109,32 +111,38 @@ export async function createConversation(
       ]
     );
 
-    // Insert all messages
-    for (const message of orderedByTime(conversation.messages)) {
-      if (!validateMessage(message)) {
-        console.warn("Skipping invalid message in conversation creation");
-        continue;
+    // Batch insert all valid messages
+    const validMessages = orderedByTime(conversation.messages).filter(validateMessage);
+    if (validMessages.length > 0) {
+      const BATCH_SIZE = 50;
+      for (let i = 0; i < validMessages.length; i += BATCH_SIZE) {
+        const batch = validMessages.slice(i, i + BATCH_SIZE);
+        const placeholders = batch.map(() => "(?, ?, ?, ?, ?, ?)").join(", ");
+        const params: unknown[] = [];
+        for (const message of batch) {
+          const attachedFilesJson = message.attachedFiles
+            ? JSON.stringify(message.attachedFiles)
+            : null;
+          params.push(
+            message.id,
+            conversation.id,
+            message.role,
+            message.content,
+            message.timestamp,
+            attachedFilesJson
+          );
+        }
+        await db.execute(
+          `INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES ${placeholders}`,
+          params
+        );
       }
-
-      const attachedFilesJson = message.attachedFiles
-        ? JSON.stringify(message.attachedFiles)
-        : null;
-
-      await db.execute(
-        "INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES (?, ?, ?, ?, ?, ?)",
-        [
-          message.id,
-          conversation.id,
-          message.role,
-          message.content,
-          message.timestamp,
-          attachedFilesJson,
-        ]
-      );
     }
 
+    await db.execute("COMMIT");
     return conversation;
   } catch (error) {
+    await db.execute("ROLLBACK").catch(() => {});
     console.error("Failed to create conversation:", error);
     // No rollback delete here: the same id can be created concurrently from
     // another window, and this catch also fires on a UNIQUE violation — which
@@ -261,6 +269,8 @@ export async function updateConversation(
   const db = await getDatabase();
 
   try {
+    await db.execute("BEGIN TRANSACTION");
+
     // Update conversation
     const updateResult = await db.execute(
       "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
@@ -268,35 +278,39 @@ export async function updateConversation(
     );
 
     if (updateResult.rowsAffected === 0) {
+      await db.execute("ROLLBACK").catch(() => {});
       throw new Error("Conversation not found");
     }
 
-    // The new rows go in before the old ones come out. The plugin offers no
-    // transaction across IPC calls, and deleting first left the conversation
-    // empty — every message gone — if the app exited in between.
+    // Batch insert/replace valid messages
+    const validMessages = orderedByTime(conversation.messages).filter(validateMessage);
     const keptIds: string[] = [];
-    for (const message of orderedByTime(conversation.messages)) {
-      if (!validateMessage(message)) {
-        console.warn("Skipping invalid message in conversation update");
-        continue;
+
+    if (validMessages.length > 0) {
+      const BATCH_SIZE = 50;
+      for (let i = 0; i < validMessages.length; i += BATCH_SIZE) {
+        const batch = validMessages.slice(i, i + BATCH_SIZE);
+        const placeholders = batch.map(() => "(?, ?, ?, ?, ?, ?)").join(", ");
+        const params: unknown[] = [];
+        for (const message of batch) {
+          const attachedFilesJson = message.attachedFiles
+            ? JSON.stringify(message.attachedFiles)
+            : null;
+          params.push(
+            message.id,
+            conversation.id,
+            message.role,
+            message.content,
+            message.timestamp,
+            attachedFilesJson
+          );
+          keptIds.push(message.id);
+        }
+        await db.execute(
+          `INSERT OR REPLACE INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES ${placeholders}`,
+          params
+        );
       }
-
-      const attachedFilesJson = message.attachedFiles
-        ? JSON.stringify(message.attachedFiles)
-        : null;
-
-      await db.execute(
-        "INSERT OR REPLACE INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES (?, ?, ?, ?, ?, ?)",
-        [
-          message.id,
-          conversation.id,
-          message.role,
-          message.content,
-          message.timestamp,
-          attachedFilesJson,
-        ]
-      );
-      keptIds.push(message.id);
     }
 
     if (keptIds.length === 0) {
@@ -304,16 +318,21 @@ export async function updateConversation(
         conversation.id,
       ]);
     } else {
-      await db.execute(
-        `DELETE FROM messages WHERE conversation_id = ? AND id NOT IN (${keptIds
-          .map(() => "?")
-          .join(", ")})`,
-        [conversation.id, ...keptIds]
-      );
+      const BATCH_SIZE = 100;
+      for (let i = 0; i < keptIds.length; i += BATCH_SIZE) {
+        const chunk = keptIds.slice(i, i + BATCH_SIZE);
+        const placeholders = chunk.map(() => "?").join(", ");
+        await db.execute(
+          `DELETE FROM messages WHERE conversation_id = ? AND id NOT IN (${placeholders})`,
+          [conversation.id, ...chunk]
+        );
+      }
     }
 
+    await db.execute("COMMIT");
     return conversation;
   } catch (error) {
+    await db.execute("ROLLBACK").catch(() => {});
     console.error("Failed to update conversation:", error);
     throw error;
   }

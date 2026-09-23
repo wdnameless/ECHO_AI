@@ -57,17 +57,128 @@ pub struct StorageResult {
     selected_pluely_model: Option<String>,
 }
 
+#[cfg(target_os = "windows")]
+mod dpapi {
+    use windows::Win32::Foundation::LocalFree;
+    use windows::Win32::Security::Cryptography::{
+        CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
+    };
+
+    const MAGIC_HEADER: &[u8] = b"DPAPI\x01";
+
+    pub fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
+        let data_in = CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr() as *mut u8,
+        };
+        let mut data_out = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
+
+        unsafe {
+            CryptProtectData(
+                &data_in,
+                None,
+                None,
+                None,
+                None,
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut data_out,
+            )
+            .map_err(|e| format!("CryptProtectData failed: {}", e))?;
+
+            if data_out.pbData.is_null() {
+                return Err("CryptProtectData produced null output".to_string());
+            }
+
+            let slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
+            let mut result = Vec::with_capacity(MAGIC_HEADER.len() + slice.len());
+            result.extend_from_slice(MAGIC_HEADER);
+            result.extend_from_slice(slice);
+
+            let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(data_out.pbData as *mut _)));
+            Ok(result)
+        }
+    }
+
+    pub fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
+        if !data.starts_with(MAGIC_HEADER) {
+            // Legacy / unencrypted plaintext JSON format: return raw bytes for serde_json
+            return Ok(data.to_vec());
+        }
+
+        let encrypted = &data[MAGIC_HEADER.len()..];
+        let data_in = CRYPT_INTEGER_BLOB {
+            cbData: encrypted.len() as u32,
+            pbData: encrypted.as_ptr() as *mut u8,
+        };
+        let mut data_out = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
+
+        unsafe {
+            CryptUnprotectData(
+                &data_in,
+                None,
+                None,
+                None,
+                None,
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &mut data_out,
+            )
+            .map_err(|e| format!("CryptUnprotectData failed: {}", e))?;
+
+            if data_out.pbData.is_null() {
+                return Err("CryptUnprotectData produced null output".to_string());
+            }
+
+            let slice = std::slice::from_raw_parts(data_out.pbData, data_out.cbData as usize);
+            let result = slice.to_vec();
+
+            let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(data_out.pbData as *mut _)));
+            Ok(result)
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod dpapi {
+    pub fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(data.to_vec())
+    }
+
+    pub fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
+        Ok(data.to_vec())
+    }
+}
+
+fn load_secure_storage(storage_path: &std::path::Path) -> Result<SecureStorage, String> {
+    if !storage_path.exists() {
+        return Ok(SecureStorage::default());
+    }
+
+    let raw = fs::read(storage_path)
+        .map_err(|e| format!("Failed to read storage file: {}", e))?;
+    let decrypted = dpapi::unprotect(&raw)?;
+    serde_json::from_slice(&decrypted)
+        .map_err(|e| format!("Failed to parse storage file: {}", e))
+}
+
+fn save_secure_storage(storage_path: &std::path::Path, storage: &SecureStorage) -> Result<(), String> {
+    let content = serde_json::to_vec(storage)
+        .map_err(|e| format!("Failed to serialize storage: {}", e))?;
+    let protected = dpapi::protect(&content)?;
+    fs::write(storage_path, protected)
+        .map_err(|e| format!("Failed to write storage file: {}", e))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn secure_storage_save(app: AppHandle, items: Vec<StorageItem>) -> Result<(), String> {
     let storage_path = get_secure_storage_path(&app)?;
-
-    let mut storage = if storage_path.exists() {
-        let content = fs::read_to_string(&storage_path)
-            .map_err(|e| format!("Failed to read storage file: {}", e))?;
-        serde_json::from_str(&content).unwrap_or_default()
-    } else {
-        SecureStorage::default()
-    };
+    let mut storage = load_secure_storage(&storage_path)?;
 
     for item in items {
         match item.key.as_str() {
@@ -80,32 +191,13 @@ pub async fn secure_storage_save(app: AppHandle, items: Vec<StorageItem>) -> Res
         }
     }
 
-    let content = serde_json::to_string(&storage)
-        .map_err(|e| format!("Failed to serialize storage: {}", e))?;
-
-    fs::write(&storage_path, content)
-        .map_err(|e| format!("Failed to write storage file: {}", e))?;
-
-    Ok(())
+    save_secure_storage(&storage_path, &storage)
 }
 
 #[tauri::command]
 pub async fn secure_storage_get(app: AppHandle) -> Result<StorageResult, String> {
     let storage_path = get_secure_storage_path(&app)?;
-
-    if !storage_path.exists() {
-        return Ok(StorageResult {
-            license_key: None,
-            instance_id: None,
-            selected_pluely_model: None,
-        });
-    }
-
-    let content = fs::read_to_string(&storage_path)
-        .map_err(|e| format!("Failed to read storage file: {}", e))?;
-
-    let storage: SecureStorage = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse storage file: {}", e))?;
+    let storage = load_secure_storage(&storage_path)?;
 
     Ok(StorageResult {
         license_key: storage.license_key,
@@ -122,16 +214,7 @@ pub async fn secure_storage_get_item(
     key: String,
 ) -> Result<Option<String>, String> {
     let storage_path = get_secure_storage_path(&app)?;
-
-    if !storage_path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&storage_path)
-        .map_err(|e| format!("Failed to read storage file: {}", e))?;
-
-    let storage: SecureStorage = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse storage file: {}", e))?;
+    let storage = load_secure_storage(&storage_path)?;
 
     let value = match key.as_str() {
         "pluely_license_key" => storage.license_key,
@@ -146,16 +229,11 @@ pub async fn secure_storage_get_item(
 #[tauri::command]
 pub async fn secure_storage_remove(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
     let storage_path = get_secure_storage_path(&app)?;
-
     if !storage_path.exists() {
-        return Ok(()); // Nothing to remove
+        return Ok(());
     }
 
-    let content = fs::read_to_string(&storage_path)
-        .map_err(|e| format!("Failed to read storage file: {}", e))?;
-
-    let mut storage: SecureStorage = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse storage file: {}", e))?;
+    let mut storage = load_secure_storage(&storage_path)?;
 
     for key in keys {
         match key.as_str() {
@@ -168,13 +246,7 @@ pub async fn secure_storage_remove(app: AppHandle, keys: Vec<String>) -> Result<
         }
     }
 
-    let content = serde_json::to_string(&storage)
-        .map_err(|e| format!("Failed to serialize storage: {}", e))?;
-
-    fs::write(&storage_path, content)
-        .map_err(|e| format!("Failed to write storage file: {}", e))?;
-
-    Ok(())
+    save_secure_storage(&storage_path, &storage)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -380,4 +452,27 @@ pub async fn get_checkout_url() -> Result<CheckoutResponse, String> {
         checkout_url: None,
         error: Some("Payment checkout is currently unavailable".to_string()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dpapi_roundtrip() {
+        let plaintext = b"{\"api_key\":\"sk-test-secret-12345\"}";
+        let protected = dpapi::protect(plaintext).expect("protect failed");
+        #[cfg(target_os = "windows")]
+        assert!(protected.starts_with(b"DPAPI\x01"));
+
+        let decrypted = dpapi::unprotect(&protected).expect("unprotect failed");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_dpapi_legacy_passthrough() {
+        let legacy_plaintext = b"{\"license_key\":\"legacy-key\"}";
+        let result = dpapi::unprotect(legacy_plaintext).expect("legacy unprotect failed");
+        assert_eq!(result, legacy_plaintext);
+    }
 }

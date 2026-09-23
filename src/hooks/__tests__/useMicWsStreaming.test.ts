@@ -454,4 +454,49 @@ describe("useMicWsStreaming", () => {
     });
     expect(MockWebSocket.instances).toHaveLength(1);
   });
+
+  it("buffers audio frames before socket open and flushes them on open", async () => {
+    const onPartialTranscript = vi.fn();
+    const capturingRef = { current: true };
+
+    const { result } = renderHook(() =>
+      useMicWsStreaming({
+        capturingRef,
+        onPartialTranscript,
+      })
+    );
+
+    act(() => {
+      result.current.micWsWantRef.current = true;
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Feed 3 frames while socket is still CONNECTING
+    const frame1 = new Uint8Array([1, 2, 3]).buffer;
+    const frame2 = new Uint8Array([4, 5, 6]).buffer;
+    const frame3 = new Uint8Array([7, 8, 9]).buffer;
+
+    act(() => {
+      result.current.micFeedFrame(frame1);
+      result.current.micFeedFrame(frame2);
+      result.current.micFeedFrame(frame3);
+    });
+
+    const ws = MockWebSocket.instances[0];
+    expect(ws.sentData).toHaveLength(0);
+
+    // Now trigger open: config is sent first, followed by all 3 buffered frames in order
+    act(() => {
+      ws.triggerOpen();
+    });
+
+    expect(ws.sentData).toHaveLength(4);
+    expect(ws.sentData[0]).toBe(JSON.stringify({ type: "config", language: "ru" }));
+    expect(ws.sentData[1]).toBe(frame1);
+    expect(ws.sentData[2]).toBe(frame2);
+    expect(ws.sentData[3]).toBe(frame3);
+  });
 });
