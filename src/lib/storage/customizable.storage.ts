@@ -25,7 +25,7 @@ export const DEFAULT_CUSTOMIZABLE_STATE: CustomizableState = {
   alwaysOnTop: { isEnabled: false },
   autostart: { isEnabled: true },
   cursor: { type: "invisible" },
-  stealth: { isEnabled: true },
+  stealth: { isEnabled: false },
 };
 
 /**

@@ -8,7 +8,7 @@ pub fn apply_stealth_to_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE,
-        WDA_EXCLUDEFROMCAPTURE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
 
     if let Ok(hwnd_ptr) = window.hwnd() {
@@ -19,8 +19,8 @@ pub fn apply_stealth_to_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<
             let new_ex_style = ex_style | (WS_EX_TOOLWINDOW.0 as isize) | (WS_EX_NOACTIVATE.0 as isize);
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex_style);
 
-            // (3) SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)
-            let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
+            // Stealth display affinity is off by default, controlled via toggle
+            let _ = SetWindowDisplayAffinity(hwnd, WDA_NONE);
         }
     }
     Ok(())
@@ -319,7 +319,7 @@ pub fn create_dashboard_window<R: Runtime>(
         .min_inner_size(800.0, 600.0)
         .hidden_title(true)
         .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .content_protected(true)
+        .content_protected(false)
         .visible(false)
         .traffic_light_position(LogicalPosition::new(14.0, 18.0));
 
@@ -331,7 +331,7 @@ pub fn create_dashboard_window<R: Runtime>(
         .inner_size(1020.0, 720.0)
         .min_inner_size(880.0, 600.0)
         .visible(false)
-        .content_protected(true);
+        .content_protected(false);
 
     let window = base_builder.build()?;
     setup_dashboard_close_handler(&window);
