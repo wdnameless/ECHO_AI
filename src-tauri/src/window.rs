@@ -338,16 +338,8 @@ pub fn create_dashboard_window<R: Runtime>(
     // The settings window is a normal interactive window: it must NOT carry the
     // overlay's stealth flags. `WS_EX_NOACTIVATE` in particular makes it unable to
     // take focus, which reads to the user as "buttons do not respond".
-    let start_minimized = crate::settings::load_settings().start_minimized;
-    if start_minimized {
-        let _ = window.hide();
-        guard_settings_visibility(app.clone(), window.clone());
-    } else {
-        SETTINGS_REQUESTED.store(true, Ordering::SeqCst);
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
+    let _ = window.hide();
+    guard_settings_visibility(app.clone(), window.clone());
     Ok(window)
 }
 
@@ -466,17 +458,6 @@ pub fn show_dashboard_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), Strin
             .map_err(|e| format!("Failed to create dashboard window: {}", e))?,
     };
 
-    #[cfg(target_os = "windows")]
-    {
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOW};
-        if let Ok(hwnd_ptr) = dashboard_window.hwnd() {
-            let hwnd = HWND(hwnd_ptr.0 as *mut _);
-            unsafe {
-                let _ = ShowWindow(hwnd, SW_SHOW);
-            }
-        }
-    }
 
     dashboard_window
         .show()

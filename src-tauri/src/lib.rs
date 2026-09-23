@@ -70,13 +70,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // Focus the main window and show dashboard window if already running
+            // Focus the main window or settings window if already running
             if let Some(main_win) = app.get_webview_window("main") {
                 let _ = main_win.show();
-                let _ = main_win.unminimize();
                 let _ = main_win.set_focus();
             }
-            let _ = window::show_dashboard_window(app);
         }))
         .plugin(tauri_plugin_keychain::init())
         .plugin(tauri_plugin_shell::init()) // Add shell plugin
@@ -239,8 +237,6 @@ pub fn run() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.hide();
                 }
-            } else {
-                let _ = window::show_dashboard_window(app.handle());
             }
             #[cfg(target_os = "macos")]
             init(app.app_handle());

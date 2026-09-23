@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ZapIcon } from "lucide-react";
-import { Label, Switch } from "@/components";
+import { Label, Switch } from "@/components/ui";
 import { getStartMinimized, setStartMinimized } from "@/lib/storage/app-paths";
 
 export const StartMinimizedToggle = () => {

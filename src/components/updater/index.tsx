@@ -13,8 +13,8 @@ import {
   PopoverContent,
   PopoverTrigger,
   ScrollArea,
-  Markdown,
-} from "@/components";
+} from "@/components/ui";
+import { Markdown } from "@/components/Markdown";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useWindowResize } from "@/hooks";
