@@ -236,6 +236,9 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       onInterviewerSpeechActivity?.();
       setTheirLastTranscription(text);
       appendLiveSegment("them", text);
+      if (text.trim()) {
+        void onInterviewerTranscription(text);
+      }
     },
   });
   const themWsRef = useRef(themWs);

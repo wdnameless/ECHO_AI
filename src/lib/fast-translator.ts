@@ -51,74 +51,53 @@ export async function fastTranslate(
     lastSent.clear();
   }
 
-  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${tl}&dt=t&q=${encodeURIComponent(
-    trimmed
-  )}`;
-
-  // 1) Local proxy (если сайдкар отдаёт /translate — самый надёжный путь).
+  let url = "";
   try {
-    const local = await fetch(
-      `http://127.0.0.1:9877/translate?text=${encodeURIComponent(
-        trimmed
-      )}&tl=${tl}`
-    );
-    if (local.ok) {
-      const data = await local.json();
-      if (data?.translation) {
-        cacheSet(cacheKey, data.translation);
-        return data.translation;
-      }
-    }
+    const gtxUrl = new URL("https://translate.googleapis.com/translate_a/single");
+    gtxUrl.searchParams.set("client", "gtx");
+    gtxUrl.searchParams.set("sl", "auto");
+    gtxUrl.searchParams.set("tl", tl);
+    gtxUrl.searchParams.set("dt", "t");
+    gtxUrl.searchParams.set("q", trimmed);
+    url = gtxUrl.toString();
   } catch {
-    /* локальный сервис недоступен — идём дальше */
+    return trimmed;
   }
 
-  // 2) MyMemory — основной провайдер.
-  // Google GTX стабильно отвечает 429 на этом эндпоинте, поэтому порядок
-  // обратный прежнему: сначала сервис, который реально отвечает, иначе
-  // пользователь видел непреобразованный текст.
+  // 1) MyMemory — основной провайдер (быстрый и без 429).
   const memory = await myMemoryTranslate(trimmed, tl);
   if (memory) {
     cacheSet(cacheKey, memory);
     return memory;
   }
 
-  // 3) Google GTX — резерв.
+  // 2) Google GTX — резерв.
   try {
-    // Try Tauri native fetch first, fallback to browser fetch
     let response: Response;
     try {
       response = await tauriFetch(url, {
         method: "GET",
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-        },
+        headers: { "User-Agent": "Mozilla/5.0" },
+        signal: AbortSignal.timeout(2500),
       });
     } catch {
-      response = await fetch(url);
+      return trimmed;
     }
-
     if (!response.ok) {
-      console.warn(`[Translator] ${response.status}, returning original`);
       return trimmed;
     }
 
     const data = await response.json();
-    // Google GTX format: [[["translated text", "source text", ...], ...], ...]
     if (Array.isArray(data) && Array.isArray(data[0])) {
       const translatedParts = data[0]
-        .map((part: any) => (Array.isArray(part) && part[0] ? part[0] : ""))
+        .map((part: unknown) => (Array.isArray(part) && typeof part[0] === "string" ? part[0] : ""))
         .filter(Boolean);
       const result = translatedParts.join("").trim() || trimmed;
-
-      // Store in cache (bounded)
       cacheSet(cacheKey, result);
       return result;
     }
-
     return trimmed;
-  } catch (error) {
-    console.warn("[FastTranslator] Translation failed, returning original:", error);
+  } catch {
     return trimmed;
   }
 }
@@ -137,21 +116,19 @@ async function myMemoryTranslate(
 ): Promise<string | null> {
   try {
     const pair = tl === "ru" ? "en|ru" : "ru|en";
-    const target = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(
-      text.slice(0, 500)
-    )}&langpair=${pair}`;
-
-    // Через Rust-мост, а не из WebView: строгая CSP ограничивает connect-src
-    // локальными адресами, поэтому прямой fetch отсюда был бы заблокирован.
+    const memUrl = new URL("https://api.mymemory.translated.net/get");
+    memUrl.searchParams.set("q", text.slice(0, 500));
+    memUrl.searchParams.set("langpair", pair);
+    const target = memUrl.toString();
     let resp: Response;
     try {
-      resp = await tauriFetch(target);
+      resp = await tauriFetch(target, { signal: AbortSignal.timeout(2000) });
     } catch {
-      resp = await fetch(target);
+      return null;
     }
 
     if (!resp.ok) return null;
-    const data = await resp.json();
+    const data = (await resp.json()) as { responseData?: { translatedText?: string } } | null;
     const t = data?.responseData?.translatedText;
     if (typeof t !== "string" || !t.trim()) return null;
 

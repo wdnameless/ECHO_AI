@@ -35,11 +35,13 @@ export function useThemWsStreaming({
   onFinalTranscript,
 }: UseThemWsStreamingProps) {
   const wsRef = useRef<WebSocket | null>(null);
+  const frameBufferRef = useRef<ArrayBuffer[]>([]);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stoppedByUsRef = useRef(false);
   const producedTextRef = useRef(false);
 
   const close = useCallback(() => {
+    frameBufferRef.current = [];
     const ws = wsRef.current;
     wsRef.current = null;
     releaseStream("them");
@@ -108,6 +110,15 @@ export function useThemWsStreaming({
       ws.send(JSON.stringify({ type: "config", language: lang }));
       wsRef.current = ws;
       stoppedByUsRef.current = false;
+
+      while (frameBufferRef.current.length > 0) {
+        const buffered = frameBufferRef.current.shift();
+        if (buffered && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(buffered);
+          } catch {}
+        }
+      }
     };
     ws.onmessage = (ev) => {
       const hadText = typeof ev.data === "string" && /"text"\s*:/.test(ev.data);
@@ -148,12 +159,17 @@ export function useThemWsStreaming({
       } catch {
         // socket died between the check and the send
       }
+    } else if (capturingRef.current && !stoppedByUsRef.current) {
+      if (frameBufferRef.current.length >= 24) {
+        frameBufferRef.current.shift();
+      }
+      frameBufferRef.current.push(pcm);
     }
-  }, []);
+  }, [capturingRef]);
 
-  /** Asks the server to flush its final text, then closes. */
   const finalizeAndClose = useCallback(() => {
     stoppedByUsRef.current = true;
+    frameBufferRef.current = [];
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {
@@ -162,7 +178,7 @@ export function useThemWsStreaming({
         // connection already dying
       }
       // Let the server flush its final frame before the socket goes away.
-      setTimeout(close, 300);
+      setTimeout(close, 200);
     } else {
       close();
     }

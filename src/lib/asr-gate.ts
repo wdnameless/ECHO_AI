@@ -40,7 +40,7 @@ export function releaseStream(owner: AsrStreamOwner): void {
  */
 export async function withNoStream<T>(
   fn: () => Promise<T>,
-  timeoutMs = 3000
+  timeoutMs = 300
 ): Promise<T> {
   if (activeOwner === null) return fn();
 

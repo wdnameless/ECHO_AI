@@ -97,10 +97,14 @@ fn is_running() -> bool {
 /// location. Prefer the freshest mtime when several exist.
 fn read_bound_asr_port() -> Option<u16> {
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    let resolved = crate::settings::resolved_paths();
+    paths.push(std::path::PathBuf::from(&resolved.root).join("asr-port"));
+    paths.push(std::path::PathBuf::from(&resolved.engine_dir).join("asr-port"));
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             paths.push(dir.join("asr-port"));
             paths.push(dir.join("resources").join("asr-port"));
+            paths.push(dir.join(".echo-ai").join("asr-port"));
         }
     }
     let manifest = env!("CARGO_MANIFEST_DIR");
@@ -397,9 +401,13 @@ fn spawn_pluely_asr() -> bool {
     let log_file = open_sidecar_log_file();
 
     #[cfg(target_os = "windows")]
+    let resolved = crate::settings::resolved_paths();
+    #[cfg(target_os = "windows")]
     let spawn = {
         let port = free_engine_port().unwrap_or(ENGINE_PORT);
+        let _ = std::fs::write(std::path::PathBuf::from(&resolved.root).join("asr-port"), port.to_string());
         let mut cmd = Command::new(&asr_bin);
+        cmd.current_dir(&resolved.engine_dir);
         cmd.arg("--model")
             .arg(&model_path)
             .arg("--port")
