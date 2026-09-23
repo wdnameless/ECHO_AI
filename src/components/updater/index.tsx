@@ -18,7 +18,6 @@ import {
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useWindowResize } from "@/hooks";
-import { PortableUpdateNotice, useIsPortable } from "./PortableUpdateNotice";
 
 type UpdateState =
   | "checking"
@@ -48,8 +47,6 @@ export const Updater = () => {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [manualClose, setManualClose] = useState(false);
 
-  // Portable copies are not updated in place; see PortableUpdateNotice.
-  const isPortable = useIsPortable();
   const { resizeWindow } = useWindowResize();
 
   const checkForUpdates = async () => {
@@ -263,7 +260,6 @@ export const Updater = () => {
               </p>
             </div>
 
-            {isPortable && <PortableUpdateNotice />}
 
             {/* Release Notes */}
             <div className="prose prose-sm dark:prose-invert max-w-none">

@@ -13,7 +13,7 @@ import {
   AutoAskSettings,
   FillerFilterSettings,
   StealthToggle,
-  StorageSettings,
+  StartMinimizedToggle,
   UpdateSettings,
 } from "./components";
 import { PageLayout } from "@/layouts";
@@ -21,8 +21,8 @@ import { PageLayout } from "@/layouts";
 const Settings = () => {
   return (
     <PageLayout title="Settings" description="Manage your settings">
-      {/* Storage layout and local speech models */}
-      <StorageSettings />
+      {/* Start minimized toggle */}
+      <StartMinimizedToggle />
 
       {/* Software Updates */}
       <UpdateSettings />

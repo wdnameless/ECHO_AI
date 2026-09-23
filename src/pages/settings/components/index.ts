@@ -15,5 +15,5 @@ export * from "./RetentionSettings";
 export * from "./AutoAskSettings";
 export * from "./FillerFilterSettings";
 export * from "./StealthToggle";
-export * from "./StorageSettings";
+export * from "./StartMinimizedToggle";
 export * from "./UpdateSettings";

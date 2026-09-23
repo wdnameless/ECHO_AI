@@ -135,7 +135,11 @@ fn implied_portable_root() -> Option<PathBuf> {
         }
     }
     let dir = exe_dir()?;
-    if dir.join(PORTABLE_MARKER).is_file() {
+    if dir.join(PORTABLE_MARKER).is_file() || dir.join(".echo-ai").is_dir() {
+        return Some(dir.join(".echo-ai"));
+    }
+    #[cfg(not(test))]
+    if is_writable(&dir) {
         return Some(dir.join(".echo-ai"));
     }
     None
