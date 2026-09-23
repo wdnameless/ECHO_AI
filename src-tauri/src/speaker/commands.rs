@@ -154,7 +154,6 @@ async fn run_vad_capture(
     let mut in_speech = false;
     let mut silence_chunks = 0;
     let mut speech_chunks = 0;
-    let mut last_partial_samples = 0;
     let mut frame_emitted_len = 0usize;
     let mut frames_since_frame = 0usize;
     let max_samples = sr as usize * 30; // 30s safety cap per utterance
@@ -182,10 +181,8 @@ async fn run_vad_capture(
                     // Speech START detected
                     in_speech = true;
                     speech_chunks = 0;
-                    last_partial_samples = 0;
                     frame_emitted_len = 0;
                     frames_since_frame = 0;
-                    frame_emitted_len = 0;
 
                     // Include pre-speech buffer for natural sound
                     speech_buffer.extend(pre_speech.drain(..));
@@ -214,10 +211,6 @@ async fn run_vad_capture(
                     frames_since_frame = 0;
                 }
 
-                // No second live path: a 1 Hz re-transcription of the whole
-                // utterance over HTTP used to run alongside the stream, adding a
-                // second of delay and repeating text already on screen.
-                last_partial_samples = speech_buffer.len();
 
                 // Safety cap: force emit if exceeds 30s
                 if speech_buffer.len() > max_samples {
@@ -230,7 +223,6 @@ async fn run_vad_capture(
                     speech_buffer.clear();
                     in_speech = false;
                     speech_chunks = 0;
-                    last_partial_samples = 0;
                     frame_emitted_len = 0;
                     frames_since_frame = 0;
                 }
@@ -278,7 +270,6 @@ async fn run_vad_capture(
                         in_speech = false;
                         silence_chunks = 0;
                         speech_chunks = 0;
-                        last_partial_samples = 0;
                     frame_emitted_len = 0;
                     frames_since_frame = 0;
                     }

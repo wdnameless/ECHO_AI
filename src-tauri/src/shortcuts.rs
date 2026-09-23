@@ -43,6 +43,7 @@ impl Default for LicenseState {
 }
 
 impl LicenseState {
+    #[allow(dead_code)]
     pub fn is_active(&self) -> bool {
         self.has_active_license.load(Ordering::Relaxed)
     }

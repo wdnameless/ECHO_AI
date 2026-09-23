@@ -19,9 +19,11 @@ use serde::Serialize;
 
 use crate::settings;
 
+#[allow(dead_code)]
 /// Hugging Face repository holding the published quantisations.
 const MODEL_REPO: &str = "handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf";
 
+#[allow(dead_code)]
 /// Immutable revision the paths are pinned to. Using a commit hash rather than
 /// `main` keeps a re-download byte-identical to the hashes below.
 const MODEL_REVISION: &str = "8139c4ec14bdc45c361adf8d57c27c28e7478272";
@@ -189,6 +191,7 @@ pub fn target_path(file: &ModelFile) -> PathBuf {
     PathBuf::from(settings::resolved_paths().models_dir).join(&file.filename)
 }
 
+#[allow(dead_code)]
 /// Whether the file is already present.
 pub fn is_installed(file: &ModelFile) -> bool {
     target_path(file).is_file()
@@ -234,6 +237,7 @@ impl DownloadTarget {
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(&temp)
             .map_err(|e| format!("не удалось создать {}: {e}", temp.display()))?;
         if existing > 0 {

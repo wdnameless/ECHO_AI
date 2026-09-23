@@ -8,7 +8,7 @@ pub fn apply_stealth_to_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE,
-        WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
 
     if let Ok(hwnd_ptr) = window.hwnd() {

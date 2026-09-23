@@ -99,6 +99,7 @@ pub struct AudioResponse {
 }
 
 // Chat API Structs
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatRequest {
     user_message: String,
@@ -107,6 +108,7 @@ pub struct ChatRequest {
     history: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChatResponse {
     success: bool,

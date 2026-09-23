@@ -37,7 +37,10 @@ if (windowLabel.startsWith("capture-overlay-")) {
 } else {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
-      <ErrorBoundary fallbackRender={() => <ErrorLayout />}>
+      <ErrorBoundary fallbackRender={({ error }) => {
+        console.error("[ROOT RENDER ERROR]", windowLabel, error);
+        return <ErrorLayout isCompact={windowLabel === "main"} />;
+      }}>
         <ThemeProvider>
           <AppProvider>
             <HostTrustProvider />
