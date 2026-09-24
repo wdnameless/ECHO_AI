@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { getAsrCapabilities, resetAsrCapabilitiesCache } from "../asr-capabilities";
+import {
+  getAsrCapabilities,
+  resetAsrCapabilitiesCache,
+  noteStreamingUnsupported,
+} from "../asr-capabilities";
 
 vi.mock("../asr-discovery", () => ({
   getAsrBaseUrl: vi.fn(async () => "http://127.0.0.1:9877"),
@@ -21,22 +25,42 @@ describe("asr capabilities", () => {
     globalThis.fetch = originalFetch;
   });
 
-  it("reports a streaming model as streamable", async () => {
-    mockHealth({ model: { variant: "nemotron-3.5", supports_streaming: true } });
+  it("reports a streaming architecture as streamable", async () => {
+    mockHealth({ model: { arch: "nemotron", variant: "nemotron-3.5", supports_streaming: true } });
     await expect(getAsrCapabilities()).resolves.toEqual({
       streaming: true,
       variant: "nemotron-3.5",
     });
   });
 
-  it("reports a non-streamable model as batch-only", async () => {
-    // Parakeet answers `stream begin failed: not implemented by this model`,
-    // so the app must not open a socket for it.
-    mockHealth({ model: { variant: "tdt-0.6b-v3", supports_streaming: false } });
+  it("treats a non-streaming architecture as batch-only even when health claims otherwise", async () => {
+    // Observed in practice: a Parakeet file reported arch=parakeet together
+    // with variant=nemotron-3.5-… and supports_streaming: true. Trusting the
+    // flag opened a socket the model refuses and the utterance was lost.
+    mockHealth({
+      model: { arch: "parakeet", variant: "nemotron-3.5-asr-streaming-0.6b", supports_streaming: true },
+    });
     await expect(getAsrCapabilities()).resolves.toEqual({
       streaming: false,
-      variant: "tdt-0.6b-v3",
+      variant: "nemotron-3.5-asr-streaming-0.6b",
     });
+  });
+
+  it("records an actual stream refusal as ground truth", async () => {
+    mockHealth({ model: { arch: "nemotron", variant: "nemotron-3.5", supports_streaming: true } });
+    await expect(getAsrCapabilities()).resolves.toMatchObject({ streaming: true });
+
+    noteStreamingUnsupported();
+
+    await expect(getAsrCapabilities()).resolves.toMatchObject({
+      streaming: false,
+      variant: "nemotron-3.5",
+    });
+  });
+
+  it("falls back to the advertised flag for an unlisted architecture", async () => {
+    mockHealth({ model: { arch: "brand-new", variant: "x", supports_streaming: true } });
+    await expect(getAsrCapabilities()).resolves.toEqual({ streaming: true, variant: "x" });
   });
 
   it("assumes batch-only when the engine cannot be reached", async () => {

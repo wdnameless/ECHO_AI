@@ -16,6 +16,7 @@
 import { useCallback, useRef } from "react";
 import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
 import { getAsrLanguage } from "@/lib/asr-language";
+import { noteStreamingUnsupported } from "@/lib/asr-capabilities";
 import { pushStatus } from "@/lib/asr-status";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
 import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
@@ -147,6 +148,15 @@ export function useThemWsStreaming({
     ws.onmessage = (ev) => {
       const hadText = typeof ev.data === "string" && /"text"\s*:/.test(ev.data);
       if (hadText) producedTextRef.current = true;
+      // The engine can refuse the stream even though /health advertised it:
+      // remember the refusal so the rest of the session uses the batch path
+      // instead of losing every utterance to a socket it will not serve.
+      if (
+        typeof ev.data === "string" &&
+        /not implemented by this model/i.test(ev.data)
+      ) {
+        noteStreamingUnsupported();
+      }
       handleAsrStreamFrame(ev.data, { onPartialTranscript, onFinalTranscript });
     };
     ws.onclose = () => {

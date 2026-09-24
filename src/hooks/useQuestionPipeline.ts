@@ -149,6 +149,20 @@ export function useQuestionPipeline({
       // is meaningless on a throttled timer, so questions would emit late.
       cancelGapTimerRef.current?.();
       const gapMs = asrTimingConfig.flushGapMs;
+      /**
+       * How many extra windows one pending question may hold back before it is
+       * forced through.
+       *
+       * `looksUnfinished` treats any fragment without terminal punctuation as
+       * mid-sentence, which is correct for a punctuating recogniser and fatal
+       * for Parakeet: it emits no punctuation at all, so every flush returned
+       * "pending", the timer re-armed itself, and the question was never asked
+       * — the interviewer had long stopped and the AI stayed silent. One
+       * extension still protects a real mid-sentence pause; after that the
+       * accumulated text is a question by any practical measure.
+       */
+      let extensions = 0;
+      const MAX_EXTENSIONS = 1;
       const arm = (delay: number) => {
         // Resolve until it succeeds: caching a `null` result disabled the
         // connection warm-up for the whole session, which cost the first
@@ -162,12 +176,17 @@ export function useQuestionPipeline({
         }
         cancelGapTimerRef.current = setUnthrottledTimeout(() => {
           cancelGapTimerRef.current = null;
-          const emitted = questionAssemblerRef.current?.flush("them");
+          const forced = extensions >= MAX_EXTENSIONS;
+          const emitted = questionAssemblerRef.current?.flush(
+            "them",
+            forced ? { allowContinuation: true } : undefined
+          );
           if (emitted?.kind === "emitted") {
             void onTriggerAI(emitted.question, "them");
           } else if (emitted?.kind === "pending") {
-            // Speaker paused mid-sentence — give them a generous second window
-            // (1.4x the base gap) before forcing the question through.
+            extensions += 1;
+            // Speaker paused mid-sentence — one extended window is enough;
+            // after that the text is forced through (see MAX_EXTENSIONS).
             arm(Math.round(gapMs * 1.4));
           }
         }, delay);
