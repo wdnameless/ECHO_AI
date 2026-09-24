@@ -185,26 +185,6 @@ export function useThemWsStreaming({
     void connectRef.current();
   }, []);
 
-  /**
-   * Flushes the current utterance and immediately reopens the socket.
-   *
-   * Measured on this engine: a 1-3s chunk comes back in ~1.1s, while a long
-   * utterance waits ~12s (the recogniser re-runs its language check over the
-   * whole buffer). Live-interview speed therefore comes from CHUNKING the
-   * speech, not from keeping one long stream open.
-   */
-  const rollUtterance = useCallback(() => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    stoppedByUsRef.current = true;
-    producedTextRef.current = false;
-    try {
-      ws.send(JSON.stringify({ type: "finalize" }));
-    } catch {
-      // connection already dying
-    }
-  }, []);
-
   /** Sends one PCM frame (f32 LE @16 kHz), dropping it if the socket is not up. */
   const feedFrame = useCallback((pcm: ArrayBuffer) => {
     const ws = wsRef.current;
@@ -276,7 +256,6 @@ export function useThemWsStreaming({
   return {
     start,
     feedFrame,
-    rollUtterance,
     finalizeUtterance,
     finalizeAndClose,
     close,
