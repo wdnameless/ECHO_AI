@@ -72,7 +72,7 @@ export function useQuestionPipeline({
   /** Cancels the pending gap timer. The timer itself lives in a Worker. */
   const cancelGapTimerRef = useRef<(() => void) | null>(null);
   const asrTimingConfig = ASR_TIMING_PRESETS[ACTIVE_ASR_MODE];
-  const activeProviderUrlRef = useRef<string | null | undefined>(undefined);
+  const activeProviderUrlRef = useRef<string | null>(null);
 
 
   if (!questionAssemblerRef.current) {
@@ -150,7 +150,10 @@ export function useQuestionPipeline({
       cancelGapTimerRef.current?.();
       const gapMs = asrTimingConfig.flushGapMs;
       const arm = (delay: number) => {
-        if (activeProviderUrlRef.current === undefined) {
+        // Resolve until it succeeds: caching a `null` result disabled the
+        // connection warm-up for the whole session, which cost the first
+        // request its full TLS handshake on every answer.
+        if (!activeProviderUrlRef.current) {
           activeProviderUrlRef.current = resolveActiveProviderUrl();
         }
         const warmUrl = activeProviderUrlRef.current;

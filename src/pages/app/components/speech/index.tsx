@@ -239,24 +239,31 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                     </Button>
                   )}
 
-                  {/* Settings Drawer Toggle */}
-                  <Button
-                    size="icon"
-                    variant={showSettingsDrawer ? "secondary" : "ghost"}
-                    onClick={() => setShowSettingsDrawer((prev) => !prev)}
-                    className="h-6 w-6"
-                    title="Audio & AI Context Settings"
-                  >
-                    <Settings2Icon className="w-3.5 h-3.5" />
-                  </Button>
+                  {/* Audio & VAD drawer: its own label and icon so the two
+                      settings surfaces are distinguishable — two identical
+                      gears used to sit side by side and do different things. */}
+                  {!setupRequired && (
+                    <Button
+                      size="sm"
+                      variant={showSettingsDrawer ? "secondary" : "ghost"}
+                      onClick={() => setShowSettingsDrawer((prev) => !prev)}
+                      className="h-6 w-auto gap-1 px-2 text-[10px]"
+                      title="Язык распознавания, чувствительность, режим записи"
+                    >
+                      <Settings2Icon className="w-3.5 h-3.5" />
+                      Звук
+                    </Button>
+                  )}
 
-                  {/* App Settings Window Button */}
+                  {/* One gear, one meaning: it opens the app's settings window.
+                      A second gear used to sit beside it for the Audio & VAD
+                      drawer, so two identical icons did two different things. */}
                   <Button
                     size="icon"
                     variant="ghost"
                     onClick={() => invoke("open_dashboard").catch(console.error)}
                     className="h-6 w-6"
-                    title={`Открыть общие настройки${appVersion ? ` · версия ${appVersion}` : ""}`}
+                    title={`Настройки${appVersion ? ` · версия ${appVersion}` : ""}`}
                   >
                     <SettingsIcon className="w-3.5 h-3.5" />
                   </Button>
