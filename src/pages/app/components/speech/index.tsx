@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Button, ScrollArea } from "@/components";
+import { useAppVersion } from "@/lib/version";
 import { PermissionFlow } from "./PermissionFlow";
 import {
   AlertCircleIcon,
@@ -70,6 +71,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
 
 
   const [conversationMode, setConversationMode] = useState(false);
+  const appVersion = useAppVersion();
   const { hasActiveLicense, supportsImages } = useApp();
 
   const [screenshotImage, setScreenshotImage] = useState<string | null>(null);
@@ -254,10 +256,19 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                     variant="ghost"
                     onClick={() => invoke("open_dashboard").catch(console.error)}
                     className="h-6 w-6"
-                    title="Открыть общие настройки"
+                    title={`Открыть общие настройки${appVersion ? ` · версия ${appVersion}` : ""}`}
                   >
                     <SettingsIcon className="w-3.5 h-3.5" />
                   </Button>
+
+                  {appVersion && (
+                    <span
+                      className="font-mono text-[10px] text-muted-foreground shrink-0"
+                      title="Версия приложения"
+                    >
+                      v{appVersion}
+                    </span>
+                  )}
 
                   {/* Start New Conversation Button */}
                   {!setupRequired && (

@@ -17,6 +17,13 @@ import {
 import { cn } from "@/lib/utils";
 import { fastTranslate } from "@/lib/fast-translator";
 import {
+  ASR_LANGUAGE_OPTIONS,
+  getAsrLanguage,
+  setAsrLanguage,
+  type AsrLanguage,
+} from "@/lib/asr-language";
+import { useAppVersion } from "@/lib/version";
+import {
   recordFeedback,
   getSelfEvolutionStats,
   type SelfEvolutionStats,
@@ -178,6 +185,10 @@ export const SubtitleFeed = ({
   const scrollRef = useRef<HTMLDivElement>(null);
   const translatedKeysRef = useRef<Set<string>>(new Set());
   const [translationsOn, setTranslationsOn] = useState(true);
+  const [asrLanguage, setAsrLanguageState] = useState<AsrLanguage>(() =>
+    getAsrLanguage()
+  );
+  const appVersion = useAppVersion();
   const [translations, setTranslations] = useState<Record<string, string>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [feedbackGiven, setFeedbackGiven] = useState<
@@ -1217,6 +1228,41 @@ export const SubtitleFeed = ({
           </span>
         </span>
         <span className="flex items-center gap-2 shrink-0">
+        {/* Recognition language, switchable without opening settings: the
+            choice changes both accuracy and latency (auto detection re-runs
+            the whole fragment on a language change). */}
+        <span
+          className="flex items-center bg-muted/60 rounded p-0.5 gap-0.5"
+          title="Язык распознавания речи"
+        >
+          {ASR_LANGUAGE_OPTIONS.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => {
+                setAsrLanguage(option.id);
+                setAsrLanguageState(option.id);
+              }}
+              className={cn(
+                "px-1.5 py-0.5 text-[0.9em] font-medium rounded transition-colors",
+                asrLanguage === option.id
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+              title={option.hint}
+            >
+              {option.label}
+            </button>
+          ))}
+        </span>
+        {appVersion && (
+          <span
+            className="font-mono text-muted-foreground/70"
+            title="Версия приложения"
+          >
+            v{appVersion}
+          </span>
+        )}
         {handyOnline && (
           <span
             className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium"

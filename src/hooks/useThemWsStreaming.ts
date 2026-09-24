@@ -176,13 +176,15 @@ export function useThemWsStreaming({
    * Flushes the current utterance WITHOUT dropping the socket.
    *
    * The sidecar only emits a `final` frame — the one the AI pipeline needs —
-   * after a `finalize`. With a session-scoped socket there is no close to
-   * trigger it, so the end-of-speech event must ask for the flush explicitly;
-   * otherwise the feed shows partials forever and no answer is ever produced.
+   * after a `finalize`, and it then closes the stream itself. That close is the
+   * protocol working as designed, so it must not be counted as a connection
+   * problem: the counter showed "11 rec" for a healthy session. The next
+   * utterance opens a fresh socket from `start()`.
    */
   const finalizeUtterance = useCallback(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    stoppedByUsRef.current = true;
     try {
       ws.send(JSON.stringify({ type: "finalize" }));
     } catch {
