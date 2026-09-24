@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { fastTranslate } from "@/lib/fast-translator";
 import { useAppVersion } from "@/lib/version";
+import { getMetrics, onMetrics, resetMetrics } from "@/lib/metrics";
 import {
   recordFeedback,
   getSelfEvolutionStats,
@@ -180,6 +181,11 @@ export const SubtitleFeed = ({
   const translatedKeysRef = useRef<Set<string>>(new Set());
   const [translationsOn, setTranslationsOn] = useState(true);
   const appVersion = useAppVersion();
+  // Recognition timings live in a store, not in props: every measured pass
+  // ticks while the panel is open, and threading that through the parent hook
+  // would re-render the whole tree on each tick.
+  const [metrics, setMetrics] = useState(() => getMetrics());
+  useEffect(() => onMetrics((m) => setMetrics(m)), []);
   const [translations, setTranslations] = useState<Record<string, string>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [feedbackGiven, setFeedbackGiven] = useState<
@@ -1243,6 +1249,50 @@ export const SubtitleFeed = ({
             🎙 {Math.round(lastSttDurationMs)}мс
           </span>
         )}
+        {/* Live recognition timings: what the user waits for in practice.
+            `partial` is one live re-transcription round trip, `text` is the
+            delay from the start of an utterance to its first visible words. */}
+        {metrics.lastPartialMs !== null && (
+          <span
+            className={cn(
+              "font-mono",
+              metrics.lastPartialMs < 200
+                ? "text-emerald-600 dark:text-emerald-400"
+                : metrics.lastPartialMs < 600
+                ? "text-amber-600 dark:text-amber-400"
+                : "text-red-500"
+            )}
+            title={`Живая расшифровка: последняя ${metrics.lastPartialMs}мс, средняя ${metrics.avgPartialMs ?? "-"}мс из ${metrics.partialSamplesCount} замеров`}
+          >
+            ⚡ {metrics.lastPartialMs}мс
+          </span>
+        )}
+        {metrics.lastFirstTextMs !== null && (
+          <span
+            className={cn(
+              "font-mono",
+              metrics.lastFirstTextMs < 800
+                ? "text-emerald-600 dark:text-emerald-400"
+                : metrics.lastFirstTextMs < 2000
+                ? "text-amber-600 dark:text-amber-400"
+                : "text-red-500"
+            )}
+            title="Задержка от начала реплики до первых слов на экране"
+          >
+            ⏱ {metrics.lastFirstTextMs}мс
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            resetMetrics();
+            setMetrics(getMetrics());
+          }}
+          className="font-mono text-muted-foreground/70 hover:text-foreground"
+          title="Сбросить таймеры и счётчики сессии"
+        >
+          ⟲
+        </button>
         {wsReconnects !== undefined && wsReconnects > 0 && (
           <span
             className="font-mono text-amber-600 dark:text-amber-400"

@@ -3,7 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { safeLocalStorage } from "@/lib";
 import { buildInitialPrompt } from "@/lib/vocab";
-import { transcribeWithFallback } from "@/lib/functions";
+import { transcribeWithFallback, isSttErrorMessage } from "@/lib/functions";
+import { recordPartialLatency, recordFirstText } from "@/lib/metrics";
 import { micStateStore } from "@/stores/mic-state";
 import { useThemWsStreaming } from "./useThemWsStreaming";
 import { getAsrCapabilities } from "@/lib/asr-capabilities";
@@ -32,6 +33,44 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   noise_gate_threshold: 0.003,
   max_recording_duration_secs: 180,
 };
+
+/**
+ * Cadence of the live re-transcription used when the loaded model cannot
+ * stream. Measured on Parakeet: one HTTP call costs 44-58ms regardless of clip
+ * length, so ~600ms keeps the feed visibly live without saturating the engine.
+ */
+const LIVE_BATCH_MS = 600;
+
+/**
+ * Wraps 16-bit mono PCM at 16 kHz in a WAV container.
+ *
+ * The engine rejects a header whose `data` size does not match the payload
+ * ("invalid WAV: failed to read int samples"), so the header is rebuilt for
+ * every growing utterance instead of carrying the original clip's sizes.
+ */
+function encodeWav16kMono(pcm: Int16Array): ArrayBuffer {
+  const dataLen = pcm.length * 2;
+  const buf = new ArrayBuffer(44 + dataLen);
+  const view = new DataView(buf);
+  const ascii = (off: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
+  };
+  ascii(0, "RIFF");
+  view.setUint32(4, 36 + dataLen, true);
+  ascii(8, "WAVE");
+  ascii(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, 16000, true);
+  view.setUint32(28, 32000, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true);
+  ascii(36, "data");
+  view.setUint32(40, dataLen, true);
+  new Int16Array(buf, 44).set(pcm);
+  return buf;
+}
 
 interface UseSystemAudioCaptureProps {
   selectedAudioDevices: {
@@ -108,6 +147,17 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
    * for them, so no utterance is wasted on a request the engine rejects.
    */
   const streamingModelRef = useRef(false);
+  /** Raw PCM frames of the utterance being re-transcribed by the live batch. */
+  const livePcmRef = useRef<Uint8Array[]>([]);
+  /** Pending cadence timer for the live batch re-transcription. */
+  const liveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Last text produced by the live batch, so a re-transcription that returns
+   * less than the previous one never makes the line shrink.
+   */
+  const liveTextRef = useRef("");
+  /** When the current utterance's first audio frame arrived, for first-text. */
+  const utteranceStartedAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     capturingRef.current = capturing;
@@ -302,6 +352,58 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     void onInterviewerTranscription(whole);
   };
 
+  /**
+   * Re-transcribes the growing utterance over HTTP on a fixed cadence.
+   *
+   * Used when the loaded model has no streaming protocol. Measured on Parakeet:
+   * one call costs 44-58ms whatever the clip length, so re-running it four
+   * times a second is cheaper than the streaming model's single late answer —
+   * and it is what makes live text possible on a non-streamable model.
+   */
+  const runLiveBatch = useCallback(async () => {
+    if (!capturingRef.current) return;
+    const frames = livePcmRef.current.splice(0);
+    if (frames.length === 0) return;
+    livePcmRef.current = frames;
+
+    // f32 LE @16 kHz frames -> 16-bit mono WAV, the shape the engine accepts.
+    let sampleCount = 0;
+    for (const f of frames) sampleCount += f.length;
+    const pcm = new Int16Array(sampleCount / 4);
+    let si = 0;
+    for (const f of frames) {
+      const view = new DataView(f.buffer, f.byteOffset, f.byteLength);
+      for (let o = 0; o + 4 <= f.byteLength; o += 4) {
+        const v = view.getFloat32(o, true);
+        pcm[si++] = Math.max(-1, Math.min(1, v)) * 32767;
+      }
+    }
+    const wav = encodeWav16kMono(pcm.subarray(0, si));
+    const started = Date.now();
+    try {
+      const text = await transcribeWithFallback({
+        selectedProvider: selectedSttProvider,
+        audio: new Blob([wav], { type: "audio/wav" }),
+        priority: "high",
+        prompt: buildInitialPrompt(),
+      });
+      const clean = text.trim();
+      if (!clean || isSttErrorMessage(clean)) return;
+      recordPartialLatency(Date.now() - started);
+      // First text of this utterance: the delay the user actually perceives.
+      if (utteranceStartedAtRef.current !== null && liveTextRef.current === "") {
+        recordFirstText(Date.now() - utteranceStartedAtRef.current);
+      }
+      // Never let a shorter reading of the same audio shrink the live line.
+      if (clean.length >= liveTextRef.current.length) {
+        liveTextRef.current = clean;
+        appendLiveSegment("them", clean, true);
+      }
+    } catch {
+      // A dropped live pass is not an error: the next one covers the audio.
+    }
+  }, [appendLiveSegment, selectedSttProvider]);
+
   useEffect(() => {
     let frameUnlisten: (() => void) | undefined;
     let cancelled = false;
@@ -313,7 +415,22 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       const bin = atob(b64);
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      themWsRef.current.feedFrame(bytes.buffer as ArrayBuffer);
+
+      if (streamingModelRef.current) {
+        themWsRef.current.feedFrame(bytes.buffer as ArrayBuffer);
+        return;
+      }
+      // Non-streamable model: keep the raw PCM of the growing utterance and
+      // re-transcribe it on a cadence. Measured on Parakeet: 44-58ms per call
+      // regardless of clip length, so a ~600ms cadence gives live text at a
+      // fraction of the cost of the streaming model's late 1.1-12s results.
+      livePcmRef.current.push(new Uint8Array(bytes.buffer as ArrayBuffer));
+      if (liveTimerRef.current === null) {
+        liveTimerRef.current = setTimeout(() => {
+          liveTimerRef.current = null;
+          void runLiveBatch();
+        }, LIVE_BATCH_MS);
+      }
     })
       .then((unlisten) => {
         if (cancelled) {
@@ -353,6 +470,9 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       // dispatched (or dropped) when its speech ended.
       rolledTextRef.current = "";
       utteranceEndedRef.current = false;
+      livePcmRef.current = [];
+      liveTextRef.current = "";
+      utteranceStartedAtRef.current = Date.now();
       void (async () => {
         const caps = await getAsrCapabilities();
         streamingModelRef.current = caps.streaming;
@@ -413,9 +533,25 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         themWsRef.current.finalizeUtterance();
         return;
       }
-      // Batch path: the model cannot stream, or no stream is up while the
-      // microphone is not holding the model either.
+      // Batch path: the model cannot stream. The live cadence already
+      // transcribed this utterance; reuse that text instead of paying another
+      // round trip for the same audio, and only fall back to the WAV the
+      // capture attached when the live pass produced nothing (a very short
+      // utterance can end before its first cadence fires).
       onInterviewerSpeechActivity?.();
+      if (liveTimerRef.current !== null) {
+        clearTimeout(liveTimerRef.current);
+        liveTimerRef.current = null;
+      }
+      const liveText = liveTextRef.current.trim();
+      livePcmRef.current = [];
+      utteranceStartedAtRef.current = null;
+      if (liveText) {
+        liveTextRef.current = "";
+        appendLiveSegment("them", liveText);
+        void onInterviewerTranscription(liveText);
+        return;
+      }
       handleSpeechDetectedRef.current(event.payload as string);
     })
       .then((unlisten) => {

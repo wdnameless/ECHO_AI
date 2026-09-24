@@ -27,6 +27,21 @@ export interface SystemMetrics {
   avgSttDurationMs: number | null;
   /** Total number of recorded STT duration samples */
   sttSamplesCount: number;
+  /**
+   * Last round-trip time of a live (partial) transcription, in milliseconds.
+   *
+   * This is what the user actually waits for on screen: for a non-streamable
+   * model the feed updates only when this call returns. Measured on Parakeet at
+   * 44-58ms per call; a value far above that means the engine is busy, the
+   * model was swapped, or the request is queueing behind a stream.
+   */
+  lastPartialMs: number | null;
+  /** Average live-transcription round trip in milliseconds */
+  avgPartialMs: number | null;
+  /** Total number of recorded live-transcription samples */
+  partialSamplesCount: number;
+  /** Wall time from the first audio frame of an utterance to its first text. */
+  lastFirstTextMs: number | null;
   /** Timestamp of last metric update */
   updatedAt: number;
 }
@@ -34,7 +49,8 @@ export interface SystemMetrics {
 export type MetricsSnapshot = SystemMetrics;
 type MetricsListener = (m: SystemMetrics) => void;
 
-let metricsState: SystemMetrics = {
+/** Fresh state: one definition, so a new field cannot be missed in the reset. */
+const INITIAL_METRICS: SystemMetrics = {
   lastTtftMs: null,
   avgTtftMs: null,
   ttftSamplesCount: 0,
@@ -43,11 +59,18 @@ let metricsState: SystemMetrics = {
   lastSttDurationMs: null,
   avgSttDurationMs: null,
   sttSamplesCount: 0,
+  lastPartialMs: null,
+  avgPartialMs: null,
+  partialSamplesCount: 0,
+  lastFirstTextMs: null,
   updatedAt: 0,
 };
 
+let metricsState: SystemMetrics = { ...INITIAL_METRICS };
+
 let totalTtftSum = 0;
 let totalSttSum = 0;
+let totalPartialSum = 0;
 let questionFinalizedAt: number | null = null;
 const listeners = new Set<MetricsListener>();
 function emit(): void {
@@ -117,6 +140,42 @@ export function recordSttDuration(durationMs: number): void {
 }
 
 /**
+ * Record the round trip of a live (partial) transcription.
+ *
+ * This is the number that decides whether the feed feels live: it is the time
+ * between sending the growing utterance and its text appearing.
+ */
+export function recordPartialLatency(ms: number): void {
+  if (typeof ms !== "number" || isNaN(ms) || ms < 0) return;
+  const count = metricsState.partialSamplesCount + 1;
+  totalPartialSum += ms;
+  metricsState = {
+    ...metricsState,
+    lastPartialMs: Math.round(ms),
+    avgPartialMs: Math.round(totalPartialSum / count),
+    partialSamplesCount: count,
+    updatedAt: Date.now(),
+  };
+  emit();
+}
+
+/**
+ * Record how long an utterance took to show its first text.
+ *
+ * Called once per utterance, from the first text produced for it — the number a
+ * user perceives as "how fast does it start writing".
+ */
+export function recordFirstText(ms: number): void {
+  if (typeof ms !== "number" || isNaN(ms) || ms < 0) return;
+  metricsState = {
+    ...metricsState,
+    lastFirstTextMs: Math.round(ms),
+    updatedAt: Date.now(),
+  };
+  emit();
+}
+
+/**
  * Increment the WS reconnect counter.
  */
 export function recordWsReconnect(amount = 1): void {
@@ -180,17 +239,8 @@ export function cancelQuestion(): void {
 export function resetMetrics(): void {
   totalTtftSum = 0;
   totalSttSum = 0;
-  metricsState = {
-    lastTtftMs: null,
-    avgTtftMs: null,
-    ttftSamplesCount: 0,
-    wsReconnectCount: 0,
-    lostSegmentsCount: 0,
-    lastSttDurationMs: null,
-    avgSttDurationMs: null,
-    sttSamplesCount: 0,
-    updatedAt: Date.now(),
-  };
+  totalPartialSum = 0;
+  metricsState = { ...INITIAL_METRICS, updatedAt: Date.now() };
   questionFinalizedAt = null;
   emit();
 }
