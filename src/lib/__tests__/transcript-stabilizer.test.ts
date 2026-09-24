@@ -3,8 +3,11 @@ import {
   upsertUtterance,
   finalizeUtterance,
   selectRussianFiller,
+  selectFillerForText,
+  detectTextLanguage,
   RUSSIAN_FILLERS,
   RUSSIAN_INTERVIEW_FILLERS,
+  ENGLISH_FILLERS,
   isExplicitAskEligible,
   type TranscriptUtterance,
 } from "../transcript-stabilizer";
@@ -78,6 +81,36 @@ describe("transcript-stabilizer", () => {
     const uniqueSet = new Set(RUSSIAN_FILLERS);
     expect(uniqueSet.size).toBeGreaterThanOrEqual(200);
     expect(uniqueSet.size).toBe(RUSSIAN_FILLERS.length);
+  });
+
+  it("selects a filler in the language of the question", () => {
+    // The script of the question decides the phrase: a Russian opener under an
+    // English question (or the reverse) reads as a script being read aloud.
+    for (let i = 0; i < 8; i++) {
+      expect(RUSSIAN_INTERVIEW_FILLERS).toContain(
+        selectFillerForText("Расскажи про свой опыт с Postgres и Kubernetes")
+      );
+      expect(ENGLISH_FILLERS).toContain(
+        selectFillerForText("Tell me about your experience with distributed systems")
+      );
+    }
+  });
+
+  it("detects the language of a question by its script", () => {
+    expect(detectTextLanguage("Как вы оптимизируете запросы")).toBe("ru");
+    expect(detectTextLanguage("How do you optimise queries")).toBe("en");
+    expect(detectTextLanguage("")).toBe("en");
+    // A heavily mixed question follows the script that dominates it.
+    expect(detectTextLanguage("Расскажи, как ты работал с the event loop и его фазами")).toBe("ru");
+  });
+
+  it("never repeats a filler within the last ten picks, per language", () => {
+    const picks: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      const phrase = selectFillerForText("What is your experience with Kubernetes");
+      expect(picks.slice(-10)).not.toContain(phrase);
+      picks.push(phrase);
+    }
   });
 
   it("guarantees selection without repeats over 50 consecutive iterations", () => {

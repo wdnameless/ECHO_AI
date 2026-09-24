@@ -246,7 +246,78 @@ export const RUSSIAN_FILLERS: readonly string[] = [
 /** Alias for backward compatibility */
 export const RUSSIAN_INTERVIEW_FILLERS = RUSSIAN_FILLERS;
 
+/**
+ * English fillers, the counterpart of {@link RUSSIAN_FILLERS}.
+ *
+ * The interviewer's question decides which set is used: reading a Russian
+ * prompt aloud in an English interview (or the reverse) is the fastest way to
+ * look like a script reader, so the language must follow the question rather
+ * than a global setting.
+ */
+export const ENGLISH_FILLERS: readonly string[] = [
+  "Yeah, that's a good question — let me walk through it...",
+  "Right, I know exactly what you mean here...",
+  "Sure, happy to go through this one in detail...",
+  "Yeah, good question. Let me take it step by step...",
+  "Right, that's a fair point. Let me start with the core idea...",
+  "Sure, interesting angle. I'll start from the basics...",
+  "Good question. Let me go from the general to the specific...",
+  "Yeah, I've run into this one in practice. Let me recall the key bits...",
+  "Right, let me structure the answer clearly...",
+  "Sure, let me think for a second and answer precisely...",
+  "Yeah, let me give you a concrete example from a real project...",
+  "Right, this is a good case to talk through...",
+  "Sure, let me focus on the essential parts first...",
+  "Yeah, exactly the kind of thing worth discussing...",
+  "Good one. Let me start with how this works in production...",
+  "Right, let me go through the architecture here...",
+  "Sure, let me cover the trade-offs first...",
+  "Yeah, let me lay out the approach and the reasoning...",
+  "Right, I'll keep it concrete and specific...",
+  "Sure, give me a second to put this together properly...",
+];
+
 let recentFillerIdx: number[] = [];
+let recentEnglishFillerIdx: number[] = [];
+
+/**
+ * Language of the text, decided by its script rather than by a setting.
+ *
+ * A question typed or spoken in Russian is answered with a Russian filler; an
+ * English one gets an English filler. Counting Cyrillic letters is enough and
+ * needs no model: transliterated input is already handled because the ASR
+ * emits the script it recognised.
+ */
+export function detectTextLanguage(text: string): "ru" | "en" {
+  const cyrillic = (text.match(/[\u0400-\u04FF]/g) || []).length;
+  const latin = (text.match(/[A-Za-z]/g) || []).length;
+  if (cyrillic === 0) return "en";
+  if (latin === 0) return "ru";
+  return cyrillic >= latin ? "ru" : "en";
+}
+
+/**
+ * Returns a spoken filler in the language of `referenceText` (the question).
+ *
+ * Picks randomly while avoiding the last 10 used, so consecutive answers never
+ * open with the same phrase.
+ */
+export function selectFillerForText(referenceText: string): string {
+  const pool =
+    detectTextLanguage(referenceText) === "ru" ? RUSSIAN_FILLERS : ENGLISH_FILLERS;
+  const recent = pool === RUSSIAN_FILLERS ? recentFillerIdx : recentEnglishFillerIdx;
+  const recentSet = new Set(recent);
+
+  let idx = Math.floor(Math.random() * pool.length);
+  let guard = 0;
+  while (recentSet.has(idx) && guard < 50) {
+    idx = Math.floor(Math.random() * pool.length);
+    guard++;
+  }
+  recent.push(idx);
+  if (recent.length > 10) recent.shift();
+  return pool[idx];
+}
 
 /**
  * Returns a natural Russian filler preset based on seed or random index.

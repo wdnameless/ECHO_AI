@@ -38,7 +38,7 @@ export interface UseAIStreamingProps {
     fullResponse: string,
     source?: "me" | "them"
   ) => void;
-  setFillerForInterviewer: () => void;
+  setFillerForInterviewer: (questionText?: string) => void;
   clearFiller: () => void;
   pendingUtteranceId?: string | null;
   pendingScreenshotRef: React.MutableRefObject<string | null>;
@@ -225,8 +225,9 @@ export function useAIStreaming({
       startQuestion();
       // Only set generic interviewer filler if pending utterance wasn't already assigned
       // (e.g. manual askAIForTranscript already set activeFiller + pendingUtteranceId).
+      // The question itself decides the language of the phrase.
       if (!pendingUtteranceId) {
-        setFillerForInterviewer();
+        setFillerForInterviewer(question);
       }
       const effectiveSystemPrompt = useSystemPrompt
         ? systemPrompt || DEFAULT_SYSTEM_PROMPT

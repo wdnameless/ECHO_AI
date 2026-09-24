@@ -94,7 +94,7 @@ interface UseSystemAudioCaptureProps {
     variables: Record<string, string>;
   };
   appendLiveSegment: (source: "me" | "them", text: string, isPartial?: boolean) => void;
-  onInterviewerTranscription: (text: string) => Promise<void>;
+  onInterviewerTranscription: (text: string, pauseBeforeMs?: number) => Promise<void>;
   onInterviewerSpeechActivity?: () => void;
   setMyLastTranscription: (text: string) => void;
   setTheirLastTranscription: (text: string) => void;
@@ -293,7 +293,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
           }
 
           if (source === "them" && !options?.skipOnInterviewerTranscription) {
-            await onInterviewerTranscription(transcription);
+            await onInterviewerTranscription(transcription, pauseBeforeUtteranceRef.current);
           }
         } else {
           setError("Received empty transcription");
@@ -316,6 +316,22 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       setError,
     ]
   );
+
+  /** When the VAD last reported that an utterance had ended (wall clock). */
+  const lastAudioSpeechEndRef = useRef<number | null>(null);
+  /**
+   * Silence in the AUDIO before the utterance currently being transcribed.
+   *
+   * The recogniser returns text ~1.1s after the speech that produced it, so the
+   * interval between two TEXT arrivals equals the second utterance's spoken
+   * duration plus the pause between them — a 3s clause after a 300ms pause looks
+   * like a 3.3s silence and was treated as a new question, discarding the text
+   * already transcribed. Measured between the VAD's own events instead, the
+   * value is the real pause: the VAD needs ~280ms of silence to close an
+   * utterance at all, so a mid-sentence breath measures near zero while a
+   * finished question measures hundreds of milliseconds.
+   */
+  const pauseBeforeUtteranceRef = useRef(0);
 
   const handleSpeechDetectedRef = useRef<(base64Audio: string) => void>(() => {});
   useEffect(() => {
@@ -541,6 +557,17 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       if (!capturingRef.current) return;
       // A new utterance starts empty: the previous monologue was already
       // dispatched (or dropped) when its speech ended.
+      //
+      // The pause that closed the previous utterance is measured from the VAD
+      // event, not from the previous text: the recogniser returns text ~1.1s
+      // after the speech, so arrival intervals reflect how long the second
+      // clause was spoken, not the silence between the two.
+      if (lastAudioSpeechEndRef.current !== null) {
+        pauseBeforeUtteranceRef.current = Math.max(
+          0,
+          Date.now() - lastAudioSpeechEndRef.current
+        );
+      }
       rolledTextRef.current = "";
       utteranceEndedRef.current = false;
       livePcmRef.current = [];
@@ -597,6 +624,11 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       // flush; a non-streamable one (Parakeet) never had a socket, so the WAV
       // the capture attached to this event is transcribed over HTTP — measured
       // at ~64ms, the fastest path available.
+      //
+      // This event marks the true end of speech in the audio, so the pause
+      // before the next utterance is measured from here rather than from the
+      // text that this transcription will produce much later.
+      lastAudioSpeechEndRef.current = Date.now();
       if (
         streamingModelRef.current &&
         (themWsRef.current.isStreaming() ||

@@ -15,7 +15,7 @@ import {
   ACTIVE_ASR_MODE,
   ASR_TIMING_PRESETS,
 } from "@/lib/question-assembler";
-import { selectRussianFiller } from "@/lib/transcript-stabilizer";
+import { selectFillerForText } from "@/lib/transcript-stabilizer";
 import { setUnthrottledTimeout } from "@/lib/timer-worker";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { STORAGE_KEYS } from "@/config/constants";
@@ -89,11 +89,15 @@ export function useQuestionPipeline({
   }, []);
 
   const setFillerForAnchor = useCallback(
-    (anchorId: string | null = null) => {
+    (anchorId: string | null = null, questionText = "") => {
       // One filler phrase per answer: pick once, keep stable until cleared.
       // No rotation interval — the phrase must not change while the user
       // is reading it aloud mid-sentence.
-      const filler = selectRussianFiller();
+      //
+      // The phrase is spoken by the candidate, so it must be in the language of
+      // the QUESTION: an English question answered with a Russian opener reads
+      // as a script, and the reverse does too.
+      const filler = selectFillerForText(questionText);
       setActiveFiller(filler);
       setPendingUtteranceId(anchorId);
       activeAskUtteranceIdRef.current = anchorId || "auto";
@@ -101,15 +105,18 @@ export function useQuestionPipeline({
     []
   );
 
-  const setFillerForInterviewer = useCallback(() => {
-    // Immediate display on dispatch: unbind from anchorId.
-    // In case anchor exists in liveSegmentsRef, keep it for back-compat,
-    // but filler is shown regardless (anchorId can be null or anchor.id).
-    const anchor =
-      [...liveSegmentsRef.current].reverse().find((s) => s.source === "them") ||
-      null;
-    setFillerForAnchor(anchor ? anchor.id : null);
-  }, [liveSegmentsRef, setFillerForAnchor]);
+  const setFillerForInterviewer = useCallback(
+    (questionText = "") => {
+      // Immediate display on dispatch: unbind from anchorId.
+      // In case anchor exists in liveSegmentsRef, keep it for back-compat,
+      // but filler is shown regardless (anchorId can be null or anchor.id).
+      const anchor =
+        [...liveSegmentsRef.current].reverse().find((s) => s.source === "them") ||
+        null;
+      setFillerForAnchor(anchor ? anchor.id : null, questionText);
+    },
+    [liveSegmentsRef, setFillerForAnchor]
+  );
 
   const resetQuestionAssembly = useCallback(() => {
     questionAssemblerRef.current?.reset();
@@ -118,12 +125,15 @@ export function useQuestionPipeline({
   }, []);
 
   const handleInterviewerTranscription = useCallback(
-    async (transcription: string) => {
+    async (transcription: string, pauseBeforeMs?: number) => {
       const assembler = questionAssemblerRef.current!;
       const result = assembler.push({
         source: "them",
         text: transcription,
         timestamp: Date.now(),
+        // Real silence from the audio when the capture layer measured it; the
+        // arrival interval is not a pause (recognition lags by ~1.1s).
+        pauseBeforeMs,
       });
 
       if (result.kind === "discarded") {

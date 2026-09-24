@@ -105,8 +105,6 @@ export function useSystemAudio() {
   const lastInterviewerQuestionRef = useRef<{ text: string; at: number } | null>(null);
   /** Newest finalised interviewer segment, so the manual button can pick the newer text. */
   const lastInterviewerSegmentRef = useRef<{ text: string; at: number } | null>(null);
-  /** What the assembler armed the manager with for the utterance being handled. */
-  const assembledForUtteranceRef = useRef<string | null>(null);
 
   const autoAskManagerRef = useRef<AutoAskManager | null>(null);
   if (!autoAskManagerRef.current) {
@@ -142,7 +140,6 @@ export function useSystemAudio() {
       // it for the silence window and drops it when the mode changes or speech
       // resumes.
       lastInterviewerQuestionRef.current = { text: question, at: Date.now() };
-      assembledForUtteranceRef.current = question;
       autoAskManagerRef.current?.onFinalizedTranscript(question);
     },
     []
@@ -163,25 +160,22 @@ export function useSystemAudio() {
   });
 
   /**
-   * A finished utterance arms the silence window on its own text; the assembler
-   * may replace it with the merged question while the window is still open.
+   * A finished utterance is handed to the assembler, which owns the ONLY
+   * dispatch for it: every non-duplicate fragment arms its gap timer, and that
+   * timer force-flushes after one extended window (see MAX_EXTENSIONS in the
+   * pipeline). Nothing else may answer the same utterance.
    *
-   * The assembler alone is not enough: it holds a question as "pending" while
-   * the text still reads unfinished, and with no other trigger a long monologue
-   * would never be answered at all.
+   * This used to arm the auto-ask manager as well whenever the assembler had
+   * not emitted yet. That was a second, independent timer on the same text: the
+   * assembler's flush fired first, then the manager's 1000ms timer fired on the
+   * now-answered question, aborting the in-flight request and starting a
+   * duplicate one. The user saw two answers to a single question and the
+   * latency readout climbed accordingly.
    */
   const handleBatchInterviewerTranscription = useCallback(
-    async (transcription: string) => {
-      assembledForUtteranceRef.current = null;
+    async (transcription: string, pauseBeforeMs?: number) => {
       lastInterviewerSegmentRef.current = { text: transcription, at: Date.now() };
-      await handleInterviewerTranscription(transcription);
-      // The assembler may have merged this fragment with earlier ones and
-      // armed the manager with the full question; only when it did not is the
-      // raw segment the best text available. Without this check the tail
-      // fragment overwrote the merged question and the AI answered a fragment.
-      if (assembledForUtteranceRef.current === null) {
-        autoAskManagerRef.current?.onFinalizedTranscript(transcription);
-      }
+      await handleInterviewerTranscription(transcription, pauseBeforeMs);
     },
     [handleInterviewerTranscription]
   );
@@ -447,7 +441,8 @@ export function useSystemAudio() {
         return;
       }
 
-      setFillerForAnchor(utteranceId);
+      // The question the user is answering decides the filler language.
+      setFillerForAnchor(utteranceId, text);
 
       try {
         await triggerAIForQuestion(text, source);

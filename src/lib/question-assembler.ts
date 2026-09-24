@@ -86,6 +86,17 @@ export interface QuestionFragment {
   source: string;
   text: string;
   timestamp: number;
+  /**
+   * Silence in the AUDIO before this fragment, in ms.
+   *
+   * `timestamp` is when the text arrived, and recognition lags the audio
+   * (measured ~1.1s), so the interval between two arrivals is dominated by how
+   * long the second fragment was spoken — not by the silence between them. A
+   * 300ms mid-sentence pause followed by a 3s clause therefore looked like a
+   * 3s gap and split one question into two answers. When the capture layer
+   * knows the real pause it passes it here and this value decides the gap.
+   */
+  pauseBeforeMs?: number;
 }
 
 export interface QuestionAssemblerOptions {
@@ -119,6 +130,16 @@ interface PendingState {
 
 /** How long after an emitted question a short tail can still be its continuation. */
 const FOLLOWUP_MERGE_MS = 20_000;
+
+/**
+ * A fragment that opens with one of these reads as a question even when the
+ * recogniser dropped the closing "?".
+ *
+ * NOTE: \b does not work around Cyrillic in JS (\w is ASCII-only), so the word
+ * boundary is expressed as a non-letter lookahead instead.
+ */
+const INTERROGATIVE_OPENING =
+  /^(почему|зачем|как|что|кто|где|куда|когда|сколько|какой|какая|какие|какое|каким|какими|какого|каких|каком|чем|расскажите|расскажи|объясните|объясни|опишите|опиши|назовите|назови|приведите|приведи|what|how|why|where|when|who|whom|whose|which|can|could|would|should|shall|will|do|does|did|have|has|are|is|were|was|tell|describe|explain|name|list|give)(?=$|[^\p{L}\p{N}])/iu;
 
 export class QuestionAssembler {
   private pending: PendingState | null = null;
@@ -176,6 +197,36 @@ export class QuestionAssembler {
     return this.pending;
   }
 
+  /**
+   * Rotates the buffer to a new utterance: the arriving fragment becomes the
+   * pending one, optionally seeded with the parent question it continues.
+   */
+  private rotate(
+    segment: QuestionFragment,
+    seedText?: string
+  ): { question: string; endsWithQuestionMark: boolean } {
+    this.startPending(segment, seedText);
+    const question = this.pending!.segments.join(" ");
+    return {
+      question,
+      endsWithQuestionMark: this.immediateOnQuestionMark && segment.text.trim().endsWith("?"),
+    };
+  }
+
+  /**
+   * Rotates to a new utterance and returns what the caller must act on: an
+   * emission when the fragment closes the new question, otherwise the pending
+   * text. Shared by the two rotation paths (new utterance, long pause) so their
+   * behaviour cannot drift apart.
+   */
+  private rotateOrEmit(segment: QuestionFragment, seedText?: string): PushResult {
+    const rotated = this.rotate(segment, seedText);
+    if (rotated.endsWithQuestionMark) {
+      return this.emit();
+    }
+    return { kind: "pending", question: rotated.question };
+  }
+
   /** Feeds a new (final) segment and decides what to do with it. */
   push(segment: QuestionFragment): PushResult {
     const text = segment.text.trim();
@@ -189,24 +240,34 @@ export class QuestionAssembler {
       // after an answered question is merged with its parent question.
       const seed =
         !p && this.isFollowUpTail(text) ? this.lastEmitted!.text : undefined;
-      this.startPending(segment, seed);
-      const question = this.pending!.segments.join(" ");
-      if (this.immediateOnQuestionMark && text.endsWith("?")) {
-        return this.emit();
-      }
-      return { kind: "pending", question };
+      return this.rotateOrEmit(segment, seed);
     }
 
     // Same source, continuing the same utterance?
-    const gap = segment.timestamp - p.lastTs;
+    // Prefer the pause measured on the AUDIO when the caller knows it: the
+    // arrival interval is dominated by recognition lag and speech duration.
+    const gap =
+      segment.pauseBeforeMs !== undefined
+        ? segment.pauseBeforeMs
+        : segment.timestamp - p.lastTs;
 
-    // Early emission on pause >= earlyEmitPauseMs (e.g. 900ms in fast mode)
-    if (this.earlyEmitPauseMs !== undefined && gap >= this.earlyEmitPauseMs) {
+    // Early emission on pause >= earlyEmitPauseMs (e.g. 400ms in fast mode).
+    //
+    // Only when the arriving fragment actually STARTS a new question. A pause
+    // alone is not an utterance boundary — natural speech pauses 400-600ms
+    // mid-sentence — and emitting there split one interviewer utterance into
+    // two answers: the AI answered the opening fragment, then the remainder as
+    // a fresh question, and the second request aborted the first mid-stream.
+    if (
+      this.earlyEmitPauseMs !== undefined &&
+      gap >= this.earlyEmitPauseMs &&
+      QuestionAssembler.startsNewQuestion(text)
+    ) {
       // Emit current pending question accumulated before this segment,
       // and start a new pending utterance with the current segment.
       const prevEmitted = this.emit();
       const seed = this.isFollowUpTail(text) ? this.lastEmitted!.text : undefined;
-      this.startPending(segment, seed);
+      this.rotate(segment, seed);
       if (prevEmitted.kind === "emitted") {
         return prevEmitted;
       }
@@ -216,12 +277,7 @@ export class QuestionAssembler {
       // Long pause. If the pending text was already emitted and answered,
       // this fragment may be a follow-up tail - merge it with the parent.
       const seed = this.isFollowUpTail(text) ? this.lastEmitted!.text : undefined;
-      this.startPending(segment, seed);
-      const question = this.pending!.segments.join(" ");
-      if (this.immediateOnQuestionMark && text.endsWith("?")) {
-        return this.emit();
-      }
-      return { kind: "pending", question };
+      return this.rotateOrEmit(segment, seed);
     }
 
     // Check for STT duplicates (same fragment recognized twice).
@@ -247,6 +303,24 @@ export class QuestionAssembler {
   }
 
   /**
+   * True when a fragment starts a NEW question rather than continuing the
+   * previous sentence: it ends with "?" (recognisers often drop it) or opens
+   * with an interrogative word.
+   *
+   * This is the guard the early-pause path needs. A pause alone is not an
+   * utterance boundary — natural speech pauses 400-600ms between clauses — so
+   * emitting on the pause alone split one interviewer utterance into several
+   * answers: the AI answered the opening fragment, then the rest as a fresh
+   * question, and the second request aborted the first one mid-stream.
+   */
+  static startsNewQuestion(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    if (trimmed.endsWith("?")) return true;
+    return INTERROGATIVE_OPENING.test(trimmed);
+  }
+
+  /**
    * Returns true if text ends with continuation punctuation (comma, semicolon,
    * em-dash, en-dash, hyphen, or ellipsis) suggesting the speaker paused mid-sentence.
    */
@@ -268,14 +342,7 @@ export class QuestionAssembler {
     if (!trimmed) return false;
     if (/[.!?…]$/.test(trimmed)) return false;
     if (QuestionAssembler.hasContinuationPunctuation(trimmed)) return true;
-    // Fragments opening with an interrogative ("какие у вас цели", "what is
-    // your experience") read as complete questions even without the final
-    // "?" the ASR often drops — never hold those back.
-    // NOTE: \b does not work around Cyrillic in JS (\w is ASCII-only), so
-    // word-boundary is expressed as a non-letter lookahead instead.
-    if (/^(почему|зачем|как|что|кто|где|куда|когда|сколько|какой|какая|какие|какое|каким|какими|какого|каких|каком|чем|расскажите|расскажи|объясните|объясни|опишите|опиши|назовите|назови|приведите|приведи|what|how|why|where|when|who|whom|whose|which|can|could|would|should|shall|will|do|does|did|have|has|are|is|were|was|tell|describe|explain|name|list|give)(?=$|[^\p{L}\p{N}])/iu.test(trimmed)) {
-      return false;
-    }
+    if (QuestionAssembler.startsNewQuestion(trimmed)) return false;
     // No terminal punctuation at all → sentence never properly closed.
     // Only applies to multi-word fragments: a bare "да"/"нет" answer IS a
     // complete utterance and must not be delayed.

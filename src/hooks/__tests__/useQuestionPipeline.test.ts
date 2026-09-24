@@ -2,10 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useQuestionPipeline } from "../useQuestionPipeline";
 import type { LiveSegment } from "../useConversationStore";
-import { selectRussianFiller } from "@/lib/transcript-stabilizer";
+import { selectFillerForText } from "@/lib/transcript-stabilizer";
 
 vi.mock("@/lib/transcript-stabilizer", () => ({
-  selectRussianFiller: vi.fn(() => "Да, секундочку..."),
+  selectFillerForText: vi.fn(() => "Да, секундочку..."),
 }));
 
 describe("useQuestionPipeline", () => {
@@ -182,7 +182,7 @@ describe("useQuestionPipeline", () => {
   it("keeps ONE stable filler per answer and clears on clearFiller (no rotation)", () => {
     let fillerCount = 0;
     const mockSelect = vi.fn(() => `Перебивка ${++fillerCount}`);
-    vi.mocked(selectRussianFiller).mockImplementation(mockSelect);
+    vi.mocked(selectFillerForText).mockImplementation(mockSelect);
     const onTriggerAI = vi.fn().mockResolvedValue(undefined);
     const liveSegmentsRef = { current: [] as LiveSegment[] };
 
@@ -218,9 +218,9 @@ describe("useQuestionPipeline", () => {
     expect(mockSelect).toHaveBeenCalledTimes(2);
   });
 
-  it("calls selectRussianFiller exactly once per answer (no rotation timers)", () => {
+  it("calls selectFillerForText exactly once per answer (no rotation timers)", () => {
     const mockSelect = vi.fn(() => "Фраза");
-    vi.mocked(selectRussianFiller).mockImplementation(mockSelect);
+    vi.mocked(selectFillerForText).mockImplementation(mockSelect);
     const onTriggerAI = vi.fn().mockResolvedValue(undefined);
     const liveSegmentsRef = { current: [] as LiveSegment[] };
 
