@@ -44,10 +44,12 @@ pub fn run() {
     if let Some(config_dir) = dirs::config_dir() {
         let db_path = config_dir.join(identifier).join("pluely.db");
         db::patch_migration_checksums(&db_path);
+        db::apply_pragmas(&db_path);
     }
     if let Some(data_dir) = dirs::data_dir() {
         let db_path = data_dir.join(identifier).join("pluely.db");
         db::patch_migration_checksums(&db_path);
+        db::apply_pragmas(&db_path);
     }
 
     // Get PostHog API key
@@ -193,6 +195,7 @@ pub fn run() {
             api::create_system_prompt,
             api::check_license_status,
             api::get_activity,
+            api::warm_llm_connection,
             speaker::start_system_audio_capture,
             speaker::stop_system_audio_capture,
             speaker::manual_stop_continuous,

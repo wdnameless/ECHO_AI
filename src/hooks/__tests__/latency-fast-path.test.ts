@@ -11,12 +11,12 @@ describe("Latency fast-path and silence thresholds", () => {
     expect(silenceDurationMs).toBeGreaterThanOrEqual(300);
     expect(silenceDurationMs).toBeLessThanOrEqual(500);
 
-    // Question Assembler default silence window is 800ms
-    expect(DEFAULT_SILENCE_WINDOW_MS).toBe(800);
+    // Question Assembler default silence window is 550ms
+    expect(DEFAULT_SILENCE_WINDOW_MS).toBe(550);
     expect(DEFAULT_SILENCE_WINDOW_MS).toBeGreaterThanOrEqual(300);
     expect(DEFAULT_SILENCE_WINDOW_MS).toBeLessThanOrEqual(1000);
 
-    expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBe(800);
+    expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBe(550);
   });
 
   it("does not prematurely flush when utterance ends with continuation punctuation", () => {

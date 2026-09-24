@@ -35,7 +35,7 @@ impl Default for VadConfig {
             hop_size: 1024,
             sensitivity_rms: 0.012, // Much less sensitive - only real speech
             peak_threshold: 0.035,  // Higher threshold - filters clicks/noise
-            silence_chunks: 15,     // ~0.33s of silence before stopping (fast path)
+            silence_chunks: 10,     // ~0.23s of silence before stopping (fast path)
             min_speech_chunks: 7,   // ~0.16s - captures short answers
             pre_speech_chunks: 12,  // ~0.27s - enough to catch word start
             noise_gate_threshold: 0.003, // Stronger noise filtering
@@ -157,6 +157,7 @@ async fn run_vad_capture(
     let mut frame_emitted_len = 0usize;
     let mut frames_since_frame = 0usize;
     let max_samples = sr as usize * 30; // 30s safety cap per utterance
+    let mut noise_floor_window: VecDeque<f32> = VecDeque::with_capacity(90);
 
     while let Some(sample) = stream.next().await {
         buffer.push_back(sample);
@@ -174,7 +175,16 @@ async fn run_vad_capture(
             let mono = apply_noise_gate(&mono, config.noise_gate_threshold);
 
             let (rms, peak) = calculate_audio_metrics(&mono);
-            let is_speech = rms > config.sensitivity_rms || peak > config.peak_threshold;
+            // Rolling noise floor over ~2s sliding window (capped at ~90 chunks)
+            noise_floor_window.push_back(rms);
+            if noise_floor_window.len() > 90 {
+                noise_floor_window.pop_front();
+            }
+            let floor = noise_floor_window.iter().copied().fold(f32::INFINITY, f32::min);
+            let floor = if floor.is_infinite() { 0.0 } else { floor };
+            let effective_threshold = config.sensitivity_rms.max(floor * 3.0 + 0.004);
+
+            let is_speech = rms > effective_threshold || peak > config.peak_threshold;
 
             if is_speech {
                 if !in_speech {
@@ -206,7 +216,7 @@ async fn run_vad_capture(
                     for f in &resampled {
                         bytes.extend_from_slice(&f.to_le_bytes());
                     }
-                    let _ = app.emit("speech-frame", bytes);
+                    let _ = app.emit("speech-frame", B64.encode(&bytes));
                     frame_emitted_len = speech_buffer.len();
                     frames_since_frame = 0;
                 }
@@ -676,4 +686,31 @@ pub fn get_output_devices() -> Result<Vec<AudioDevice>, String> {
         error!("Failed to get output devices: {}", e);
         format!("Failed to get output devices: {}", e)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vad_config_defaults() {
+        let cfg = VadConfig::default();
+        assert_eq!(cfg.silence_chunks, 10, "silence_chunks default must be 10 (~0.23s)");
+        assert_eq!(cfg.sensitivity_rms, 0.012);
+        assert_eq!(cfg.peak_threshold, 0.035);
+    }
+
+    #[test]
+    fn test_adaptive_threshold_calculation() {
+        let sensitivity_rms = 0.012f32;
+        // Very quiet floor: 0.001 -> 0.001 * 3.0 + 0.004 = 0.007 < 0.012 => effective is 0.012
+        let floor_quiet = 0.001f32;
+        let eff_quiet = sensitivity_rms.max(floor_quiet * 3.0 + 0.004);
+        assert_eq!(eff_quiet, 0.012);
+
+        // Elevated noise floor: 0.005 -> 0.005 * 3.0 + 0.004 = 0.019 > 0.012 => effective is 0.019
+        let floor_noisy = 0.005f32;
+        let eff_noisy = sensitivity_rms.max(floor_noisy * 3.0 + 0.004);
+        assert!((eff_noisy - 0.019).abs() < 1e-6);
+    }
 }

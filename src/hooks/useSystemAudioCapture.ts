@@ -248,10 +248,13 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     let frameUnlisten: (() => void) | undefined;
     let cancelled = false;
 
-    listen<number[]>("speech-frame", (event) => {
+    listen<string>("speech-frame", (event) => {
       if (!capturingRef.current) return;
-      const bytes = new Uint8Array(event.payload);
-      if (bytes.length === 0) return;
+      const b64 = event.payload;
+      if (!b64) return;
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       themWsRef.current.feedFrame(bytes.buffer as ArrayBuffer);
     })
       .then((unlisten) => {

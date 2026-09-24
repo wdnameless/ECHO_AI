@@ -159,6 +159,33 @@ pub fn patch_migration_checksums(db_path: &Path) {
         }
     }
 }
+
+/// Applies performance and integrity pragmas to the SQLite database.
+pub fn apply_pragmas(db_path: &Path) {
+    if !db_path.exists() {
+        return;
+    }
+
+    let conn = match rusqlite::Connection::open(db_path) {
+        Ok(conn) => conn,
+        Err(e) => {
+            eprintln!("Warning: Failed to open db at {:?} to apply pragmas: {}", db_path, e);
+            return;
+        }
+    };
+
+    let pragma_sql = "
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA temp_store = MEMORY;
+        PRAGMA cache_size = -64000;
+        PRAGMA foreign_keys = ON;
+    ";
+
+    if let Err(e) = conn.execute_batch(pragma_sql) {
+        eprintln!("Warning: Failed to apply SQLite pragmas to {:?}: {}", db_path, e);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +281,33 @@ mod tests {
         assert_eq!(updated_checksum, expected_checksum);
         assert_ne!(updated_checksum, fake_crlf_checksum);
 
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_apply_pragmas() {
+        let temp_dir = std::env::temp_dir().join(format!("pluely_pragma_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("test_pragma.db");
+
+        // Non-existent db does not panic and does not create file
+        apply_pragmas(&db_path);
+        assert!(!db_path.exists());
+
+        // Create db file
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        drop(conn);
+
+        // Apply pragmas
+        apply_pragmas(&db_path);
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode.to_lowercase(), "wal");
+
+        drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

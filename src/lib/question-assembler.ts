@@ -45,10 +45,10 @@ export type AsrTimingMode = "accurate" | "fast";
  * Default silence window (ms) for fast-path assembly.
  * Tuned to 800ms to eliminate premature VAD flushes and allow natural pauses.
  */
-export const DEFAULT_SILENCE_WINDOW_MS = 800;
+export const DEFAULT_SILENCE_WINDOW_MS = 550;
 
 /** Early pause emission threshold in fast mode (ms) */
-export const DEFAULT_EARLY_EMIT_PAUSE_MS = 500;
+export const DEFAULT_EARLY_EMIT_PAUSE_MS = 400;
 
 export interface AsrTimingConfig {
   /** Gap timer (ms) to flush pending question when speaker goes silent */

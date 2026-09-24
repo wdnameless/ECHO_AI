@@ -1269,6 +1269,29 @@ pub async fn get_activity(app: AppHandle) -> Result<serde_json::Value, String> {
         .await
         .map_err(|e| format!("Failed to parse activity response: {}", e))
 }
+
+#[tauri::command]
+pub async fn warm_llm_connection(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Ok(());
+    }
+    let parsed = match Url::parse(&url) {
+        Ok(u) => u,
+        Err(_) => return Ok(()),
+    };
+    let has_dot_host = parsed.host_str().map(|h| h.contains('.')).unwrap_or(false);
+    if !has_dot_host {
+        return Ok(());
+    }
+
+    let _ = http_client()
+        .get(parsed)
+        .timeout(std::time::Duration::from_millis(1500))
+        .send()
+        .await;
+
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1331,5 +1354,18 @@ mod tests {
         let lines2 = decoder.process_chunk(chunk2);
         let non_empty2: Vec<&str> = lines2.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
         assert_eq!(non_empty2, vec!["data: cut: п end"]);
+    }
+
+    #[tokio::test]
+    async fn test_warm_llm_connection_url_validation() {
+        // Non-https
+        assert_eq!(warm_llm_connection("http://api.openai.com".to_string()).await, Ok(()));
+        // Non-url
+        assert_eq!(warm_llm_connection("not_a_url".to_string()).await, Ok(()));
+        // No dot in host
+        assert_eq!(warm_llm_connection("https://localhost/v1".to_string()).await, Ok(()));
+        assert_eq!(warm_llm_connection("https://internal/v1".to_string()).await, Ok(()));
+        // Valid structure (network errors or status codes still map to Ok(()))
+        assert_eq!(warm_llm_connection("https://127.0.0.1:9999/v1".to_string()).await, Ok(()));
     }
 }

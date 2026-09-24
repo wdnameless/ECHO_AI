@@ -170,6 +170,14 @@ async function buildEnhancedSystemPrompt(
     prompts.push(baseSystemPrompt);
   }
 
+  // Anti-filler & question intent instruction
+  prompts.push(
+    "CONVERSATIONAL FILTER RULE: If the user input is merely a conversational acknowledgment, reaction, or filler sound (e.g. 'угу', 'мгм', 'ага', 'да', 'ну', 'хм', 'ок', 'yeah', 'uh-huh', 'mhm', 'got it') without a substantive question or topic, DO NOT replicate the filler or generate a lengthy answer. Only answer when an actual question, technical query, or request is made."
+  );
+
+  // Add markdown formatting instructions
+  prompts.push(MARKDOWN_FORMATTING_INSTRUCTIONS);
+
   const lengthOption = RESPONSE_LENGTHS.find(
     (l) => l.id === responseSettings.responseLength
   );
@@ -177,19 +185,19 @@ async function buildEnhancedSystemPrompt(
     prompts.push(lengthOption.prompt);
   }
 
-  const detected = detectLanguage(userMessage || "");
-  const effectiveLanguage =
-    detected === "russian" ? "russian" : responseSettings.language;
-
-  const languageOption = LANGUAGES.find(
-    (l) => l.id === effectiveLanguage
-  );
-  if (languageOption?.prompt?.trim()) {
-    prompts.push(languageOption.prompt);
+  // Humanizer rules
+  const humanizer = getHumanizerSettings();
+  if (humanizer.enabled) {
+    prompts.push(HUMANIZER_INSTRUCTIONS);
+    if (humanizer.interviewMode) {
+      prompts.push(INTERVIEW_MODE_INSTRUCTIONS);
+    }
+    if (humanizer.customStyle?.trim()) {
+      prompts.push(
+        `Match this personal speaking style: ${humanizer.customStyle.trim()}`
+      );
+    }
   }
-
-  // Add markdown formatting instructions
-  prompts.push(MARKDOWN_FORMATTING_INSTRUCTIONS);
 
   // RAG context: resume and job description (fetched in parallel - they are
   // independent DB reads, no reason to serialize them).
@@ -213,18 +221,15 @@ async function buildEnhancedSystemPrompt(
     );
   }
 
-  // Humanizer rules
-  const humanizer = getHumanizerSettings();
-  if (humanizer.enabled) {
-    prompts.push(HUMANIZER_INSTRUCTIONS);
-    if (humanizer.interviewMode) {
-      prompts.push(INTERVIEW_MODE_INSTRUCTIONS);
-    }
-    if (humanizer.customStyle?.trim()) {
-      prompts.push(
-        `Match this personal speaking style: ${humanizer.customStyle.trim()}`
-      );
-    }
+  const detected = detectLanguage(userMessage || "");
+  const effectiveLanguage =
+    detected === "russian" ? "russian" : responseSettings.language;
+
+  const languageOption = LANGUAGES.find(
+    (l) => l.id === effectiveLanguage
+  );
+  if (languageOption?.prompt?.trim()) {
+    prompts.push(languageOption.prompt);
   }
 
   // Self-Evolution Memory & Personal Facts injection (ALWAYS on): every
@@ -236,15 +241,6 @@ async function buildEnhancedSystemPrompt(
       prompts.push(evolutionBlock);
     }
   }
-
-  // NOTE: Live web search is no longer awaited here - it runs in parallel
-  // inside fetchAIResponse and never blocks the first token.
-
-  // Anti-filler & question intent instruction
-  prompts.push(
-    "CONVERSATIONAL FILTER RULE: If the user input is merely a conversational acknowledgment, reaction, or filler sound (e.g. 'угу', 'мгм', 'ага', 'да', 'ну', 'хм', 'ок', 'yeah', 'uh-huh', 'mhm', 'got it') without a substantive question or topic, DO NOT replicate the filler or generate a lengthy answer. Only answer when an actual question, technical query, or request is made."
-  );
-
   return prompts.join(" ");
 }
 
@@ -664,7 +660,9 @@ async function* streamAIResponse(params: {
         let errorText = "";
         try {
           if (response) errorText = await response.text();
-        } catch {}
+        } catch (bodyErr) {
+          console.debug("[ai-response] failed to read error body:", bodyErr);
+        }
         yield describeHttpFailure(
           response?.status ?? 0,
           response?.statusText ?? "error",
@@ -748,7 +746,7 @@ async function* streamAIResponse(params: {
             if (delta) {
               yield delta;
             }
-          } catch (e) {
+          } catch {
             // Ignore parsing errors for partial JSON chunks
           }
         }

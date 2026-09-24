@@ -138,8 +138,8 @@ describe("QuestionAssembler", () => {
 
   describe("ASR timing modes (fast vs accurate)", () => {
     it("exposes ASR_TIMING_PRESETS with expected fast and accurate configurations", () => {
-      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBe(800);
-      expect(ASR_TIMING_PRESETS.fast.earlyEmitPauseMs).toBe(500);
+      expect(ASR_TIMING_PRESETS.fast.flushGapMs).toBe(550);
+      expect(ASR_TIMING_PRESETS.fast.earlyEmitPauseMs).toBe(400);
       expect(ASR_TIMING_PRESETS.accurate.flushGapMs).toBe(1500);
       expect(ASR_TIMING_PRESETS.accurate.earlyEmitPauseMs).toBeUndefined();
       expect(ACTIVE_ASR_MODE).toBe("fast");

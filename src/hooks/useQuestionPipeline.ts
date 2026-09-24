@@ -9,6 +9,7 @@
  * - Provides reset and question-assembler coordination.
  */
 import { useState, useRef, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   QuestionAssembler,
   ACTIVE_ASR_MODE,
@@ -16,8 +17,42 @@ import {
 } from "@/lib/question-assembler";
 import { selectRussianFiller } from "@/lib/transcript-stabilizer";
 import { setUnthrottledTimeout } from "@/lib/timer-worker";
+import { safeLocalStorage } from "@/lib/storage/helper";
+import { STORAGE_KEYS } from "@/config/constants";
+import { AI_PROVIDERS } from "@/config/ai-providers.constants";
+import { deepVariableReplacer } from "@/lib/functions/common.function";
 import { LiveSegment } from "./useConversationStore";
 
+function resolveActiveProviderUrl(): string | null {
+  try {
+    const rawSelected = safeLocalStorage.getItem(STORAGE_KEYS.SELECTED_AI_PROVIDER);
+    const selected = rawSelected
+      ? (JSON.parse(rawSelected) as { provider?: string; variables?: Record<string, string> })
+      : null;
+    const providerId = selected?.provider || "openai";
+
+    let curlTemplate = AI_PROVIDERS.find((p) => p.id === providerId)?.curl;
+    if (!curlTemplate) {
+      const rawCustom = safeLocalStorage.getItem(STORAGE_KEYS.CUSTOM_AI_PROVIDERS);
+      if (rawCustom) {
+        const customProviders = JSON.parse(rawCustom) as Array<{ id: string; curl?: string }>;
+        curlTemplate = customProviders.find((p) => p.id === providerId)?.curl;
+      }
+    }
+    if (!curlTemplate) return null;
+
+    const resolvedCurl: string = selected?.variables
+      ? String(deepVariableReplacer(curlTemplate, selected.variables))
+      : curlTemplate;
+
+    const match =
+      resolvedCurl.match(/(?:--url\s+|--location\s+|curl\s+|['"]https?:\/\/)(['"]?)(https?:\/\/[^\s'"]+)\1/i) ||
+      resolvedCurl.match(/https?:\/\/[^\s'"]+/i);
+    return match ? match[2] || match[0] : null;
+  } catch {
+    return null;
+  }
+}
 export interface UseQuestionPipelineProps {
   onTriggerAI: (question: string, source: "me" | "them") => Promise<void>;
   liveSegmentsRef: React.MutableRefObject<LiveSegment[]>;
@@ -37,6 +72,8 @@ export function useQuestionPipeline({
   /** Cancels the pending gap timer. The timer itself lives in a Worker. */
   const cancelGapTimerRef = useRef<(() => void) | null>(null);
   const asrTimingConfig = ASR_TIMING_PRESETS[ACTIVE_ASR_MODE];
+  const activeProviderUrlRef = useRef<string | null | undefined>(undefined);
+
 
   if (!questionAssemblerRef.current) {
     questionAssemblerRef.current = new QuestionAssembler({
@@ -113,6 +150,13 @@ export function useQuestionPipeline({
       cancelGapTimerRef.current?.();
       const gapMs = asrTimingConfig.flushGapMs;
       const arm = (delay: number) => {
+        if (activeProviderUrlRef.current === undefined) {
+          activeProviderUrlRef.current = resolveActiveProviderUrl();
+        }
+        const warmUrl = activeProviderUrlRef.current;
+        if (warmUrl) {
+          void invoke("warm_llm_connection", { url: warmUrl }).catch(() => {});
+        }
         cancelGapTimerRef.current = setUnthrottledTimeout(() => {
           cancelGapTimerRef.current = null;
           const emitted = questionAssemblerRef.current?.flush("them");
@@ -120,8 +164,8 @@ export function useQuestionPipeline({
             void onTriggerAI(emitted.question, "them");
           } else if (emitted?.kind === "pending") {
             // Speaker paused mid-sentence — give them a generous second window
-            // (2x the base gap) before forcing the question through.
-            arm(gapMs * 2);
+            // (1.4x the base gap) before forcing the question through.
+            arm(Math.round(gapMs * 1.4));
           }
         }, delay);
       };
