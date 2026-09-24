@@ -31,18 +31,21 @@ import { cn } from "@/lib/utils";
 const SENSITIVITY_PRESETS = {
   low: {
     sensitivity_rms: 0.015,
+    peak_threshold: 0.045,
     noise_gate_threshold: 0.005,
     label: "Low",
     description: "Only picks up clear, loud speech",
   },
   normal: {
     sensitivity_rms: 0.012,
+    peak_threshold: 0.035,
     noise_gate_threshold: 0.003,
     label: "Normal",
     description: "Balanced for typical conversations",
   },
   high: {
     sensitivity_rms: 0.008,
+    peak_threshold: 0.025,
     noise_gate_threshold: 0.002,
     label: "High",
     description: "Picks up quieter speech",
@@ -84,6 +87,7 @@ export const SettingsPanel = ({
     for (const [key, preset] of Object.entries(SENSITIVITY_PRESETS)) {
       if (
         Math.abs(vadConfig.sensitivity_rms - preset.sensitivity_rms) < 0.001 &&
+        Math.abs(vadConfig.peak_threshold - preset.peak_threshold) < 0.001 &&
         Math.abs(vadConfig.noise_gate_threshold - preset.noise_gate_threshold) <
           0.001
       ) {
@@ -100,6 +104,7 @@ export const SettingsPanel = ({
     onUpdateVadConfig({
       ...vadConfig,
       sensitivity_rms: presetValues.sensitivity_rms,
+      peak_threshold: presetValues.peak_threshold,
       noise_gate_threshold: presetValues.noise_gate_threshold,
     });
   };
@@ -118,7 +123,7 @@ export const SettingsPanel = ({
       hop_size: 1024,
       sensitivity_rms: 0.012,
       peak_threshold: 0.035,
-      silence_chunks: 28,
+      silence_chunks: 16,
       min_speech_chunks: 7,
       pre_speech_chunks: 12,
       noise_gate_threshold: 0.003,

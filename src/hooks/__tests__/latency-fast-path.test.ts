@@ -4,8 +4,10 @@ import { DEFAULT_SILENCE_WINDOW_MS, ASR_TIMING_PRESETS, QuestionAssembler } from
 
 describe("Latency fast-path and silence thresholds", () => {
   it("silence thresholds are tuned for natural speech pauses", () => {
-    // 15 chunks at hop_size 1024 / 48000Hz ≈ 320-340ms
-    expect(DEFAULT_VAD_CONFIG.silence_chunks).toBe(15);
+    // 16 chunks at hop_size 1024 / 48000Hz ≈ 340-370ms. 10-15 chattered: every
+    // natural mid-sentence pause (250-350ms) closed an utterance and churned
+    // the ASR stream socket, so the frames never reached the model.
+    expect(DEFAULT_VAD_CONFIG.silence_chunks).toBe(16);
     const silenceDurationSec = (DEFAULT_VAD_CONFIG.silence_chunks * DEFAULT_VAD_CONFIG.hop_size) / 48000;
     const silenceDurationMs = silenceDurationSec * 1000;
     expect(silenceDurationMs).toBeGreaterThanOrEqual(300);

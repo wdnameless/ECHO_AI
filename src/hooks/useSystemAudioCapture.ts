@@ -25,7 +25,7 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   hop_size: 1024,
   sensitivity_rms: 0.012,
   peak_threshold: 0.035,
-  silence_chunks: 15, // ~330ms of silence before stopping (fast path)
+  silence_chunks: 16, // ~0.37s of silence before stopping; 10-15 chattered on natural pauses
   min_speech_chunks: 7,
   pre_speech_chunks: 12,
   noise_gate_threshold: 0.003,
@@ -274,52 +274,35 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     };
   }, [capturingRef]);
 
-  // Stop the stream when capture stops; per-utterance start/stop is wired to the
-  // speech events below.
+  // The interviewer stream is SESSION-scoped, not per-utterance: the sidecar
+  // endpoints utterances itself and keeps returning partials/finals on one
+  // socket. Opening and closing it on every Rust VAD utterance made natural
+  // mid-sentence pauses (250-350ms) churn the socket dozens of times per
+  // minute — the frames buffered during the reconnect were then wiped, the
+  // stream produced nothing, and the model was left locked.
+  //
+  // The single-model constraint is still honoured: when the candidate starts
+  // answering, `yieldThemToMic()` finalizes and releases the stream so the
+  // microphone channel can take the model; `resumeThemStream()` hands it back
+  // once the mic utterance ends.
   useEffect(() => {
-    if (!capturing) {
+    if (capturing) {
+      themWsRef.current.beginUtterance();
+      themWsRef.current.start();
+    } else {
       themWsRef.current.finalizeAndClose();
     }
   }, [capturing]);
-
-  useEffect(() => {
-    let startUnlisten: (() => void) | undefined;
-    let cancelled = false;
-
-    // The interviewer started speaking: open the stream for this utterance.
-    listen("speech-start", () => {
-      if (!capturingRef.current) return;
-      themWsRef.current.beginUtterance();
-      themWsRef.current.start();
-    })
-      .then((unlisten) => {
-        if (cancelled) {
-          unlisten();
-        } else {
-          startUnlisten = unlisten;
-        }
-      })
-      .catch((err) => {
-        console.warn("[system-audio] speech-start listener failed:", err);
-      });
-
-    return () => {
-      cancelled = true;
-      if (startUnlisten) startUnlisten();
-    };
-  }, [capturingRef]);
 
   useEffect(() => {
     let speechUnlisten: (() => void) | undefined;
     let cancelled = false;
 
     listen("speech-detected", (event) => {
-      // The stream transcribed this utterance and the sidecar serves one stream
-      // per model: asking for the same audio over HTTP here would race the
-      // stream for the model (and collect "model busy"). Only an utterance the
-      // stream never answered falls back to the batch call.
-      if (themWsRef.current.isStreaming() || themWsRef.current.hasProducedText()) {
-        themWsRef.current.finalizeAndClose();
+      // The session stream owns the model and answers utterances by itself.
+      // Only when it never came up (sidecar missing) is the batch call the
+      // last resort — otherwise the two would race for the model.
+      if (themWsRef.current.isStreaming()) {
         return;
       }
       onInterviewerSpeechActivity?.();
@@ -483,6 +466,16 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     setMicStream,
     micStreamRef,
     transcribeSegment,
+    /** Hands the single-model stream to the microphone channel. */
+    yieldThemToMic: useCallback(() => {
+      themWsRef.current.finalizeAndClose();
+    }, []),
+    /** Takes the stream back once the microphone utterance ended. */
+    resumeThemStream: useCallback(() => {
+      if (!capturingRef.current) return;
+      themWsRef.current.beginUtterance();
+      themWsRef.current.start();
+    }, []),
     startContinuousRecording,
     ignoreContinuousRecording,
     manualStopAndSend,

@@ -28,6 +28,16 @@ pub struct VadConfig {
     pub max_recording_duration_secs: u64,
 }
 
+/// Target RMS the input calibration lifts the noise floor to. Keeping the
+/// floor at a known level makes the sensitivity presets mean the same thing on
+/// a loud USB interface and on a quiet loopback.
+const AGC_TARGET_FLOOR: f32 = 0.01;
+
+/// Highest input gain the calibration may apply. A room that quiet is
+/// effectively silent; beyond this the noise itself would be amplified into
+/// the speech band.
+const AGC_MAX_GAIN: f32 = 60.0;
+
 impl Default for VadConfig {
     fn default() -> Self {
         Self {
@@ -35,7 +45,7 @@ impl Default for VadConfig {
             hop_size: 1024,
             sensitivity_rms: 0.012, // Much less sensitive - only real speech
             peak_threshold: 0.035,  // Higher threshold - filters clicks/noise
-            silence_chunks: 10,     // ~0.23s of silence before stopping (fast path)
+            silence_chunks: 16,    // ~0.37s - survives natural mid-sentence pauses (250-350ms); 10 caused utterance chatter that starved the stream
             min_speech_chunks: 7,   // ~0.16s - captures short answers
             pre_speech_chunks: 12,  // ~0.27s - enough to catch word start
             noise_gate_threshold: 0.003, // Stronger noise filtering
@@ -158,6 +168,16 @@ async fn run_vad_capture(
     let mut frames_since_frame = 0usize;
     let max_samples = sr as usize * 30; // 30s safety cap per utterance
     let mut noise_floor_window: VecDeque<f32> = VecDeque::with_capacity(90);
+    // Input calibration. Loopback and capture gains differ wildly between
+    // devices: the same voice arrives at rms 0.30 through one interface and
+    // 0.002 through another, and an absolute threshold tuned for the first
+    // never fires on the second (measured: peak 0.004 where the gate wanted
+    // 0.035). Track the loudest recent level and lift the signal so the
+    // presets mean the same thing everywhere. The gain only moves once a
+    // second and is capped, so it cannot pump on a single loud word.
+    let mut level_peak_window: VecDeque<f32> = VecDeque::with_capacity(45);
+    let mut input_gain: f32 = 1.0;
+    let mut gain_cooldown: u32 = 0;
 
     while let Some(sample) = stream.next().await {
         buffer.push_back(sample);
@@ -171,8 +191,57 @@ async fn run_vad_capture(
                 }
             }
 
+            // Calibrate before the gate: everything downstream (gate, metrics,
+            // utterance buffers, streamed frames, WAV fallback) then carries the
+            // same normalized level.
+            //
+            // The gain follows the NOISE FLOOR, never the peak. Normalizing to
+            // the loudest recent level was measured to destroy the very thing
+            // the VAD needs: a quiet room and quiet speech were both lifted to
+            // the same band, so every ambient sound became "speech". Pushing the
+            // floor to a known level instead keeps the speech-to-noise distance
+            // intact — a device whose room noise sits at 0.0001 gets the same
+            // effective sensitivity as one at 0.01.
+            let (pre_rms, _) = calculate_audio_metrics(&mono);
+            level_peak_window.push_back(pre_rms);
+            if level_peak_window.len() > 200 {
+                level_peak_window.pop_front();
+            }
+            if gain_cooldown > 0 {
+                gain_cooldown -= 1;
+            } else if let Some(&quietest) = level_peak_window
+                .iter()
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            {
+                // Below the measurable floor there is nothing to calibrate.
+                let desired = if quietest > 1e-6 {
+                    (AGC_TARGET_FLOOR / quietest).clamp(1.0, AGC_MAX_GAIN)
+                } else {
+                    input_gain
+                };
+                // Ease toward the target so the level never jumps audibly.
+                input_gain += (desired - input_gain) * 0.25;
+                gain_cooldown = 40; // ~1s at 1024-sample chunks of 44.1kHz
+            }
+
+            let mut mono = if (input_gain - 1.0).abs() > 0.01 {
+                let g = input_gain;
+                mono.iter()
+                    .map(|s| {
+                        let amplified = s * g;
+                        if amplified.abs() > 1.0 {
+                            amplified.signum()
+                        } else {
+                            amplified
+                        }
+                    })
+                    .collect::<Vec<f32>>()
+            } else {
+                mono
+            };
+
             // Apply noise gate BEFORE VAD (critical for accuracy)
-            let mono = apply_noise_gate(&mono, config.noise_gate_threshold);
+            mono = apply_noise_gate(&mono, config.noise_gate_threshold);
 
             let (rms, peak) = calculate_audio_metrics(&mono);
             // Rolling noise floor over ~2s sliding window (capped at ~90 chunks)
@@ -182,7 +251,13 @@ async fn run_vad_capture(
             }
             let floor = noise_floor_window.iter().copied().fold(f32::INFINITY, f32::min);
             let floor = if floor.is_infinite() { 0.0 } else { floor };
-            let effective_threshold = config.sensitivity_rms.max(floor * 3.0 + 0.004);
+            // The noise floor may raise the bar, but never above ~1.8x the
+            // user's own sensitivity: on "High" the user explicitly asked for
+            // quiet speech, and an uncapped floor silently overrode that.
+            let adaptive_threshold = floor * 3.0 + 0.004;
+            let effective_threshold = config
+                .sensitivity_rms
+                .max(adaptive_threshold.min(config.sensitivity_rms * 1.8));
 
             let is_speech = rms > effective_threshold || peak > config.peak_threshold;
 
@@ -695,7 +770,7 @@ mod tests {
     #[test]
     fn test_vad_config_defaults() {
         let cfg = VadConfig::default();
-        assert_eq!(cfg.silence_chunks, 10, "silence_chunks default must be 10 (~0.23s)");
+        assert_eq!(cfg.silence_chunks, 16, "silence_chunks default must be 16 (~0.37s): 10 chattered on natural pauses");
         assert_eq!(cfg.sensitivity_rms, 0.012);
         assert_eq!(cfg.peak_threshold, 0.035);
     }
@@ -705,12 +780,20 @@ mod tests {
         let sensitivity_rms = 0.012f32;
         // Very quiet floor: 0.001 -> 0.001 * 3.0 + 0.004 = 0.007 < 0.012 => effective is 0.012
         let floor_quiet = 0.001f32;
-        let eff_quiet = sensitivity_rms.max(floor_quiet * 3.0 + 0.004);
+        let eff_quiet = sensitivity_rms.max((floor_quiet * 3.0 + 0.004).min(sensitivity_rms * 1.8));
         assert_eq!(eff_quiet, 0.012);
 
-        // Elevated noise floor: 0.005 -> 0.005 * 3.0 + 0.004 = 0.019 > 0.012 => effective is 0.019
+        // Elevated noise floor: 0.005 -> raw 0.019, but the boost is capped at
+        // 1.8x the user's sensitivity (0.0216), so 0.019 stands.
         let floor_noisy = 0.005f32;
-        let eff_noisy = sensitivity_rms.max(floor_noisy * 3.0 + 0.004);
+        let eff_noisy = sensitivity_rms.max((floor_noisy * 3.0 + 0.004).min(sensitivity_rms * 1.8));
         assert!((eff_noisy - 0.019).abs() < 1e-6);
+
+        // Very noisy floor: 0.010 -> raw 0.034 is capped to 0.012 * 1.8 = 0.0216;
+        // the user's chosen sensitivity must not be silently overridden further.
+        let floor_very_noisy = 0.010f32;
+        let eff_capped =
+            sensitivity_rms.max((floor_very_noisy * 3.0 + 0.004).min(sensitivity_rms * 1.8));
+        assert!((eff_capped - 0.0216).abs() < 1e-6);
     }
 }

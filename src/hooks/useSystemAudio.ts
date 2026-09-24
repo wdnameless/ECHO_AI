@@ -230,6 +230,8 @@ export function useSystemAudio() {
     setMicStream,
     micStreamRef,
     transcribeSegment,
+    yieldThemToMic,
+    resumeThemStream,
     startContinuousRecording,
     ignoreContinuousRecording,
     manualStopAndSend,
@@ -332,11 +334,15 @@ export function useSystemAudio() {
       micFeedFrame(pcm);
     },
     onMicSpeechStart: () => {
+      // Single-model sidecar: the microphone takes the stream from the
+      // interviewer channel for the duration of this answer.
+      yieldThemToMic();
       micWsWantRef.current = true;
       micWsConnect();
     },
     onMicSpeechStop: () => {
       micWsFinalizeAndClose();
+      resumeThemStream();
     },
     onInterimTranscript: (text) => {
       // The engine's own stream is the single source for dictation text: it is
