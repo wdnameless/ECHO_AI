@@ -45,7 +45,7 @@ impl Default for VadConfig {
             hop_size: 1024,
             sensitivity_rms: 0.012, // Much less sensitive - only real speech
             peak_threshold: 0.035,  // Higher threshold - filters clicks/noise
-            silence_chunks: 16,    // ~0.37s - survives natural mid-sentence pauses (250-350ms); 10 caused utterance chatter that starved the stream
+            silence_chunks: 12,    // ~0.28s - the socket is session-scoped now, so a shorter window costs nothing and a question reaches the AI ~100ms sooner
             min_speech_chunks: 7,   // ~0.16s - captures short answers
             pre_speech_chunks: 12,  // ~0.27s - enough to catch word start
             noise_gate_threshold: 0.003, // Stronger noise filtering
@@ -770,7 +770,7 @@ mod tests {
     #[test]
     fn test_vad_config_defaults() {
         let cfg = VadConfig::default();
-        assert_eq!(cfg.silence_chunks, 16, "silence_chunks default must be 16 (~0.37s): 10 chattered on natural pauses");
+        assert_eq!(cfg.silence_chunks, 12, "silence_chunks default must be 12 (~0.28s)");
         assert_eq!(cfg.sensitivity_rms, 0.012);
         assert_eq!(cfg.peak_threshold, 0.035);
     }

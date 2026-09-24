@@ -167,6 +167,24 @@ export function useThemWsStreaming({
     }
   }, [capturingRef]);
 
+  /**
+   * Flushes the current utterance WITHOUT dropping the socket.
+   *
+   * The sidecar only emits a `final` frame — the one the AI pipeline needs —
+   * after a `finalize`. With a session-scoped socket there is no close to
+   * trigger it, so the end-of-speech event must ask for the flush explicitly;
+   * otherwise the feed shows partials forever and no answer is ever produced.
+   */
+  const finalizeUtterance = useCallback(() => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify({ type: "finalize" }));
+    } catch {
+      // connection already dying
+    }
+  }, []);
+
   const finalizeAndClose = useCallback(() => {
     stoppedByUsRef.current = true;
     frameBufferRef.current = [];
@@ -201,6 +219,7 @@ export function useThemWsStreaming({
   return {
     start,
     feedFrame,
+    finalizeUtterance,
     finalizeAndClose,
     close,
     isStreaming,

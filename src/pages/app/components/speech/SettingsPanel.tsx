@@ -123,7 +123,7 @@ export const SettingsPanel = ({
       hop_size: 1024,
       sensitivity_rms: 0.012,
       peak_threshold: 0.035,
-      silence_chunks: 16,
+      silence_chunks: 12,
       min_speech_chunks: 7,
       pre_speech_chunks: 12,
       noise_gate_threshold: 0.003,

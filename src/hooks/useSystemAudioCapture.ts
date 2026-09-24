@@ -25,7 +25,7 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   hop_size: 1024,
   sensitivity_rms: 0.012,
   peak_threshold: 0.035,
-  silence_chunks: 16, // ~0.37s of silence before stopping; 10-15 chattered on natural pauses
+  silence_chunks: 12, // ~0.28s of silence before stopping; the stream socket is session-scoped so a shorter window is safe
   min_speech_chunks: 7,
   pre_speech_chunks: 12,
   noise_gate_threshold: 0.003,
@@ -299,12 +299,17 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     let cancelled = false;
 
     listen("speech-detected", (event) => {
-      // The session stream owns the model and answers utterances by itself.
-      // Only when it never came up (sidecar missing) is the batch call the
-      // last resort — otherwise the two would race for the model.
+      // End of the interviewer's utterance. The socket stays open (session
+      // scoped), but the sidecar only produces the `final` frame — the one the
+      // question assembler and the AI pipeline consume — after an explicit
+      // flush. Without it the feed shows partials forever and no answer is
+      // ever generated.
       if (themWsRef.current.isStreaming()) {
+        onInterviewerSpeechActivity?.();
+        themWsRef.current.finalizeUtterance();
         return;
       }
+      // No live stream (sidecar unreachable): the batch call is the last resort.
       onInterviewerSpeechActivity?.();
       handleSpeechDetectedRef.current(event.payload as string);
     })

@@ -177,7 +177,6 @@ export const SubtitleFeed = ({
   }, []);
   const scrollRef = useRef<HTMLDivElement>(null);
   const translatedKeysRef = useRef<Set<string>>(new Set());
-  const streamingDebounceRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const [translationsOn, setTranslationsOn] = useState(true);
   const [translations, setTranslations] = useState<Record<string, string>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -467,55 +466,13 @@ export const SubtitleFeed = ({
 
   // Translation queue: newest entries first (they are on screen), two
   // parallel workers keep latency low without hammering the endpoint.
+  //
+  // Only finished rows are translated: a live row renders full width (no
+  // translation column), so translating partial text would burn the endpoint
+  // for something nobody can see.
   useEffect(() => {
-    if (!translationsOn) {
-      for (const timer of streamingDebounceRef.current.values()) {
-        clearTimeout(timer);
-      }
-      streamingDebounceRef.current.clear();
-      return;
-    }
+    if (!translationsOn) return;
     let cancelled = false;
-
-    // Streaming entries: schedule debounced translation per entryId (400ms)
-    const currentStreamingIds = new Set<string>();
-    for (const e of entries) {
-      const existingTimer = streamingDebounceRef.current.get(e.id);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-        streamingDebounceRef.current.delete(e.id);
-      }
-
-      const key = e.text.trim();
-      if (!e.streaming) {
-        if (key && translations[key] !== undefined) {
-          translatedKeysRef.current.add(key);
-        }
-        continue;
-      }
-
-      currentStreamingIds.add(e.id);
-      if (!key) continue;
-
-      if (translations[key] === undefined) {
-        const timer = setTimeout(async () => {
-          streamingDebounceRef.current.delete(e.id);
-          if (cancelled) return;
-          const translated = await fastTranslate(key);
-          if (cancelled) return;
-          setTranslations((p) => ({ ...p, [key]: translated }));
-        }, 400);
-        streamingDebounceRef.current.set(e.id, timer);
-      }
-    }
-
-    // Clean up timers for entries that were removed
-    for (const [id, timer] of streamingDebounceRef.current.entries()) {
-      if (!currentStreamingIds.has(id)) {
-        clearTimeout(timer);
-        streamingDebounceRef.current.delete(id);
-      }
-    }
 
     const pending = entries
       .filter((e) => {
@@ -999,7 +956,10 @@ export const SubtitleFeed = ({
                 <div
                   className={cn(
                     "grid gap-x-2 w-full min-w-0 max-w-full",
-                    translationsOn ? "grid-cols-2" : "grid-cols-1"
+                    // A live row gets the full width: split in half, the growing
+                    // text wrapped into a tall one-word-wide column that was
+                    // painful to read while someone was still speaking.
+                    translationsOn && !e.streaming ? "grid-cols-2" : "grid-cols-1"
                   )}
                 >
                   <div
@@ -1016,15 +976,10 @@ export const SubtitleFeed = ({
                       </p>
                     ))}
                   </div>
-                  {translationsOn && (
+                  {translationsOn && !e.streaming && (
                     <div className="min-w-0 flex items-start border-l border-border/30 pl-2">
                       {translation === undefined ? (
-                        <Loader2
-                          className={cn(
-                            "w-3 h-3 animate-spin mt-1",
-                            e.streaming ? "text-violet-400/70" : "text-muted-foreground/50"
-                          )}
-                        />
+                        <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/50 mt-1" />
                       ) : (
                         <p
                           className="text-[0.8em] leading-relaxed text-violet-700/90 dark:text-violet-300/90"
