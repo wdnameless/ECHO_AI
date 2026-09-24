@@ -17,6 +17,34 @@ describe("one interviewer utterance is answered once", () => {
   // Speech ends at T; its text arrives 1.1s later.
   const LAG = 1100;
 
+  it("merges a tail fragment into the parent question instead of dropping text", () => {
+    const a = new QuestionAssembler({ mode: "fast" });
+
+    // The first half is emitted by the pipeline's own gap timer.
+    a.push({
+      source: "them",
+      text: "Now tell me about your experience with distributed systems",
+      timestamp: T + LAG,
+      pauseBeforeMs: 300,
+    });
+    const emitted = a.flush("them", { allowContinuation: true });
+    expect(emitted?.kind).toBe("emitted");
+
+    // A long thinking pause, then a short non-question tail. It must be merged
+    // back into the answered question, not answered as a standalone fragment.
+    const tail = a.push({
+      source: "them",
+      text: "and how you handled reliability in production.",
+      timestamp: T + 300 + 3000 + LAG,
+      pauseBeforeMs: 900,
+    });
+
+    expect(tail.kind).toBe("pending");
+    expect(a.current?.text).toBe(
+      "Now tell me about your experience with distributed systems and how you handled reliability in production."
+    );
+  });
+
   it("keeps a monologue together across a mid-sentence pause", () => {
     const a = new QuestionAssembler({ mode: "fast" });
 

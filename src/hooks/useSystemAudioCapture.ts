@@ -227,7 +227,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     async (
       audioBlob: Blob,
       source: "me" | "them",
-      options?: { skipOnInterviewerTranscription?: boolean }
+      options?: { skipOnInterviewerTranscription?: boolean; pauseBeforeMs?: number }
     ) => {
       const setSegmentProcessing =
         source === "me" ? setIsMicProcessing : setIsSystemProcessing;
@@ -293,7 +293,10 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
           }
 
           if (source === "them" && !options?.skipOnInterviewerTranscription) {
-            await onInterviewerTranscription(transcription, pauseBeforeUtteranceRef.current);
+            await onInterviewerTranscription(
+              transcription,
+              options?.pauseBeforeMs ?? 0
+            );
           }
         } else {
           setError("Received empty transcription");
@@ -338,6 +341,10 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     handleSpeechDetectedRef.current = async (base64Audio: string) => {
       try {
         if (!capturingRef.current) return;
+        // Snapshot the pause NOW: transcription takes ~1s, and by the time it
+        // returns the next utterance may already have started and overwritten
+        // this ref with ITS pause — which belongs to a different utterance.
+        const pauseBeforeMs = pauseBeforeUtteranceRef.current;
         const binaryString = atob(base64Audio);
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
@@ -345,7 +352,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         }
         const audioBlob = new Blob([bytes], { type: "audio/wav" });
 
-        await transcribeSegment(audioBlob, "them");
+        await transcribeSegment(audioBlob, "them", { pauseBeforeMs });
       } catch (err) {
         console.warn("[system-audio]", err);
         setError("Failed to process speech");

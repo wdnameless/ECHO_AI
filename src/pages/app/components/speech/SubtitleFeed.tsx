@@ -40,6 +40,27 @@ import {
   saveWebSearchSettings,
 } from "@/lib/web-search";
 import type { ChatConversation, LiveSegment } from "@/hooks/useSystemAudio";
+import { detectTextLanguage } from "@/lib/transcript-stabilizer";
+
+/**
+ * Newest text spoken by the interviewer, preferring the live feed (fresher than
+ * the stored conversation) and falling back to the last stored question.
+ * Used to pick the language of the on-screen filler placeholder.
+ */
+function newestInterviewerText(
+  liveSegments: LiveSegment[],
+  messages: ChatConversation["messages"]
+): string {
+  for (let i = liveSegments.length - 1; i >= 0; i--) {
+    const seg = liveSegments[i];
+    if (seg.source === "them" && seg.text.trim()) return seg.text;
+  }
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.source === "them" && msg.content?.trim()) return msg.content;
+  }
+  return "";
+}
 
 type FeedKind = "me" | "them" | "ai";
 
@@ -300,6 +321,20 @@ export const SubtitleFeed = ({
 
   // Chronological feed, rendered INVERTED: newest row at the top so fresh
   // questions/answers are always visible without any scrolling.
+  // The pipeline picks the spoken filler in the question's language, but it is
+  // cleared between questions. Until it arrives this row still has to show
+  // something to read aloud, and that placeholder must match the language of
+  // the question on screen — a Russian opener under an English question reads
+  // as a script.
+  const fallbackFiller = useMemo(
+    () =>
+      detectTextLanguage(newestInterviewerText(liveSegments, conversation.messages)) ===
+      "ru"
+        ? "Секундочку, сейчас сформулирую…"
+        : "One second, let me put this together…",
+    [liveSegments, conversation.messages]
+  );
+
   const entries = useMemo<FeedEntry[]>(() => {
     const map = new Map<string, FeedEntry>();
     // Normalized-text keys of entries that already landed as FINALS. A live
@@ -820,7 +855,7 @@ export const SubtitleFeed = ({
                 <span>Заполните паузу (зачитайте вслух):</span>
               </div>
               <div className="text-[0.95em] font-medium leading-snug tracking-normal select-text text-foreground/90 pl-1 border-l-2 border-violet-500/60">
-                «{activeFiller || "Секундочку, сейчас сформулирую…"}»
+                «{activeFiller || fallbackFiller}»
               </div>
             </div>
           )}
