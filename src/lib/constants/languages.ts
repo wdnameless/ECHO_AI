@@ -165,3 +165,26 @@ export const getUniqueCapabilityLanguages = (
       return true;
     });
 };
+
+/**
+ * Picker entries that at least one model in the catalogue actually speaks.
+ *
+ * Offering the full language list meant 38 of 100 entries could only ever return
+ * an empty result — no model in the catalogue speaks Irish, Tamil, Latin and so
+ * on. A filter whose every choice yields nothing reads as a broken filter, so the
+ * picker shows what the catalogue has. Codes are compared after alias
+ * resolution, so a `nb` model satisfies the Norwegian entry.
+ */
+export const getAvailableCapabilityLanguages = (
+  models: ReadonlyArray<{ languages?: string[] }>
+): Language[] => {
+  const reachable = new Set<string>();
+  for (const model of models) {
+    for (const code of getUniqueCapabilityLanguages(model.languages)) {
+      reachable.add(code);
+    }
+  }
+  return MODEL_CAPABILITY_LANGUAGES.filter((language) =>
+    reachable.has(recognitionLanguage(language.value))
+  );
+};

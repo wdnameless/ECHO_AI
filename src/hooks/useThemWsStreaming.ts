@@ -40,9 +40,16 @@ export function useThemWsStreaming({
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stoppedByUsRef = useRef(false);
   const producedTextRef = useRef(false);
+  /**
+   * A finalize-driven close asked for a reopen, but no speech has arrived yet.
+   * The socket is opened on the next frame instead of immediately, so an idle
+   * capture session does not hold an engine session (the pool is finite).
+   */
+  const pendingReconnectRef = useRef(false);
 
   const close = useCallback(() => {
     frameBufferRef.current = [];
+    pendingReconnectRef.current = false;
     const ws = wsRef.current;
     wsRef.current = null;
     releaseStream("them");
@@ -70,22 +77,26 @@ export function useThemWsStreaming({
   }, [capturingRef]);
 
   /**
-   * Reopens right after a finalize-driven close.
+   * Reopens after a finalize-driven close, but only when speech is actually
+   * arriving.
    *
    * The sidecar closes the socket as soon as it answers a finalize, and the
-   * next utterance starts within a second — waiting the usual reconnect delay
-   * for a close we asked for just shifted the handshake into the speech. The
-   * connect itself measured 3ms, so there is nothing to wait for.
+   * next utterance starts within a second, so a socket was reopened at once to
+   * keep the handshake out of the speech. That eager reopen is what exhausted
+   * the engine: it grants a fixed number of concurrent sessions (3), holds a
+   * session for as long as a socket is open, and the reopened socket sat idle
+   * between utterances. After three utterances no stream could be opened at all
+   * ("stream begin failed: model busy: a stream is already active on this
+   * model", measured with `active_streams: 3` at rest) and recognition stopped
+   * for the rest of the session.
+   *
+   * The connect itself measures ~3ms and frames arriving before it completes
+   * are buffered, so waiting for real speech costs nothing measurable.
    */
   const reopenSoon = useCallback(() => {
     if (!capturingRef.current || stoppedByUsRef.current) return;
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-    }
-    reconnectTimerRef.current = setTimeout(() => {
-      reconnectTimerRef.current = null;
-      void connectRef.current();
-    }, 0);
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+    pendingReconnectRef.current = true;
   }, [capturingRef]);
 
   const connectRef = useRef<() => Promise<void>>(async () => {});
@@ -209,6 +220,13 @@ export function useThemWsStreaming({
         frameBufferRef.current.shift();
       }
       frameBufferRef.current.push(pcm);
+      // Speech is here, so the socket is worth opening now: a reopen requested
+      // by the previous finalize waited for exactly this moment instead of
+      // holding an engine session through the silence.
+      if (pendingReconnectRef.current) {
+        pendingReconnectRef.current = false;
+        void connectRef.current();
+      }
     }
   }, [capturingRef]);
 

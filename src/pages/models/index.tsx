@@ -404,6 +404,7 @@ export const Models = () => {
               <LanguageFilterDropdown
                 value={selectedLanguage}
                 onChange={setSelectedLanguage}
+                models={models}
               />
             </div>
           </div>

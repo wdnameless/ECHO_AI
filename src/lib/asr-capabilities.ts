@@ -22,27 +22,37 @@ export interface AsrCapabilities {
 const UNKNOWN: AsrCapabilities = { streaming: false, variant: "" };
 
 /**
- * Whether an architecture implements `/v1/asr/stream`, from the model catalogue.
+ * Whether an architecture implements `/v1/asr/stream`.
  *
- * Only the streaming family does; every other architecture is served by the
- * batch endpoint. `undefined` means "not listed" — the engine's own flag is
- * used then, so a newly published family is not silently forced to batch.
+ * There is deliberately NO table here. An earlier version mapped
+ * `parakeet → false`, on the assumption that the architecture decided
+ * streaming support. Measured on this machine, both the streamable and the
+ * batch-only model report `arch: "parakeet"`:
+ *
+ *   nemotron-3.5-asr-streaming-0.6b  arch=parakeet  supports_streaming=true
+ *   parakeet-tdt-0.6b-v3             arch=parakeet  supports_streaming=false
+ *
+ * So the architecture cannot distinguish them, and that table permanently
+ * routed the streaming model through the batch endpoint — measured 2022ms per
+ * utterance against 1.1s to the first partial text over the socket. The flag
+ * the engine reports for the model it actually loaded is the accurate source,
+ * and an outright refusal (`noteStreamingUnsupported`) outranks it.
  */
-const MODEL_STREAMING_BY_ARCH: Record<string, boolean | undefined> = {
-  nemotron: true,
-  parakeet: false,
-  canary: false,
-  whisper: false,
-  qwen3: false,
-  voxtral: false,
-};
-
 let cached: { at: number; value: AsrCapabilities } | null = null;
 /** Short TTL: a model switch restarts the engine with different capabilities. */
 const TTL_MS = 10_000;
+/**
+ * Set when the engine refused a stream. Sticky for the session: the refusal is
+ * ground truth about the loaded model, and re-reading `/health` would only
+ * re-open the same rejected socket. Cleared by a model switch.
+ */
+let refusedStreaming = false;
 
 /** Reads the engine's capabilities, falling back to "streaming unsupported". */
 export async function getAsrCapabilities(): Promise<AsrCapabilities> {
+  if (refusedStreaming) {
+    return { streaming: false, variant: cached?.value.variant ?? "" };
+  }
   if (cached && Date.now() - cached.at < TTL_MS) return cached.value;
   try {
     const base = await getAsrBaseUrl();
@@ -54,18 +64,10 @@ export async function getAsrCapabilities(): Promise<AsrCapabilities> {
       model?: { arch?: string; variant?: string; supports_streaming?: boolean };
       supports_streaming?: boolean;
     };
-    // The catalogue is the authority on which architectures stream, not the
-    // engine's own flag: a Parakeet file was observed reporting
-    // `arch=parakeet` together with `variant=nemotron-3.5-…` and
-    // `supports_streaming: true`, and trusting that flag opened a socket the
-    // model refuses, losing the utterance. `arch` is read from the model file
-    // itself, so it cannot be a stale label.
-    const catalogue = MODEL_STREAMING_BY_ARCH[body.model?.arch ?? ""];
-    const advertised = Boolean(
-      body.model?.supports_streaming ?? body.supports_streaming ?? false
-    );
     const value: AsrCapabilities = {
-      streaming: catalogue ?? advertised,
+      streaming: Boolean(
+        body.model?.supports_streaming ?? body.supports_streaming ?? false
+      ),
       variant: body.model?.variant ?? "",
     };
     cached = { at: Date.now(), value };
@@ -78,19 +80,20 @@ export async function getAsrCapabilities(): Promise<AsrCapabilities> {
 /** Forgets the cached answer (called when the engine or model changes). */
 export function resetAsrCapabilitiesCache(): void {
   cached = null;
+  refusedStreaming = false;
 }
 
 /**
  * Records that the engine refused a stream, whatever `/health` claimed.
  *
- * The health payload is not always right: a Parakeet file was observed
- * reporting `arch=parakeet` while still advertising `variant=nemotron-3.5-…`
- * and `supports_streaming: true`, so trusting it opened a socket the model
- * rejects ("stream begin failed: not implemented by this model") and the
- * utterance was lost. An actual refusal is ground truth and outranks the
- * advertised flag for this session.
+ * A refusal is ground truth about the loaded model ("stream begin failed: not
+ * implemented by this model"), and it outranks the advertised flag for the rest
+ * of the session: `/health` is re-read on a 10s TTL, so without a sticky flag
+ * the app re-opened the same rejected socket every ten seconds and lost the
+ * utterance each time. Cleared when the model changes.
  */
 export function noteStreamingUnsupported(): void {
+  refusedStreaming = true;
   cached = {
     at: Date.now(),
     value: { streaming: false, variant: cached?.value.variant ?? "" },

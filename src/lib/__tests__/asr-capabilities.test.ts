@@ -33,17 +33,47 @@ describe("asr capabilities", () => {
     });
   });
 
-  it("treats a non-streaming architecture as batch-only even when health claims otherwise", async () => {
-    // Observed in practice: a Parakeet file reported arch=parakeet together
-    // with variant=nemotron-3.5-… and supports_streaming: true. Trusting the
-    // flag opened a socket the model refuses and the utterance was lost.
+  it("trusts the engine's flag: both streamable and batch-only models report arch=parakeet", async () => {
+    // Measured on this machine — the architecture cannot distinguish them:
+    //   nemotron-3.5-asr-streaming-0.6b  arch=parakeet  supports_streaming=true
+    //   parakeet-tdt-0.6b-v3             arch=parakeet  supports_streaming=false
+    // An earlier table mapped parakeet -> false, which routed the streaming
+    // model through the batch endpoint (2022ms per utterance) even though its
+    // socket delivers a first partial in 1.1s and a final 52ms after finalize.
     mockHealth({
-      model: { arch: "parakeet", variant: "nemotron-3.5-asr-streaming-0.6b", supports_streaming: true },
+      model: {
+        arch: "parakeet",
+        variant: "nemotron-3.5-asr-streaming-0.6b",
+        supports_streaming: true,
+      },
+    });
+    await expect(getAsrCapabilities()).resolves.toEqual({
+      streaming: true,
+      variant: "nemotron-3.5-asr-streaming-0.6b",
+    });
+
+    resetAsrCapabilitiesCache();
+    mockHealth({
+      model: { arch: "parakeet", variant: "tdt-0.6b-v3", supports_streaming: false },
     });
     await expect(getAsrCapabilities()).resolves.toEqual({
       streaming: false,
-      variant: "nemotron-3.5-asr-streaming-0.6b",
+      variant: "tdt-0.6b-v3",
     });
+  });
+
+  it("keeps a refusal sticky across later health reads", async () => {
+    mockHealth({ model: { arch: "parakeet", variant: "v", supports_streaming: true } });
+    await expect(getAsrCapabilities()).resolves.toMatchObject({ streaming: true });
+
+    noteStreamingUnsupported();
+    // A health re-read (10s TTL) must not resurrect the rejected socket.
+    await expect(getAsrCapabilities()).resolves.toMatchObject({ streaming: false });
+    await expect(getAsrCapabilities()).resolves.toMatchObject({ streaming: false });
+
+    // ...until the model changes.
+    resetAsrCapabilitiesCache();
+    await expect(getAsrCapabilities()).resolves.toMatchObject({ streaming: true });
   });
 
   it("records an actual stream refusal as ground truth", async () => {

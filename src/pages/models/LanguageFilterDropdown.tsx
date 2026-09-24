@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckIcon, ChevronDownIcon, GlobeIcon, SearchIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { MODEL_CAPABILITY_LANGUAGES } from "@/lib/constants/languages";
+import { getAvailableCapabilityLanguages } from "@/lib/constants/languages";
 
 /**
  * Searchable language picker.
@@ -10,13 +10,19 @@ import { MODEL_CAPABILITY_LANGUAGES } from "@/lib/constants/languages";
  * search) is unusable: the chosen row scrolls out of the popup and the user ends up
  * clicking whatever is behind it. This mirrors Handy's picker: a search box that
  * narrows the list, a scrollable body, and a highlighted current selection.
+ *
+ * Only languages that some catalogue model actually speaks are listed: the other
+ * entries could only ever return an empty result, which reads as a broken filter.
  */
 export const LanguageFilterDropdown = ({
   value,
   onChange,
+  models,
 }: {
   value: string;
   onChange: (next: string) => void;
+  /** Catalogue entries whose language coverage decides what is worth offering. */
+  models: ReadonlyArray<{ languages?: string[] }>;
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -42,20 +48,22 @@ export const LanguageFilterDropdown = ({
     };
   }, [open]);
 
+  /** Languages some catalogue model actually speaks. */
+  const offered = useMemo(
+    () => getAvailableCapabilityLanguages(models),
+    [models]
+  );
+
   const label = useMemo(() => {
     if (value === "all") return "All Languages";
-    return (
-      MODEL_CAPABILITY_LANGUAGES.find((l) => l.value === value)?.label ?? value
-    );
-  }, [value]);
+    return offered.find((l) => l.value === value)?.label ?? value;
+  }, [value, offered]);
 
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return MODEL_CAPABILITY_LANGUAGES;
-    return MODEL_CAPABILITY_LANGUAGES.filter((l) =>
-      l.label.toLowerCase().includes(needle)
-    );
-  }, [query]);
+    if (!needle) return offered;
+    return offered.filter((l) => l.label.toLowerCase().includes(needle));
+  }, [query, offered]);
 
   const pick = (next: string) => {
     onChange(next);
