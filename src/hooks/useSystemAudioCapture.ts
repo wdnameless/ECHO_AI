@@ -42,13 +42,16 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
 const LIVE_BATCH_MS = 600;
 
 /**
- * How much recent audio one live pass may cover, in samples at 16 kHz.
+ * Hard limit on how long ONE utterance may grow before the live pass keeps only
+ * its tail, in samples at 16 kHz.
  *
- * Cost is linear in clip length (measured: 90ms at 2.5s, 806ms at 20s), so the
- * window is capped at ~6s: a pass then stays near its measured floor while the
- * line still tracks what was just said.
+ * Normal speech is cut into utterances by the VAD well before this (a pause of
+ * ~0.3s ends one), so the limit only catches a pathological minutes-long
+ * monologue. Cost is linear in clip length (measured: 90ms at 2.5s, 806ms at
+ * 20s), and the end-of-speech batch pass always covers the whole utterance, so
+ * trimming the live preview there is safe.
  */
-const LIVE_WINDOW_MS = 6 * 16000;
+const LIVE_MAX_UTTERANCE_MS = 20 * 16000;
 
 /**
  * Wraps 16-bit mono PCM at 16 kHz in a WAV container.
@@ -172,6 +175,17 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
   useEffect(() => {
     capturingRef.current = capturing;
+    // Resolve the model's capabilities when capture starts, not on the first
+    // `speech-start`: the microphone channel asks `canStream()` from its own VAD,
+    // and if the candidate spoke before the interviewer, the flag was still its
+    // initial `false` — the stream was skipped for a model that supports it and
+    // that utterance went through the slower batch path.
+    if (capturing) {
+      void (async () => {
+        const caps = await getAsrCapabilities();
+        streamingModelRef.current = caps.streaming;
+      })();
+    }
   }, [capturing]);
 
   useEffect(() => {
@@ -267,6 +281,15 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
           if (source === "me") {
             return;
+          }
+
+          if (source === "them") {
+            // The authoritative pass has consumed this utterance: drop the live
+            // preview state so the next one starts clean, and let the dedupe in
+            // appendLiveSegment replace the preview row with this text.
+            livePcmRef.current = [];
+            liveTextRef.current = "";
+            utteranceStartedAtRef.current = null;
           }
 
           if (source === "them" && !options?.skipOnInterviewerTranscription) {
@@ -393,13 +416,19 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       return;
     }
 
-    // Bounded window: the live line only needs the recent audio, and a cap keeps
-    // one pass at the measured flat cost regardless of how long someone talks.
+    // Finished utterances are transcribed whole and dropped, so the frames left
+    // here belong to the utterance still being spoken. A bounded window would
+    // silently cut the opening words off a long monologue; the cap is therefore
+    // expressed as a limit on how long ONE utterance may run (below), not on how
+    // much of it reaches the recogniser.
     let sampleCount = 0;
     for (const f of frames) sampleCount += f.length;
-    const maxSamples = LIVE_WINDOW_MS;
+    const maxSamples = LIVE_MAX_UTTERANCE_MS;
     let skipBytes = 0;
     if (sampleCount / 4 > maxSamples) {
+      // A pathological monologue (minutes without a pause): keep the tail, which
+      // is what the live line is for, and let the end-of-speech batch pass cover
+      // the whole thing.
       skipBytes = (sampleCount / 4 - maxSamples) * 4;
     }
 
@@ -587,24 +616,17 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         themWsRef.current.finalizeUtterance();
         return;
       }
-      // Batch path: the model cannot stream. The live cadence already
-      // transcribed this utterance; reuse that text instead of paying another
-      // round trip for the same audio, and only fall back to the WAV the
-      // capture attached when the live pass produced nothing (a very short
-      // utterance can end before its first cadence fires).
+      // Batch path: the model cannot stream. The live cadence produced a
+      // PREVIEW that is up to one cadence (~600ms) behind, so its text can miss
+      // the closing words of the utterance — often the actual question. The
+      // end-of-speech pass over the whole utterance is therefore authoritative:
+      // it replaces the preview and is what the question assembler and the AI
+      // receive. Clearing the frames before it (as this used to) threw away the
+      // tail before anything had read it.
       onInterviewerSpeechActivity?.();
       if (liveTimerRef.current !== null) {
         clearTimeout(liveTimerRef.current);
         liveTimerRef.current = null;
-      }
-      const liveText = liveTextRef.current.trim();
-      livePcmRef.current = [];
-      utteranceStartedAtRef.current = null;
-      if (liveText) {
-        liveTextRef.current = "";
-        appendLiveSegment("them", liveText);
-        void onInterviewerTranscription(liveText);
-        return;
       }
       handleSpeechDetectedRef.current(event.payload as string);
     })
@@ -766,6 +788,15 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     setMicStream,
     micStreamRef,
     transcribeSegment,
+    /**
+     * True when the loaded model implements the streaming protocol.
+     *
+     * The microphone channel has the same constraint as the interviewer one: a
+     * non-streamable model (Parakeet) refuses `/v1/asr/stream`, so opening a
+     * socket for it wasted the utterance and dropped the cached port. The mic
+     * path is fed by the webview VAD and must ask before connecting.
+     */
+    canStream: useCallback(() => streamingModelRef.current, []),
     /** Hands the single-model stream to the microphone channel. */
     yieldThemToMic: useCallback(() => {
       micStreamOwnsModelRef.current = true;

@@ -230,6 +230,7 @@ export function useSystemAudio() {
     setMicStream,
     micStreamRef,
     transcribeSegment,
+    canStream,
     yieldThemToMic,
     releaseMicModelOwnership,
     startContinuousRecording,
@@ -348,6 +349,10 @@ export function useSystemAudio() {
       micFeedFrame(pcm);
     },
     onMicSpeechStart: () => {
+      // A non-streamable model has no socket to take: the webview VAD's own
+      // segment (onMicSegment) is the only path, and opening a socket would
+      // collect "not implemented by this model" for every answer.
+      if (!canStream()) return;
       // Single-model sidecar: the microphone takes the stream from the
       // interviewer channel for the duration of this answer.
       micBeginUtterance();
@@ -356,6 +361,7 @@ export function useSystemAudio() {
       micWsConnect();
     },
     onMicSpeechStop: () => {
+      if (!canStream()) return;
       micWsFinalizeAndClose();
       // The interviewer stream is NOT reopened here. It opens on the next
       // `speech-start` anyway, and reopening it immediately stole the model
