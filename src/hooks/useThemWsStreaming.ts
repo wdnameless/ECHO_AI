@@ -15,7 +15,7 @@
 
 import { useCallback, useRef } from "react";
 import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
-import { getResponseSettings } from "@/lib";
+import { getAsrLanguage } from "@/lib/asr-language";
 import { pushStatus } from "@/lib/asr-status";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
 import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
@@ -103,11 +103,12 @@ export function useThemWsStreaming({
 
     ws.binaryType = "arraybuffer";
     ws.onopen = () => {
-      // Same language pin as the mic path, for the same reason: the streaming
-      // model must not auto-detect outside the two configured languages.
-      const settings = getResponseSettings();
-      const lang = settings.language === "russian" ? "ru" : "en";
-      ws.send(JSON.stringify({ type: "config", language: lang }));
+      // Recognition language comes from the ASR language setting, not from the
+      // answer language: the answer setting defaults to English and pinning the
+      // recogniser with it transcribed Russian speech as English words.
+      ws.send(
+        JSON.stringify({ type: "config", language: getAsrLanguage() })
+      );
       wsRef.current = ws;
       stoppedByUsRef.current = false;
 
@@ -116,7 +117,11 @@ export function useThemWsStreaming({
         if (buffered && ws.readyState === WebSocket.OPEN) {
           try {
             ws.send(buffered);
-          } catch {}
+          } catch (sendErr) {
+            // The socket can die between the state check and the send; the
+            // remaining buffered frames are dropped with it on close.
+            console.debug("[them-ws] buffered frame dropped:", sendErr);
+          }
         }
       }
     };

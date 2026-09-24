@@ -26,6 +26,12 @@ import {
   getPromptTemplateById,
 } from "@/lib/platform-instructions";
 import { cn } from "@/lib/utils";
+import {
+  ASR_LANGUAGE_OPTIONS,
+  getAsrLanguage,
+  setAsrLanguage,
+  type AsrLanguage,
+} from "@/lib/asr-language";
 
 // Sensitivity presets for simpler UX
 const SENSITIVITY_PRESETS = {
@@ -81,6 +87,9 @@ export const SettingsPanel = ({
   const [isOpen, setIsOpen] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
+  const [asrLanguage, setAsrLanguageState] = useState<AsrLanguage>(() =>
+    getAsrLanguage()
+  );
 
   // Determine current sensitivity preset based on values
   const getCurrentPreset = (): SensitivityPreset | "custom" => {
@@ -197,6 +206,39 @@ export const SettingsPanel = ({
                 </p>
               </div>
             )}
+
+            {/* Recognition language: follows the audio, not the answer style.
+                The answer language defaults to English and used to pin the
+                recogniser to English, so Russian speech was transcribed as
+                English words. */}
+            <div className="space-y-2">
+              <Label className="text-xs font-medium">Язык распознавания</Label>
+              <div className="flex gap-2">
+                {ASR_LANGUAGE_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => {
+                      setAsrLanguage(option.id);
+                      setAsrLanguageState(option.id);
+                    }}
+                    className={cn(
+                      "flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border",
+                      asrLanguage === option.id
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background border-border hover:bg-accent"
+                    )}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                {
+                  ASR_LANGUAGE_OPTIONS.find((o) => o.id === asrLanguage)?.hint
+                }
+              </p>
+            </div>
 
             {/* Max Duration - Only for Manual mode */}
             {!vadConfig.enabled && (

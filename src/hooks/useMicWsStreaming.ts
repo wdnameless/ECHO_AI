@@ -10,7 +10,7 @@
 
 import { useCallback, useRef } from "react";
 import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
-import { getResponseSettings } from "@/lib";
+import { getAsrLanguage } from "@/lib/asr-language";
 import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
 import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
@@ -120,11 +120,12 @@ export function useMicWsStreaming({
         }
         ws.binaryType = "arraybuffer";
         ws.onopen = () => {
-          // Pin the language exactly like the batch path does so the
-          // streaming model never auto-detects outside ru/en.
-          const responseSettings = getResponseSettings();
-          const lang = responseSettings.language === "russian" ? "ru" : "en";
-          ws.send(JSON.stringify({ type: "config", language: lang }));
+          // Recognition language comes from the ASR language setting, never
+          // from the answer language: the answer setting defaults to English
+          // and used to force Russian speech through an English recogniser.
+          ws.send(
+            JSON.stringify({ type: "config", language: getAsrLanguage() })
+          );
           micWsRef.current = ws;
           micWsStoppedByUsRef.current = false;
 

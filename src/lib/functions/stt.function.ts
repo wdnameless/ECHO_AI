@@ -12,7 +12,7 @@ import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
 import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
 import { sttReadiness } from "@/lib/storage/app-paths";
-import { getResponseSettings } from "@/lib";
+import { getAsrLanguage } from "@/lib/asr-language";
 
 // Cache parsed curl configs: curl2Json is pure, so parsing the same provider
 // curl on every request is wasted CPU on the hot path.
@@ -163,10 +163,9 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     //   warnings.push("Audio exceeds 10MB limit");
     // }
 
-    // Build variable map
-    const responseSettings = getResponseSettings();
-    const defaultLanguage =
-      responseSettings.language === "russian" ? "ru" : "en";
+    // Build variable map. LANGUAGE is the recognition language, not the answer
+    // language: tying the two together forced English onto Russian audio.
+    const defaultLanguage = getAsrLanguage();
     const allVariables: Record<string, string> = {
       LANGUAGE: defaultLanguage,
       ...Object.fromEntries(

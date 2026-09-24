@@ -2,14 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useMicWsStreaming } from "../useMicWsStreaming";
 import { getAsrBaseUrl } from "@/lib/asr-discovery";
-import { getResponseSettings } from "@/lib";
+import { getAsrLanguage } from "@/lib/asr-language";
 
 vi.mock("@/lib/asr-discovery", () => ({
   getAsrBaseUrl: vi.fn(),
 }));
 
-vi.mock("@/lib", () => ({
-  getResponseSettings: vi.fn(),
+vi.mock("@/lib/asr-language", () => ({
+  getAsrLanguage: vi.fn(() => "ru"),
 }));
 
 class MockWebSocket {
@@ -72,12 +72,7 @@ describe("useMicWsStreaming", () => {
     MockWebSocket.instances = [];
     global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     vi.mocked(getAsrBaseUrl).mockResolvedValue("http://127.0.0.1:8765");
-    vi.mocked(getResponseSettings).mockReturnValue({
-      language: "russian",
-      prompt: "",
-      model: "gpt-4o",
-      provider: "openai",
-    } as any);
+    vi.mocked(getAsrLanguage).mockReturnValue("ru");
   });
 
   afterEach(() => {

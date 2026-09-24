@@ -274,22 +274,39 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     };
   }, [capturingRef]);
 
-  // The interviewer stream is SESSION-scoped, not per-utterance: the sidecar
-  // endpoints utterances itself and keeps returning partials/finals on one
-  // socket. Opening and closing it on every Rust VAD utterance made natural
-  // mid-sentence pauses (250-350ms) churn the socket dozens of times per
-  // minute — the frames buffered during the reconnect were then wiped, the
-  // stream produced nothing, and the model was left locked.
-  //
-  // The single-model constraint is still honoured: when the candidate starts
-  // answering, `yieldThemToMic()` finalizes and releases the stream so the
-  // microphone channel can take the model; `resumeThemStream()` hands it back
-  // once the mic utterance ends.
+  // One socket per utterance, as the sidecar's protocol demands: it CLOSES the
+  // stream as soon as it answers a `finalize` (verified: state CLOSED within
+  // 2s), so a session-scoped socket churned reconnects and lost the audio that
+  // arrived while it was down. Frames that arrive during the handshake are
+  // buffered and flushed on open, so nothing is dropped in between.
   useEffect(() => {
-    if (capturing) {
+    let startUnlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    listen("speech-start", () => {
+      if (!capturingRef.current) return;
       themWsRef.current.beginUtterance();
       themWsRef.current.start();
-    } else {
+    })
+      .then((unlisten) => {
+        if (cancelled) {
+          unlisten();
+        } else {
+          startUnlisten = unlisten;
+        }
+      })
+      .catch((err) => {
+        console.warn("[system-audio] speech-start listener failed:", err);
+      });
+
+    return () => {
+      cancelled = true;
+      if (startUnlisten) startUnlisten();
+    };
+  }, [capturingRef]);
+
+  useEffect(() => {
+    if (!capturing) {
       themWsRef.current.finalizeAndClose();
     }
   }, [capturing]);
@@ -299,12 +316,10 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     let cancelled = false;
 
     listen("speech-detected", (event) => {
-      // End of the interviewer's utterance. The socket stays open (session
-      // scoped), but the sidecar only produces the `final` frame — the one the
-      // question assembler and the AI pipeline consume — after an explicit
-      // flush. Without it the feed shows partials forever and no answer is
-      // ever generated.
-      if (themWsRef.current.isStreaming()) {
+      // End of the interviewer's utterance: ask for the final text, which is
+      // the only frame the question assembler and the AI pipeline consume. The
+      // sidecar closes the socket right after answering it.
+      if (themWsRef.current.isStreaming() || themWsRef.current.hasProducedText()) {
         onInterviewerSpeechActivity?.();
         themWsRef.current.finalizeUtterance();
         return;
