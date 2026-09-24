@@ -133,6 +133,14 @@ export function useThemWsStreaming({
     }
 
     ws.binaryType = "arraybuffer";
+    // Track the socket from the moment it exists, not from `onopen`.
+    //
+    // Assigning it only on open left a CONNECTING socket invisible to `close()`,
+    // which walks `wsRef.current`: a stream that never finished its handshake
+    // held an engine session for the life of the process. With three sessions
+    // available this is exactly how recognition stopped — `active_streams` sat
+    // at a non-zero value while the app believed it had closed everything.
+    wsRef.current = ws;
     ws.onopen = () => {
       // Recognition language comes from the ASR language setting, not from the
       // answer language: the answer setting defaults to English and pinning the
@@ -140,7 +148,6 @@ export function useThemWsStreaming({
       ws.send(
         JSON.stringify({ type: "config", language: getAsrLanguage() })
       );
-      wsRef.current = ws;
       stoppedByUsRef.current = false;
 
       while (frameBufferRef.current.length > 0) {

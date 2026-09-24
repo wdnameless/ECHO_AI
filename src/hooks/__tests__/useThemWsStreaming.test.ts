@@ -126,4 +126,25 @@ describe("useThemWsStreaming session usage", () => {
 
     expect(MockWebSocket.instances).toHaveLength(1);
   });
+
+  /**
+   * A socket assigned to the ref only on `open` is invisible to `close()`, which
+   * walks the ref: a stream that never finished its handshake held an engine
+   * session for the life of the process, and three of those stopped recognition
+   * entirely.
+   */
+  it("closes a socket that never finished connecting", async () => {
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useThemWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    await act(async () => { result.current.start(); });
+    const connecting = MockWebSocket.instances[0];
+    expect(connecting.readyState).toBe(MockWebSocket.CONNECTING);
+
+    act(() => result.current.close());
+
+    expect(connecting.readyState).toBe(MockWebSocket.CLOSED);
+  });
 });

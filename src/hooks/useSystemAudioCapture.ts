@@ -651,6 +651,10 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         flushSafetyTimerRef.current = setTimeout(() => {
           flushSafetyTimerRef.current = null;
           flushUtteranceRef.current();
+          // The final frame never arrived. Dispatching the accumulated text is
+          // not enough: the socket is still open and the engine keeps holding a
+          // session until it is closed, which is how the pool ran out.
+          themWsRef.current.finalizeAndClose();
         }, 1200);
         themWsRef.current.finalizeUtterance();
         return;
@@ -667,6 +671,11 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         clearTimeout(liveTimerRef.current);
         liveTimerRef.current = null;
       }
+      // Reached when the stream was not considered active — including the race
+      // where `speech-start` opened a socket that is still CONNECTING. A socket
+      // left in that state holds an engine session forever, so it is released
+      // here; the batch path below does not need it.
+      themWsRef.current.finalizeAndClose();
       handleSpeechDetectedRef.current(event.payload as string);
     })
       .then((unlisten) => {
@@ -722,6 +731,15 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         discardedUnlisten = await listen("speech-discarded", (event) => {
           const reason = event.payload as string;
           console.log("Speech discarded:", reason);
+          // The VAD opened a stream on `speech-start`, but the engine judged the
+          // clip too short to transcribe and will never send a `final`. Nothing
+          // else closes that socket, so the engine kept holding its session —
+          // measured: after a few short utterances no stream could be opened at
+          // all ("model busy: a stream is already active on this model") and
+          // recognition stopped for the rest of the session. Release it here.
+          if (streamingModelRef.current) {
+            themWsRef.current.finalizeAndClose();
+          }
         });
       } catch (err) {
         console.error("Failed to setup continuous recording listeners:", err);

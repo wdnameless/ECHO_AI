@@ -57,3 +57,6 @@ src/.archmap/
 
 # Workflow tool state (lane/artifact bookkeeping), not part of the project
 /.workflow/
+
+# Local scratch space: throwaway probes, generated audio, build logs.
+/.tmp/
