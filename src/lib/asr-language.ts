@@ -20,9 +20,21 @@ export const ASR_LANGUAGE_OPTIONS: ReadonlyArray<{
   label: string;
   hint: string;
 }> = [
-  { id: "auto", label: "Авто", hint: "Определять язык по речи" },
-  { id: "ru", label: "Русский", hint: "Всегда русский" },
-  { id: "en", label: "English", hint: "Всегда английский" },
+  {
+    id: "auto",
+    label: "Авто",
+    hint: "Определять язык по речи. На смене языка движок перезапускает распознавание всего фрагмента — заметно медленнее.",
+  },
+  {
+    id: "ru",
+    label: "Русский",
+    hint: "Всегда русский. Для интервью на русском — самый быстрый и точный режим.",
+  },
+  {
+    id: "en",
+    label: "English",
+    hint: "Всегда английский. Для интервью на английском — самый быстрый и точный режим.",
+  },
 ];
 
 /** Value sent to the sidecar's `config` frame. */

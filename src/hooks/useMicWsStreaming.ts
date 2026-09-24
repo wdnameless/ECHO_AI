@@ -25,11 +25,13 @@ export const MAX_MIC_BUFFERED_FRAMES = 24;
 export interface UseMicWsStreamingProps {
   capturingRef: React.MutableRefObject<boolean>;
   onPartialTranscript: (text: string) => void;
+  onFinalTranscript?: (text: string) => void;
 }
 
 export function useMicWsStreaming({
   capturingRef,
   onPartialTranscript,
+  onFinalTranscript,
 }: UseMicWsStreamingProps) {
   const micWsRef = useRef<WebSocket | null>(null);
   const micWsWantRef = useRef(false);
@@ -37,6 +39,9 @@ export function useMicWsStreaming({
   const micWsReconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
   const micWsStoppedByUsRef = useRef(false);
   const micWsConnectRef = useRef<() => void>(() => {});
+  /** True once the open stream answered this utterance with any text. */
+  const micProducedTextRef = useRef(false);
+  const micUtteranceActiveRef = useRef(false);
 
   const micWsFinalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -138,9 +143,17 @@ export function useMicWsStreaming({
           }
         };
         ws.onmessage = (ev) => {
-          // Streaming partial from the sidecar: show immediately. Status and
+          // Streaming text from the sidecar: show immediately. Status and
           // latency frames on this socket feed the shared store.
-          handleAsrStreamFrame(ev.data, { onPartialTranscript });
+          //
+          // `produced` is what lets the caller skip the HTTP batch call for an
+          // utterance the stream already transcribed — running both made the
+          // second request collect "model busy: a stream is active on this
+          // model" on screen.
+          if (typeof ev.data === "string" && /"text"\s*:/.test(ev.data)) {
+            micProducedTextRef.current = true;
+          }
+          handleAsrStreamFrame(ev.data, { onPartialTranscript, onFinalTranscript });
         };
         ws.onclose = () => {
           if (micWsRef.current === ws) {
@@ -189,6 +202,18 @@ export function useMicWsStreaming({
     }
   }, [micWsClose]);
 
+  /** Called at the start of an utterance by the caller's VAD. */
+  const micBeginUtterance = useCallback(() => {
+    micProducedTextRef.current = false;
+    micUtteranceActiveRef.current = true;
+  }, []);
+
+  /** True when the open mic stream already answered this utterance. */
+  const micHasProducedText = useCallback(
+    () => micProducedTextRef.current,
+    []
+  );
+
   const cleanupMicWs = useCallback(() => {
     micWsWantRef.current = false;
     micFrameBufferRef.current = [];
@@ -206,6 +231,8 @@ export function useMicWsStreaming({
     micWsClose,
     micWsFinalizeAndClose,
     micFeedFrame,
+    micBeginUtterance,
+    micHasProducedText,
     cleanupMicWs,
   };
 }

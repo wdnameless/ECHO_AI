@@ -231,7 +231,7 @@ export function useSystemAudio() {
     micStreamRef,
     transcribeSegment,
     yieldThemToMic,
-    resumeThemStream,
+    releaseMicModelOwnership,
     startContinuousRecording,
     ignoreContinuousRecording,
     manualStopAndSend,
@@ -288,6 +288,8 @@ export function useSystemAudio() {
     micWsConnect,
     micWsFinalizeAndClose,
     micFeedFrame,
+    micBeginUtterance,
+    micHasProducedText,
     cleanupMicWs,
   } = useMicWsStreaming({
     capturingRef,
@@ -296,6 +298,12 @@ export function useSystemAudio() {
       if (currentMode === "DICTATION") {
         appendLiveSegment("me", text, true);
       }
+    },
+    onFinalTranscript: (text) => {
+      // The candidate's own line: shown in the feed. It never triggers the AI
+      // by itself — the candidate asks manually ("Ответить").
+      setMyLastTranscription(text);
+      appendLiveSegment("me", text);
     },
   });
   useEffect(() => {
@@ -328,6 +336,12 @@ export function useSystemAudio() {
     microphoneDeviceId: selectedAudioDevices.input.id,
     microphoneDeviceName: selectedAudioDevices.input.name,
     onMicSegment: (audioBlob) => {
+      // The open stream may have transcribed this utterance already. Sending
+      // the same audio again over HTTP then races it for the single model and
+      // surfaces "model busy: a stream is active on this model" to the user.
+      if (micHasProducedText()) {
+        return;
+      }
       void transcribeSegment(audioBlob, "me");
     },
     onMicFrame: (pcm) => {
@@ -336,13 +350,18 @@ export function useSystemAudio() {
     onMicSpeechStart: () => {
       // Single-model sidecar: the microphone takes the stream from the
       // interviewer channel for the duration of this answer.
+      micBeginUtterance();
       yieldThemToMic();
       micWsWantRef.current = true;
       micWsConnect();
     },
     onMicSpeechStop: () => {
       micWsFinalizeAndClose();
-      resumeThemStream();
+      // The interviewer stream is NOT reopened here. It opens on the next
+      // `speech-start` anyway, and reopening it immediately stole the model
+      // from the candidate's own transcription, which then failed with
+      // "model busy: a stream is active on this model".
+      releaseMicModelOwnership();
     },
     onInterimTranscript: (text) => {
       // The engine's own stream is the single source for dictation text: it is
@@ -442,9 +461,17 @@ export function useSystemAudio() {
   const answerLastInterviewerUtterance = useCallback(async () => {
     if (isAIProcessing) return;
 
-    const lastThemSegment = [...(liveSegmentsRef.current || [])]
-      .reverse()
-      .find((s) => s.source === "them" && !s.partial && s.text.trim());
+    // Last finalized interviewer line, without copying and reversing the feed
+    // array on every ask.
+    const segments = liveSegmentsRef.current || [];
+    let lastThemSegment: LiveSegment | null = null;
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const s = segments[i];
+      if (s.source === "them" && !s.partial && s.text.trim()) {
+        lastThemSegment = s;
+        break;
+      }
+    }
 
     // Whichever text is newer decides: a question the assembler merged earlier
     // must not outrank the line the interviewer has just finished, and a fresh

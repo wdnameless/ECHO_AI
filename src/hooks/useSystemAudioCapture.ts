@@ -80,6 +80,12 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   const pendingScreenshotRef = useRef<string | null>(null);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
+  /**
+   * True while the candidate's microphone owns the single-model stream. The
+   * interviewer channel must not start an HTTP transcription in that window:
+   * the sidecar answers "model busy: a stream is active on this model".
+   */
+  const micStreamOwnsModelRef = useRef(false);
 
   useEffect(() => {
     capturingRef.current = capturing;
@@ -319,12 +325,18 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       // End of the interviewer's utterance: ask for the final text, which is
       // the only frame the question assembler and the AI pipeline consume. The
       // sidecar closes the socket right after answering it.
-      if (themWsRef.current.isStreaming() || themWsRef.current.hasProducedText()) {
+      if (
+        themWsRef.current.isStreaming() ||
+        themWsRef.current.hasProducedText() ||
+        micStreamOwnsModelRef.current
+      ) {
         onInterviewerSpeechActivity?.();
         themWsRef.current.finalizeUtterance();
         return;
       }
-      // No live stream (sidecar unreachable): the batch call is the last resort.
+      // No live stream and the microphone is not holding the model: the batch
+      // call is the last resort. It used to fire while the mic stream owned the
+      // model and surfaced "model busy: a stream is active on this model".
       onInterviewerSpeechActivity?.();
       handleSpeechDetectedRef.current(event.payload as string);
     })
@@ -488,13 +500,12 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     transcribeSegment,
     /** Hands the single-model stream to the microphone channel. */
     yieldThemToMic: useCallback(() => {
+      micStreamOwnsModelRef.current = true;
       themWsRef.current.finalizeAndClose();
     }, []),
     /** Takes the stream back once the microphone utterance ended. */
-    resumeThemStream: useCallback(() => {
-      if (!capturingRef.current) return;
-      themWsRef.current.beginUtterance();
-      themWsRef.current.start();
+    releaseMicModelOwnership: useCallback(() => {
+      micStreamOwnsModelRef.current = false;
     }, []),
     startContinuousRecording,
     ignoreContinuousRecording,
