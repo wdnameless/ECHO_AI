@@ -599,6 +599,7 @@ export function useSystemAudio() {
     pendingUtteranceId,
     askAIForTranscript,
     error,
+    clearError: useCallback(() => setError(""), []),
     setupRequired,
     startCapture,
     stopCapture,

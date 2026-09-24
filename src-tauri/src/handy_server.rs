@@ -466,6 +466,18 @@ fn start_sidecar_watchdog() {
             if native_engine_port().is_some() || find_model_path().is_none() {
                 continue;
             }
+            // A live child that merely lost its port (model still loading, or a
+            // slow warm-up) must not be duplicated: starting a second engine
+            // made it rebound to the next port and left the renderer streaming
+            // into the old, now-dead one.
+            if let Ok(mut guard) = STT_SERVER.lock() {
+                if let Some(child) = guard.as_mut() {
+                    if child.try_wait().ok().flatten().is_none() {
+                        eprintln!("[tauri] watchdog: engine child is alive, waiting for its port");
+                        continue;
+                    }
+                }
+            }
             eprintln!("[tauri] watchdog: ASR engine is down, restarting...");
             if spawn_pluely_asr() {
                 // Give the model a moment to load before next check.

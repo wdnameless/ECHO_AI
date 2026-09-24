@@ -11,6 +11,7 @@ import {
   LoaderIcon,
   Settings2Icon,
   SettingsIcon,
+  MicIcon,
   SparklesIcon,
 } from "lucide-react";
 import { ModeSwitcher } from "./ModeSwitcher";
@@ -128,6 +129,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const panel = (capturing || setupRequired || error) && (
     <div
       data-panel-docked="true"
+      data-no-drag="true"
       className="panel-docked z-50 select-none overflow-hidden rounded-xl border border-input/50 bg-background shadow-lg"
     >
           <div className="flex flex-col h-full max-w-full min-w-0 overflow-hidden">
@@ -239,9 +241,11 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                     </Button>
                   )}
 
-                  {/* Audio & VAD drawer: its own label and icon so the two
-                      settings surfaces are distinguishable — two identical
-                      gears used to sit side by side and do different things. */}
+                  {/* Settings: one entry, two surfaces inside. A second gear sat
+                      beside this one and did a different thing, so the icon no
+                      longer told the user which window they were about to get.
+                      «Звук» toggles the audio drawer; the gear opens the app
+                      window whose Speech section holds the same controls. */}
                   {!setupRequired && (
                     <Button
                       size="sm"
@@ -250,20 +254,17 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       className="h-6 w-auto gap-1 px-2 text-[10px]"
                       title="Язык распознавания, чувствительность, режим записи"
                     >
-                      <Settings2Icon className="w-3.5 h-3.5" />
+                      <MicIcon className="w-3.5 h-3.5" />
                       Звук
                     </Button>
                   )}
 
-                  {/* One gear, one meaning: it opens the app's settings window.
-                      A second gear used to sit beside it for the Audio & VAD
-                      drawer, so two identical icons did two different things. */}
                   <Button
                     size="icon"
                     variant="ghost"
                     onClick={() => invoke("open_dashboard").catch(console.error)}
                     className="h-6 w-6"
-                    title={`Настройки${appVersion ? ` · версия ${appVersion}` : ""}`}
+                    title={`Все настройки${appVersion ? ` · версия ${appVersion}` : ""}`}
                   >
                     <SettingsIcon className="w-3.5 h-3.5" />
                   </Button>
@@ -348,6 +349,24 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       <p className="text-xs truncate font-medium">{error}</p>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={() => {
+                          // The engine's port can drift (a restart rebounds it),
+                          // and the message cannot be acted on from the settings
+                          // window alone. Restarting the engine here re-checks
+                          // liveness and re-resolves the port.
+                          invoke("start_handy_server")
+                            .then(() => {
+                              props.clearError();
+                              startCapture();
+                            })
+                            .catch(console.error);
+                        }}
+                        className="px-2 py-0.5 text-[10px] font-medium rounded bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-700 dark:text-emerald-300 transition-colors"
+                        title="Перезапустить локальный движок распознавания"
+                      >
+                        Перезапустить движок
+                      </button>
                       <button
                         onClick={() => {
                           invoke("open_dashboard_page", { route: "/dev-space" }).catch(console.error);

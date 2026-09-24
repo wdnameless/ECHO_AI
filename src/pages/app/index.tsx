@@ -7,8 +7,7 @@ import {
 } from "./components";
 import { useApp, useBarChrome } from "@/hooks";
 import { useApp as useAppContext } from "@/contexts";
-import { HeadphonesIcon, MicIcon, Eye, EyeOff, Settings } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { HeadphonesIcon, MicIcon, Eye, EyeOff, PinIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ErrorBoundary } from "react-error-boundary";
 import { ErrorLayout } from "@/layouts";
@@ -25,7 +24,7 @@ type AppMode = "dictation" | "meeting";
 
 const App = () => {
   const { isHidden, systemAudio } = useApp();
-  const { customizable, toggleStealthMode } = useAppContext();
+  const { customizable, toggleStealthMode, toggleAlwaysOnTop } = useAppContext();
   const platform = getPlatform();
   useBarChrome();
 
@@ -40,7 +39,7 @@ const App = () => {
     // switch because the click never completed.
     const target = e.target as HTMLElement | null;
     if (
-      target?.closest("[data-panel-docked]") ||
+      target?.closest("[data-no-drag]") ||
       target?.closest("[data-radix-popper-content-wrapper]") ||
       target?.closest("button") ||
       target?.closest("input") ||
@@ -88,14 +87,6 @@ const App = () => {
     window.addEventListener("storage", apply);
     return () => window.removeEventListener("storage", apply);
   }, []);
-
-  const openDashboard = async () => {
-    try {
-      await invoke("open_dashboard");
-    } catch (error) {
-      console.error("Failed to open dashboard:", error);
-    }
-  };
 
   return (
     <ErrorBoundary
@@ -197,15 +188,31 @@ const App = () => {
             <Completion isHidden={isHidden} suppressAutoVAD={systemAudio?.capturing} />
           </div>
 
-          {/* Settings button - always available */}
+          {/* Pin: keeps the overlay above other windows while an interview is
+              running, and lets it fall back to a normal window when the user
+              needs to click through to their IDE. */}
           <Button
             size="icon"
             variant="ghost"
-            className="cursor-pointer shrink-0 h-8 w-8 hover:bg-muted text-muted-foreground hover:text-foreground"
-            title="Настройки (нажмите, чтобы открыть)"
-            onClick={openDashboard}
+            className={cn(
+              "h-8 w-8 cursor-pointer shrink-0 transition-colors",
+              customizable.alwaysOnTop?.isEnabled
+                ? "text-emerald-500 hover:text-emerald-400 hover:bg-emerald-500/10"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+            )}
+            title={
+              customizable.alwaysOnTop?.isEnabled
+                ? "Поверх всех окон: ВКЛ. Нажмите, чтобы сделать обычным окном."
+                : "Поверх всех окон: ВЫКЛ. Нажмите, чтобы закрепить поверх остальных."
+            }
+            onClick={() => toggleAlwaysOnTop(!customizable.alwaysOnTop?.isEnabled)}
           >
-            <Settings className="h-4 w-4" />
+            <PinIcon
+              className={cn(
+                "h-4 w-4",
+                customizable.alwaysOnTop?.isEnabled ? "" : "opacity-70"
+              )}
+            />
           </Button>
           {/* Stealth Mode toggle button */}
           <Button
