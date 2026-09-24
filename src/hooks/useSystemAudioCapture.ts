@@ -32,6 +32,14 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   max_recording_duration_secs: 180,
 };
 
+/**
+ * How long a continuous monologue may run before the stream is flushed and
+ * reopened. Measured on the local engine: a 1-3s chunk returns text in ~1.1s,
+ * while a long utterance waits ~12s for the language check to re-run over the
+ * whole buffer. ~1.5s keeps the first line of a long answer fast.
+ */
+const SPEECH_ROLL_MS = 1500;
+
 interface UseSystemAudioCaptureProps {
   selectedAudioDevices: {
     input: { id: string; name: string };
@@ -86,6 +94,16 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
    * the sidecar answers "model busy: a stream is active on this model".
    */
   const micStreamOwnsModelRef = useRef(false);
+  /**
+   * Rolling flush timer for the interviewer stream. Long speech is pushed to
+   * the recogniser in ~1.5s slices, because a long buffer costs ~12s while a
+   * short one returns in ~1.1s (measured).
+   */
+  const rollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Text accumulated from rolled chunks, awaiting the real end of speech. */
+  const rolledTextRef = useRef("");
+  /** True when the last final came from the end-of-speech flush, not a roll. */
+  const utteranceEndedRef = useRef(false);
 
   useEffect(() => {
     capturingRef.current = capturing;
@@ -240,11 +258,28 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     },
     onFinalTranscript: (text) => {
       onInterviewerSpeechActivity?.();
-      setTheirLastTranscription(text);
-      appendLiveSegment("them", text);
-      if (text.trim()) {
-        void onInterviewerTranscription(text);
+      const chunk = text.trim();
+      if (!chunk) return;
+
+      if (utteranceEndedRef.current) {
+        // The speaker really stopped: this is the end of the utterance, so the
+        // whole monologue goes to the question assembler at once and may be
+        // answered. Feeding every rolled chunk to the assembler instead made it
+        // see a 1.5s "pause" (longer than its 400ms early-emit gate) and the AI
+        // answered a fragment while the interviewer was still talking.
+        utteranceEndedRef.current = false;
+        const whole = [rolledTextRef.current, chunk].filter(Boolean).join(" ").trim();
+        rolledTextRef.current = "";
+        setTheirLastTranscription(whole);
+        appendLiveSegment("them", whole);
+        void onInterviewerTranscription(whole);
+        return;
       }
+
+      // A transport chunk from a rolling flush: shown live, accumulated for the
+      // question, never dispatched on its own.
+      rolledTextRef.current = [rolledTextRef.current, chunk].filter(Boolean).join(" ");
+      appendLiveSegment("them", rolledTextRef.current, true);
     },
   });
   const themWsRef = useRef(themWs);
@@ -285,17 +320,42 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   // 2s), so a session-scoped socket churned reconnects and lost the audio that
   // arrived while it was down. Frames that arrive during the handshake are
   // buffered and flushed on open, so nothing is dropped in between.
+  //
+  // Speech is CHUNKED rather than left to run: measured on this engine a 1-3s
+  // chunk returns text in ~1.1s, while a long utterance waits ~12s for the
+  // language check to re-run over the whole buffer. A live interview needs the
+  // first line fast, and the question assembler joins the chunks afterwards.
   useEffect(() => {
     let startUnlisten: (() => void) | undefined;
-    let cancelled = false;
+    let cancellable = false;
 
     listen("speech-start", () => {
       if (!capturingRef.current) return;
       themWsRef.current.beginUtterance();
       themWsRef.current.start();
+      // A new utterance starts empty: the previous monologue was already
+      // dispatched (or dropped) when its speech ended.
+      rolledTextRef.current = "";
+      utteranceEndedRef.current = false;
+
+      // Roll the stream while the speaker keeps going, so text lands in
+      // ~1.5s slices instead of one late block at the end of a monologue.
+      if (rollTimerRef.current) {
+        clearTimeout(rollTimerRef.current);
+        rollTimerRef.current = null;
+      }
+      const scheduleRoll = () => {
+        rollTimerRef.current = setTimeout(() => {
+          rollTimerRef.current = null;
+          if (!capturingRef.current) return;
+          themWsRef.current.rollUtterance();
+          scheduleRoll();
+        }, SPEECH_ROLL_MS);
+      };
+      scheduleRoll();
     })
       .then((unlisten) => {
-        if (cancelled) {
+        if (cancellable) {
           unlisten();
         } else {
           startUnlisten = unlisten;
@@ -306,8 +366,12 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       });
 
     return () => {
-      cancelled = true;
+      cancellable = true;
       if (startUnlisten) startUnlisten();
+      if (rollTimerRef.current) {
+        clearTimeout(rollTimerRef.current);
+        rollTimerRef.current = null;
+      }
     };
   }, [capturingRef]);
 
@@ -331,6 +395,11 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         micStreamOwnsModelRef.current
       ) {
         onInterviewerSpeechActivity?.();
+        utteranceEndedRef.current = true;
+        if (rollTimerRef.current) {
+          clearTimeout(rollTimerRef.current);
+          rollTimerRef.current = null;
+        }
         themWsRef.current.finalizeUtterance();
         return;
       }
