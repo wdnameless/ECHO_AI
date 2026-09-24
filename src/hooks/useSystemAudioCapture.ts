@@ -42,6 +42,15 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
 const LIVE_BATCH_MS = 600;
 
 /**
+ * How much recent audio one live pass may cover, in samples at 16 kHz.
+ *
+ * Cost is linear in clip length (measured: 90ms at 2.5s, 806ms at 20s), so the
+ * window is capped at ~6s: a pass then stays near its measured floor while the
+ * line still tracks what was just said.
+ */
+const LIVE_WINDOW_MS = 6 * 16000;
+
+/**
  * Wraps 16-bit mono PCM at 16 kHz in a WAV container.
  *
  * The engine rejects a header whose `data` size does not match the payload
@@ -158,6 +167,8 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   const liveTextRef = useRef("");
   /** When the current utterance's first audio frame arrived, for first-text. */
   const utteranceStartedAtRef = useRef<number | null>(null);
+  /** True while a live pass is in flight, so passes never overlap. */
+  const liveBusyRef = useRef(false);
 
   useEffect(() => {
     capturingRef.current = capturing;
@@ -210,6 +221,8 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       try {
         setSegmentProcessing(true);
 
+        const batchStarted = Date.now();
+
         // A stream holds the model; the sidecar answers 500 "model busy" for
         // HTTP transcription while one is open, so wait for it to finish.
         const sttPromise = withNoStream(() =>
@@ -233,6 +246,8 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         });
 
         const transcription = await Promise.race([sttPromise, timeoutPromise]);
+        // The timer shows what a finished utterance costs end to end.
+        recordPartialLatency(Date.now() - batchStarted);
 
         if (transcription.trim()) {
           const currentMicMode = micStateStore.getState().mode;
@@ -362,23 +377,50 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
    */
   const runLiveBatch = useCallback(async () => {
     if (!capturingRef.current) return;
-    const frames = livePcmRef.current.splice(0);
-    if (frames.length === 0) return;
-    livePcmRef.current = frames;
+    // One pass at a time: a pass can take longer than the cadence on a busy
+    // engine, and overlapping passes queue behind each other — their reported
+    // latency would then be queueing time, not the live delay.
+    if (liveBusyRef.current) return;
+    liveBusyRef.current = true;
+    // Take the frames WITHOUT putting them back: the previous `splice` followed
+    // by a re-assign kept the whole utterance in memory, so every pass
+    // re-transcribed a longer clip and cost grew with the monologue (measured:
+    // 90ms at 2.5s of audio, 1.5s at 40s — instead of a flat ~50ms).
+    const frames = livePcmRef.current;
+    livePcmRef.current = [];
+    if (frames.length === 0) {
+      liveBusyRef.current = false;
+      return;
+    }
 
-    // f32 LE @16 kHz frames -> 16-bit mono WAV, the shape the engine accepts.
+    // Bounded window: the live line only needs the recent audio, and a cap keeps
+    // one pass at the measured flat cost regardless of how long someone talks.
     let sampleCount = 0;
     for (const f of frames) sampleCount += f.length;
-    const pcm = new Int16Array(sampleCount / 4);
-    let si = 0;
+    const maxSamples = LIVE_WINDOW_MS;
+    let skipBytes = 0;
+    if (sampleCount / 4 > maxSamples) {
+      skipBytes = (sampleCount / 4 - maxSamples) * 4;
+    }
+
+    const pcm = new Int16Array(Math.floor((sampleCount - skipBytes) / 4));
+    let written = 0;
+    let consumed = 0;
     for (const f of frames) {
+      if (consumed + f.byteLength <= skipBytes) {
+        consumed += f.byteLength;
+        continue;
+      }
       const view = new DataView(f.buffer, f.byteOffset, f.byteLength);
       for (let o = 0; o + 4 <= f.byteLength; o += 4) {
+        if (consumed + o < skipBytes) continue;
         const v = view.getFloat32(o, true);
-        pcm[si++] = Math.max(-1, Math.min(1, v)) * 32767;
+        if (written >= pcm.length) break;
+        pcm[written++] = Math.max(-1, Math.min(1, v)) * 32767;
       }
+      consumed += f.byteLength;
     }
-    const wav = encodeWav16kMono(pcm.subarray(0, si));
+    const wav = encodeWav16kMono(pcm.subarray(0, written));
     const started = Date.now();
     try {
       const text = await transcribeWithFallback({
@@ -401,6 +443,8 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       }
     } catch {
       // A dropped live pass is not an error: the next one covers the audio.
+    } finally {
+      liveBusyRef.current = false;
     }
   }, [appendLiveSegment, selectedSttProvider]);
 
@@ -501,6 +545,16 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   useEffect(() => {
     if (!capturing) {
       themWsRef.current.finalizeAndClose();
+      // Stop the live cadence with the capture: a pending timer used to fire
+      // once more after leaving meeting mode and post a transcription for audio
+      // that was no longer being recorded.
+      if (liveTimerRef.current !== null) {
+        clearTimeout(liveTimerRef.current);
+        liveTimerRef.current = null;
+      }
+      livePcmRef.current = [];
+      liveTextRef.current = "";
+      utteranceStartedAtRef.current = null;
     }
   }, [capturing]);
 

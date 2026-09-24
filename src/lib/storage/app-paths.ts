@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { resetAsrBaseUrlCache } from "../asr-discovery";
+import { resetAsrCapabilitiesCache } from "../asr-capabilities";
 
 /**
  * Locations of the engine, models and logs, as resolved by the backend.
@@ -129,9 +131,21 @@ export const selectedModel = () =>
 export const downloadModel = (id: string, quant?: string) =>
   invoke<InstalledModel>("download_model", { id, quant: quant ?? null });
 
-/** Selects a model by catalogue id or by absolute path, then restarts the engine. */
-export const selectModel = (idOrPath: string) =>
-  invoke<InstalledModel>("select_model", { idOrPath });
+/**
+ * Selects a model by catalogue id or by absolute path, then restarts the engine.
+ *
+ * Both cached answers about the engine are dropped here: its port can change on
+ * restart, and a different model may or may not implement the streaming
+ * protocol. Keeping either cache meant the app kept using the previous model's
+ * path — opening a socket a non-streamable model rejects, or skipping the socket
+ * for one that needs it.
+ */
+export const selectModel = async (idOrPath: string) => {
+  const model = await invoke<InstalledModel>("select_model", { idOrPath });
+  resetAsrBaseUrlCache();
+  resetAsrCapabilitiesCache();
+  return model;
+};
 
 /** Deletes a model file; returns the remaining models. */
 export const deleteModel = (fileName: string) =>
