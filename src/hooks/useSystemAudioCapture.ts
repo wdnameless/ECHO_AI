@@ -6,6 +6,7 @@ import { buildInitialPrompt } from "@/lib/vocab";
 import { transcribeWithFallback } from "@/lib/functions";
 import { micStateStore } from "@/stores/mic-state";
 import { useThemWsStreaming } from "./useThemWsStreaming";
+import { getAsrCapabilities } from "@/lib/asr-capabilities";
 import { withNoStream } from "@/lib/asr-gate";
 
 export interface VadConfig {
@@ -101,6 +102,12 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   const flushUtteranceRef = useRef<() => void>(() => {});
   /** Fires if the end-of-speech final never reaches us. */
   const flushSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Whether the loaded model implements the streaming protocol. Non-streamable
+   * models (Parakeet) are served by the batch path; the socket is never opened
+   * for them, so no utterance is wasted on a request the engine rejects.
+   */
+  const streamingModelRef = useRef(false);
 
   useEffect(() => {
     capturingRef.current = capturing;
@@ -331,22 +338,28 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   // arrived while it was down. Frames that arrive during the handshake are
   // buffered and flushed on open, so nothing is dropped in between.
   //
-  // Speech is CHUNKED rather than left to run: measured on this engine a 1-3s
-  // chunk returns text in ~1.1s, while a long utterance waits ~12s for the
-  // language check to re-run over the whole buffer. A live interview needs the
-  // first line fast, and the question assembler joins the chunks afterwards.
+  // The socket is opened only when the loaded model implements the streaming
+  // protocol. A fast model may not: Parakeet answers a stream request with
+  // `stream begin failed: not implemented by this model`, so opening one wasted
+  // the whole utterance. Those models are served by the batch path instead,
+  // which is also the faster one for them (measured ~64ms per utterance).
   useEffect(() => {
     let startUnlisten: (() => void) | undefined;
     let cancellable = false;
 
     listen("speech-start", () => {
       if (!capturingRef.current) return;
-      themWsRef.current.beginUtterance();
-      themWsRef.current.start();
       // A new utterance starts empty: the previous monologue was already
       // dispatched (or dropped) when its speech ended.
       rolledTextRef.current = "";
       utteranceEndedRef.current = false;
+      void (async () => {
+        const caps = await getAsrCapabilities();
+        streamingModelRef.current = caps.streaming;
+        if (!caps.streaming || !capturingRef.current) return;
+        themWsRef.current.beginUtterance();
+        themWsRef.current.start();
+      })();
     })
       .then((unlisten) => {
         if (cancellable) {
@@ -376,13 +389,16 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     let cancelled = false;
 
     listen("speech-detected", (event) => {
-      // End of the interviewer's utterance: ask for the final text, which is
-      // the only frame the question assembler and the AI pipeline consume. The
-      // sidecar closes the socket right after answering it.
+      // End of the interviewer's utterance. Which path finishes it depends on
+      // the loaded model: a streamable one owns the socket and is asked to
+      // flush; a non-streamable one (Parakeet) never had a socket, so the WAV
+      // the capture attached to this event is transcribed over HTTP — measured
+      // at ~64ms, the fastest path available.
       if (
-        themWsRef.current.isStreaming() ||
-        themWsRef.current.hasProducedText() ||
-        micStreamOwnsModelRef.current
+        streamingModelRef.current &&
+        (themWsRef.current.isStreaming() ||
+          themWsRef.current.hasProducedText() ||
+          micStreamOwnsModelRef.current)
       ) {
         onInterviewerSpeechActivity?.();
         utteranceEndedRef.current = true;
@@ -397,9 +413,8 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         themWsRef.current.finalizeUtterance();
         return;
       }
-      // No live stream and the microphone is not holding the model: the batch
-      // call is the last resort. It used to fire while the mic stream owned the
-      // model and surfaced "model busy: a stream is active on this model".
+      // Batch path: the model cannot stream, or no stream is up while the
+      // microphone is not holding the model either.
       onInterviewerSpeechActivity?.();
       handleSpeechDetectedRef.current(event.payload as string);
     })
