@@ -67,16 +67,22 @@ describe("asr discovery", () => {
     await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9877");
   });
 
-  it("caches a healthy result until reset", async () => {
+  it("re-validates the cached port and follows the engine to a new one", async () => {
     invokeMock.mockResolvedValue(9879);
     mockHealth([9879]);
     await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9879");
-    // The engine restarts on another port: the cache still holds it until reset,
-    // which is what a model change does.
+    // The engine restarted on another port: the cached base stops answering
+    // /health and must be dropped, otherwise every later utterance is streamed
+    // into the dead port and never transcribed.
     mockHealth([9880]);
     invokeMock.mockResolvedValue(9880);
-    await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9879");
-    resetAsrBaseUrlCache();
     await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9880");
+  });
+
+  it("keeps a cached result while it still answers", async () => {
+    invokeMock.mockResolvedValue(9879);
+    mockHealth([9879, 9880]);
+    await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9879");
+    await expect(getAsrBaseUrl()).resolves.toBe("http://127.0.0.1:9879");
   });
 });

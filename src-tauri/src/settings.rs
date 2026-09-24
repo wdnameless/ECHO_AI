@@ -44,10 +44,9 @@ const MODELS_DIR: &str = "models";
 /// Name of the directory holding logs inside the root.
 const LOGS_DIR: &str = "logs";
 
-/// Name of the SQLite database file.
-
 /// Name of the secure credentials storage file.
 pub const SECURE_STORAGE_FILE: &str = "secure_storage.json";
+
 /// Where the engine, models and logs live, plus the settings file itself.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]

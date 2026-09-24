@@ -28,6 +28,14 @@ pub struct VadConfig {
     pub max_recording_duration_secs: u64,
 }
 
+/// How far above the room's own floor a chunk must sit to count as speech.
+/// A ratio, so the answer is the same on a loud interface and a quiet loopback.
+const VAD_SNR_RATIO: f32 = 3.0;
+
+/// Hard lower bound for the SNR gate: below this the "signal" is measurement
+/// noise, not a voice, however quiet the room is.
+const VAD_ABSOLUTE_FLOOR: f32 = 0.0008;
+
 /// Target RMS the input calibration lifts the noise floor to. Keeping the
 /// floor at a known level makes the sensitivity presets mean the same thing on
 /// a loud USB interface and on a quiet loopback.
@@ -45,8 +53,8 @@ impl Default for VadConfig {
             hop_size: 1024,
             sensitivity_rms: 0.012, // Much less sensitive - only real speech
             peak_threshold: 0.035,  // Higher threshold - filters clicks/noise
-            silence_chunks: 12,    // ~0.28s - the socket is session-scoped now, so a shorter window costs nothing and a question reaches the AI ~100ms sooner
-            min_speech_chunks: 7,   // ~0.16s - captures short answers
+            silence_chunks: 12,    // ~0.28s. Measured on this engine: a 1-3s utterance returns its text in ~1.1s, while a long one waits ~12s because the recogniser re-runs its language check over the WHOLE buffer. Short utterances are therefore much faster here; the question assembler merges the fragments.
+            min_speech_chunks: 7,   // ~0.16s - drops key clicks but keeps short words; 12 discarded real speech as noise and no utterance ever finished
             pre_speech_chunks: 12,  // ~0.27s - enough to catch word start
             noise_gate_threshold: 0.003, // Stronger noise filtering
             max_recording_duration_secs: 180, // 3 minutes default
@@ -249,17 +257,21 @@ async fn run_vad_capture(
             if noise_floor_window.len() > 90 {
                 noise_floor_window.pop_front();
             }
-            let floor = noise_floor_window.iter().copied().fold(f32::INFINITY, f32::min);
-            let floor = if floor.is_infinite() { 0.0 } else { floor };
-            // The noise floor may raise the bar, but never above ~1.8x the
-            // user's own sensitivity: on "High" the user explicitly asked for
-            // quiet speech, and an uncapped floor silently overrode that.
-            let adaptive_threshold = floor * 3.0 + 0.004;
-            let effective_threshold = config
-                .sensitivity_rms
-                .max(adaptive_threshold.min(config.sensitivity_rms * 1.8));
-
-            let is_speech = rms > effective_threshold || peak > config.peak_threshold;
+            // Speech is decided on the PRE-gain signal-to-noise ratio, not on
+            // the amplified absolute level. Measured failure of the absolute
+            // rule: the calibration lifted room noise until it crossed the
+            // speech threshold, so the detector stayed "in speech" through
+            // silence — one utterance ran 30s and its text arrived only at the
+            // end. A ratio is immune to the gain: speech stands well above the
+            // room's own floor on every device, quiet or loud.
+            let pre_floor = level_peak_window
+                .iter()
+                .copied()
+                .fold(f32::INFINITY, f32::min);
+            let pre_floor = if pre_floor.is_infinite() { 0.0 } else { pre_floor };
+            let snr_threshold = (pre_floor * VAD_SNR_RATIO).max(VAD_ABSOLUTE_FLOOR);
+            let is_speech = (pre_rms > snr_threshold || peak > config.peak_threshold)
+                && pre_rms > pre_floor * 1.2;
 
             if is_speech {
                 if !in_speech {

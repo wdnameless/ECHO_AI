@@ -25,8 +25,8 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   hop_size: 1024,
   sensitivity_rms: 0.012,
   peak_threshold: 0.035,
-  silence_chunks: 12, // ~0.28s of silence before stopping; the stream socket is session-scoped so a shorter window is safe
-  min_speech_chunks: 7,
+  silence_chunks: 12, // ~0.28s. Measured: a 1-3s utterance returns text in ~1.1s, while a long one waits ~12s (the recogniser re-runs its language check over the whole buffer). Short utterances are faster here; the question assembler merges them.
+  min_speech_chunks: 7, // ~0.16s — 12 discarded real speech as noise and no utterance finished
   pre_speech_chunks: 12,
   noise_gate_threshold: 0.003,
   max_recording_duration_secs: 180,

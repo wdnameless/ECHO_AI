@@ -45,7 +45,15 @@ async function backendServingPort(): Promise<number | null> {
 }
 
 export async function getAsrBaseUrl(): Promise<string> {
-  if (cachedBase) return cachedBase;
+  // A cached base is only reused while it still answers. The engine rebounds to
+  // the next port when its default is taken (measured: process A on 9877, then
+  // 9878), and nothing told the renderer — it kept streaming into the dead port,
+  // so speech was captured but never transcribed. One local health probe per
+  // connection attempt is cheaper than a silent dead pipeline.
+  if (cachedBase) {
+    if (await healthy(cachedBase)) return cachedBase;
+    cachedBase = null;
+  }
   if (Date.now() < negativeCacheUntil) {
     return `http://127.0.0.1:${ASR_DEFAULT_PORT}`;
   }

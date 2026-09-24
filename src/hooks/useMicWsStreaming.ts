@@ -45,8 +45,13 @@ export function useMicWsStreaming({
 
   const micWsFinalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const micWsClose = useCallback(() => {
-    releaseStream("me");
+  /**
+   * Tears the socket down WITHOUT releasing the model.
+   *
+   * Reopening a stream must not drop the ownership it just took: the release
+   * belongs to a deliberate stop, not to a reconnect.
+   */
+  const micWsCloseSocketOnly = useCallback(() => {
     if (micWsFinalizeTimerRef.current !== null) {
       clearTimeout(micWsFinalizeTimerRef.current);
       micWsFinalizeTimerRef.current = null;
@@ -64,6 +69,11 @@ export function useMicWsStreaming({
       ws.close();
     }
   }, []);
+
+  const micWsClose = useCallback(() => {
+    releaseStream("me");
+    micWsCloseSocketOnly();
+  }, [micWsCloseSocketOnly]);
 
   const micFeedFrame = useCallback((pcm: ArrayBuffer) => {
     const ws = micWsRef.current;
@@ -96,13 +106,16 @@ export function useMicWsStreaming({
     micWsConnectRef.current = () => {
       void (async () => {
         if (!capturingRef.current) return;
-        // The sidecar serves one stream per model: if the system-audio channel
-        // owns it, wait rather than being refused.
+        // Take the model BEFORE tearing down the previous socket. This used to
+        // run in the opposite order with a call that releases ownership, so the
+        // microphone opened its stream holding nothing: the two channels then
+        // raced for the single model, one socket was refused, and the
+        // interviewer's audio stopped being transcribed at all.
         if (!tryAcquireStream("me")) {
           scheduleMicWsReconnect();
           return;
         }
-        micWsClose();
+        micWsCloseSocketOnly();
         let base: string;
         try {
           base = await getAsrBaseUrl();

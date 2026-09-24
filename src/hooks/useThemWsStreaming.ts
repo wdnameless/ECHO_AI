@@ -68,6 +68,25 @@ export function useThemWsStreaming({
     }, WS_RECONNECT_MS);
   }, [capturingRef]);
 
+  /**
+   * Reopens right after a finalize-driven close.
+   *
+   * The sidecar closes the socket as soon as it answers a finalize, and the
+   * next utterance starts within a second — waiting the usual reconnect delay
+   * for a close we asked for just shifted the handshake into the speech. The
+   * connect itself measured 3ms, so there is nothing to wait for.
+   */
+  const reopenSoon = useCallback(() => {
+    if (!capturingRef.current || stoppedByUsRef.current) return;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+    }
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      void connectRef.current();
+    }, 0);
+  }, [capturingRef]);
+
   const connectRef = useRef<() => Promise<void>>(async () => {});
   connectRef.current = async () => {
     if (!capturingRef.current) return;
@@ -136,14 +155,25 @@ export function useThemWsStreaming({
         pushStatus({ online: false });
       }
       releaseStream("them");
+      // A close we triggered with `finalize` is the protocol working: reopen
+      // at once so the handshake never lands inside the next utterance.
+      if (stoppedByUsRef.current) {
+        stoppedByUsRef.current = false;
+        reopenSoon();
+        return;
+      }
       scheduleReconnect();
     };
     ws.onerror = () => {
-      // A refused connection means the cached base URL is stale.
+      // A refused connection means the cached base URL is stale — the engine
+      // rebounds to another port and the renderer must re-resolve it, otherwise
+      // every later utterance is streamed into a dead port and never appears.
       resetAsrBaseUrlCache();
+      pushStatus({ online: false });
       try {
         ws.close();
-      } catch {
+      } catch (err) {
+        console.warn("[them-ws]", err);
         // already closing
       }
     };
