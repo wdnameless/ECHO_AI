@@ -83,7 +83,11 @@ async function fetchPluelySTT(audio: File | Blob): Promise<string> {
     if (response.success && response.transcription) {
       return response.transcription;
     } else {
-      return response.error || "Transcription failed";
+      // Prefix the failure, like the `catch` below does. `isSttErrorMessage` is
+      // how every caller tells a transport failure from real speech (it matches
+      // on this prefix), so an unprefixed message was treated as a transcription
+      // and fed to the AI as if the user had said it.
+      return `${STT_ERROR_PREFIX}: ${response.error || "Transcription failed"}`;
     }
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
