@@ -11,6 +11,7 @@ import {
   extractLiteralSecret,
   curlHasLiteralSecret,
   resetMigrationFlagForTests,
+  SequentialSecretWriter,
 } from "../secret-store";
 
 /**
@@ -254,5 +255,142 @@ describe("curl templates never keep a plaintext key", () => {
 
     await migrateCurlLiteralsToSecrets();
     await expect(migrateCurlLiteralsToSecrets()).resolves.toBe(0);
+  });
+});
+
+describe("SequentialSecretWriter (R12)", () => {
+  beforeEach(() => {
+    store.clear();
+    vi.useRealTimers();
+  });
+
+  it("(c) debounces rapid writes and eliminates write-per-keystroke", async () => {
+    vi.useFakeTimers();
+    const saveMock = vi.fn().mockResolvedValue(undefined);
+    const writer = new SequentialSecretWriter({
+      debounceMs: 500,
+      saveFn: saveMock,
+    });
+
+    // Rapid keystrokes: "s", "sk", "sk-", "sk-1", "sk-123"
+    writer.write("key1", "s");
+    vi.advanceTimersByTime(100);
+    writer.write("key1", "sk");
+    vi.advanceTimersByTime(100);
+    writer.write("key1", "sk-");
+    vi.advanceTimersByTime(100);
+    writer.write("key1", "sk-1");
+    vi.advanceTimersByTime(100);
+    writer.write("key1", "sk-123");
+
+    // Still within debounce window
+    expect(saveMock).not.toHaveBeenCalled();
+
+    // Advance past the 500ms debounce
+    await vi.advanceTimersByTimeAsync(500);
+
+    // saveMock should have been called exactly once with the final value
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).toHaveBeenCalledWith("key1", "sk-123");
+
+    await writer.dispose();
+  });
+
+  it("(a) flushes immediately on blur or unmount so input is not lost", async () => {
+    const saveMock = vi.fn().mockResolvedValue(undefined);
+    const writer = new SequentialSecretWriter({
+      debounceMs: 500,
+      saveFn: saveMock,
+    });
+
+    // User types key and immediately tabs away (blur)
+    writer.write("key1", "sk-blur-val");
+    expect(saveMock).not.toHaveBeenCalled();
+
+    // onBlur triggers flush
+    await writer.flush("key1");
+
+    expect(saveMock).toHaveBeenCalledTimes(1);
+    expect(saveMock).toHaveBeenCalledWith("key1", "sk-blur-val");
+
+    await writer.dispose();
+  });
+
+  it("(b) guarantees last write wins under serialized async writes", async () => {
+    const callLog: string[] = [];
+    let resolveFirstWrite: () => void = () => {};
+
+    const slowSaveMock = vi.fn().mockImplementation(async (_key: string, value: string) => {
+      if (value === "first") {
+        await new Promise<void>((resolve) => {
+          resolveFirstWrite = resolve;
+        });
+      }
+      callLog.push(value);
+    });
+
+    const writer = new SequentialSecretWriter({
+      debounceMs: 50,
+      saveFn: slowSaveMock,
+    });
+
+    // Write "first" immediately
+    writer.write("provider_key", "first", true);
+    expect(slowSaveMock).toHaveBeenCalledWith("provider_key", "first");
+
+    // While "first" is still pending on IPC/disk, user types "second" and then "third"
+    writer.write("provider_key", "second", false);
+    writer.write("provider_key", "third", false);
+
+    // Flush "third" while "first" is still in flight
+    const flushPromise = writer.flush("provider_key");
+
+    // Finish "first" write
+    resolveFirstWrite();
+    await flushPromise;
+
+    // First completed, then the coalesced latest ("third") ran.
+    expect(callLog).toEqual(["first", "third"]);
+    expect(writer.getLastExecutedSeq("provider_key")).toBe(3);
+
+    await writer.dispose();
+  });
+
+  it("removes secret when empty string or whitespace is written", async () => {
+    const removeMock = vi.fn().mockResolvedValue(undefined);
+    const writer = new SequentialSecretWriter({
+      debounceMs: 500,
+      removeFn: removeMock,
+    });
+
+    writer.write("test_key", "   ", true);
+    await writer.flush("test_key");
+
+    expect(removeMock).toHaveBeenCalledTimes(1);
+    expect(removeMock).toHaveBeenCalledWith("test_key");
+
+    await writer.dispose();
+  });
+
+  it("handles multiple provider keys independently without crosstalk", async () => {
+    const savedValues: Record<string, string> = {};
+    const saveMock = vi.fn().mockImplementation(async (key: string, val: string) => {
+      savedValues[key] = val;
+    });
+
+    const writer = new SequentialSecretWriter({
+      debounceMs: 500,
+      saveFn: saveMock,
+    });
+
+    writer.write("openai", "sk-openai", true);
+    writer.write("anthropic", "sk-anthropic", true);
+
+    await writer.flush();
+
+    expect(savedValues["openai"]).toBe("sk-openai");
+    expect(savedValues["anthropic"]).toBe("sk-anthropic");
+
+    await writer.dispose();
   });
 });
