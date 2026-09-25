@@ -368,6 +368,12 @@ export function useSystemAudio() {
       // `onMicSegment` — so yielding here costs nothing and keeps the
       // interviewer's stream alive.
       if (themIsStreaming()) {
+        // Drop anything this channel had queued: with the socket skipped, the
+        // frames would otherwise accumulate and be flushed into the NEXT
+        // utterance's socket, prepending a previous answer's audio to a fresh
+        // transcription.
+        micWsWantRef.current = false;
+        micWsFinalizeAndClose();
         return;
       }
       // Single-model sidecar: the microphone takes the stream from the
