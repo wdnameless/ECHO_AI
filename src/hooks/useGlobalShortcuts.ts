@@ -99,6 +99,13 @@ export const useGlobalShortcuts = () => {
     assistantAudioCallbackRef.current = callback;
     customShortcutCallbacksRef.current.set("assistant_voice", callback);
     globalCustomShortcutCallbacks.set("assistant_voice", callback);
+    // Mirror `useShortcuts`, which cleans up the callbacks it registers. This
+    // one had no cleanup, so the module-level entry outlived the component and
+    // an unmounted closure stayed reachable from the shortcut dispatcher.
+    return () => {
+      customShortcutCallbacksRef.current.delete("assistant_voice");
+      globalCustomShortcutCallbacks.delete("assistant_voice");
+    };
   }, []);
 
   // Register custom shortcut callback

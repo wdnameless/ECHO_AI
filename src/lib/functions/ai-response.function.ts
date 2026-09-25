@@ -648,7 +648,12 @@ async function* streamAIResponse(params: {
         try {
           response = await fetchFunction(url, {
             method: curlJson.method || "POST",
-            headers,
+            // `trust.headers`, not the raw `headers`: on an untrusted host the
+            // user may have chosen to proceed WITHOUT credentials, and the gate
+            // returns a sanitized copy for exactly that case. Sending the raw map
+            // here re-attached the API key to the retry, so a single 502 leaked
+            // the secret the user had just declined to send.
+            headers: trust.headers,
             body: curlJson.method === "GET" ? undefined : JSON.stringify(bodyObj),
             signal,
           });

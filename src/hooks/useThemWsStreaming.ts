@@ -46,10 +46,19 @@ export function useThemWsStreaming({
    * capture session does not hold an engine session (the pool is finite).
    */
   const pendingReconnectRef = useRef(false);
+  /**
+   * The delayed close after a finalize, held so the next connection can cancel
+   * it. See `finalizeAndClose` for why an unheld timer is dangerous.
+   */
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const close = useCallback(() => {
     frameBufferRef.current = [];
     pendingReconnectRef.current = false;
+    if (closeTimerRef.current !== null) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
     const ws = wsRef.current;
     wsRef.current = null;
     releaseStream("them");
@@ -209,6 +218,13 @@ export function useThemWsStreaming({
 
   /** Opens the stream for the current capture session. */
   const start = useCallback(() => {
+    // A new utterance cancels the delayed close left by the previous one: that
+    // timer would otherwise fire during this utterance and close the socket this
+    // call is about to open.
+    if (closeTimerRef.current !== null) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
     stoppedByUsRef.current = false;
     void connectRef.current();
   }, []);
@@ -302,8 +318,22 @@ export function useThemWsStreaming({
       } catch {
         // connection already dying
       }
-      // Let the server flush its final frame before the socket goes away.
-      setTimeout(close, 200);
+      // Give the shared slot back NOW, and only defer the socket close.
+      //
+      // This is the handoff the microphone triggers (`yieldThemToMic`), and the
+      // very next line of that path calls `micWsConnect()`. Ownership is a
+      // single slot, so while this channel still held it the mic's
+      // `tryAcquireStream("me")` was refused and it fell into the reconnect
+      // backoff — the candidate's first words were streamed into a socket that
+      // did not exist yet. The socket itself stays open for the 200ms the server
+      // needs to flush its `final`; the slot, which is what the other channel
+      // competes for, is released immediately.
+      releaseStream("them");
+      if (closeTimerRef.current !== null) clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = setTimeout(() => {
+        closeTimerRef.current = null;
+        close();
+      }, 200);
     } else {
       close();
     }

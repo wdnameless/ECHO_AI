@@ -130,16 +130,18 @@ export function useSystemAudioKeyboard({
 
   // Global assistant voice shortcut
   useEffect(() => {
-    if (globalShortcuts.registerAssistantAudioCallback) {
-      globalShortcuts.registerAssistantAudioCallback(async () => {
-        // Toggle assistant mode
-        const current = micStateStore.getState().mode;
-        if (current === "ASSISTANT") {
-          micStateStore.setMode("IDLE");
-        } else {
-          micStateStore.setMode("ASSISTANT");
-        }
-      });
-    }
+    if (!globalShortcuts.registerAssistantAudioCallback) return;
+    // The registration returns its own cleanup; without it the module-level
+    // `assistant_voice` entry outlived this component and the shortcut could
+    // call into an unmounted closure.
+    return globalShortcuts.registerAssistantAudioCallback(async () => {
+      // Toggle assistant mode
+      const current = micStateStore.getState().mode;
+      if (current === "ASSISTANT") {
+        micStateStore.setMode("IDLE");
+      } else {
+        micStateStore.setMode("ASSISTANT");
+      }
+    });
   }, [globalShortcuts]);
 }

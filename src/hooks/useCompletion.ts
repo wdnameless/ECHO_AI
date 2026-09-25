@@ -921,10 +921,11 @@ export const useCompletion = () => {
   }, [handleScreenshotSubmit]);
 
   useEffect(() => {
-    let unlisten: any;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
 
     const setupListener = async () => {
-      unlisten = await listen("captured-selection", async (event: any) => {
+      const fn = await listen("captured-selection", async (event: any) => {
         if (!screenshotInitiatedByThisContext.current) {
           return;
         }
@@ -955,14 +956,21 @@ export const useCompletion = () => {
           }, 100);
         }
       });
+      // The listener resolved after the effect was torn down: close it at once,
+      // otherwise it stays registered for the life of the window and a later
+      // capture event runs a handler whose owner is gone.
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
     };
 
     setupListener();
 
     return () => {
-      if (unlisten) {
-        unlisten();
-      }
+      cancelled = true;
+      unlisten?.();
     };
   }, [handleScreenshotSubmit]);
 

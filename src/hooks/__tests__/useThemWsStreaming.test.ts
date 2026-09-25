@@ -159,6 +159,36 @@ describe("useThemWsStreaming session usage", () => {
     expect(first.sent.filter((d) => d instanceof ArrayBuffer).length).toBeGreaterThan(0);
   });
 
+  it("frees the shared slot immediately on the mic handoff", async () => {
+    // The handoff the microphone triggers must free ownership at once, not when
+    // the delayed close finally runs. Ownership is one slot: while this channel
+    // held it, the mic's tryAcquireStream("me") was refused and it fell into the
+    // reconnect backoff, so the candidate's first words went nowhere. The socket
+    // still stays open briefly so the server can flush its final frame.
+    const { releaseStream } = await import("@/lib/asr-gate");
+    const releaseSpy = vi.mocked(releaseStream);
+    releaseSpy.mockClear();
+
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useThemWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    await act(async () => { result.current.start(); });
+    const first = MockWebSocket.instances[0];
+    act(() => first.triggerOpen());
+
+    act(() => result.current.finalizeAndClose());
+
+    // Released synchronously, while the socket itself is still open.
+    expect(releaseSpy).toHaveBeenCalledWith("them");
+    expect(first.readyState).toBe(MockWebSocket.OPEN);
+
+    // Only after the flush window does the socket actually close.
+    await act(async () => { vi.advanceTimersByTime(250); });
+    expect(first.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
   it("keeps one socket through a whole utterance", async () => {
     const capturingRef = { current: true };
     const { result } = renderHook(() =>

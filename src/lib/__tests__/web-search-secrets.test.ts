@@ -113,3 +113,52 @@ describe("web-search secret handling", () => {
     });
   });
 });
+
+/**
+ * The dispatch path used to clear the legacy field before anything read it.
+ *
+ * `getWebSearchKey` is the only code that migrates the key out of localStorage,
+ * and the path that used to call it early (`migrateSecretsFromLocalStorage`)
+ * returns immediately once `secrets_migrated_v1` is set — the normal state of an
+ * existing install. Measured on a live profile: that flag was `true` while
+ * `web_search_keys_migrated` was unset, so the migration never ran and the first
+ * keyed search destroyed a paid API key instead of moving it.
+ *
+ * This drives the REAL `performWebSearch` and asserts on the credential it sends,
+ * so it fails if the order is ever inverted again.
+ */
+describe("first keyed search must not destroy the key", () => {
+  it("sends the migrated key instead of falling back to keyless search", async () => {
+    localStorage.setItem(
+      WEB_SEARCH_SETTINGS_KEY,
+      JSON.stringify({
+        enabled: true,
+        provider: "brave",
+        maxResults: 3,
+        braveApiKey: "bsa-paid-key",
+      })
+    );
+    // A real install has the general migration already done.
+    localStorage.setItem("secrets_migrated_v1", "true");
+
+    const { performWebSearch } = await import("../web-search");
+    const sent: Array<Record<string, string>> = [];
+    vi.stubGlobal("fetch", async (_url: string, init?: { headers?: Record<string, string> }) => {
+      sent.push(init?.headers ?? {});
+      return {
+        json: async () => ({ web: { results: [] } }),
+      };
+    });
+
+    await performWebSearch("kafka");
+
+    // The provider call must carry the key — not a keyless DuckDuckGo fallback,
+    // and above all not nothing at all (the key would be gone for good).
+    const token = sent.map((h) => h["X-Subscription-Token"]).find(Boolean);
+    expect(token).toBe("bsa-paid-key");
+    expect(localStorage.getItem(WEB_SEARCH_SETTINGS_KEY) ?? "").not.toContain(
+      "bsa-paid-key"
+    );
+    vi.unstubAllGlobals();
+  });
+});

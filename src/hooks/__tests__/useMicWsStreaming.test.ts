@@ -106,6 +106,40 @@ describe("useMicWsStreaming", () => {
     expect(asrGate.tryAcquireStream("them")).toBe(true);
   });
 
+  it("returns the shared slot when the socket closes on its own", async () => {
+    // A socket that drops without a deliberate close must give ownership back.
+    // The interviewer channel does this in its own onclose; this one did not, so
+    // activeOwner stayed pinned to "me" and every system-audio stream was then
+    // refused as "model busy" for the rest of the session.
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useMicWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    act(() => {
+      result.current.micWsWantRef.current = true;
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const ws = MockWebSocket.instances[0];
+    act(() => {
+      ws.triggerOpen();
+    });
+
+    // The server closes it (not us): no micWsClose(), so onclose runs.
+    act(() => {
+      ws.close();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The other channel must now be able to take the model.
+    expect(asrGate.tryAcquireStream("them")).toBe(true);
+  });
+
   it("connects to ASR streaming endpoint and sends language config on open", async () => {
     const onPartialTranscript = vi.fn();
     const capturingRef = { current: true };

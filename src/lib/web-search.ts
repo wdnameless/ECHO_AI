@@ -314,6 +314,18 @@ export async function performWebSearch(query: string): Promise<SearchResultItem[
   }
 
   if (safeLocalStorage.getItem(STORAGE_KEYS.WEB_SEARCH_KEYS_MIGRATED) !== "true") {
+    // Move the key into the secure store BEFORE clearing the legacy field.
+    //
+    // `stripLegacyWebSearchKeys` deletes it, and `getWebSearchKey` is the only
+    // code that migrates it — so clearing first destroyed the key outright. The
+    // path that used to save it (`migrateSecretsFromLocalStorage`) returns early
+    // once `secrets_migrated_v1` is set, which is the normal state of an
+    // existing install: measured on a live profile, that flag was `true` while
+    // `web_search_keys_migrated` was still unset, so the migration never ran and
+    // the first keyed search would have dropped a paid API key. Reading it first
+    // migrates as a side effect (the getter saves to the secure store and clears
+    // the field itself), and `strip` then finds nothing left to destroy.
+    await getWebSearchKey(settings.provider as KeyedSearchProvider);
     stripLegacyWebSearchKeys();
     safeLocalStorage.setItem(STORAGE_KEYS.WEB_SEARCH_KEYS_MIGRATED, "true");
   }

@@ -194,6 +194,14 @@ export function useMicWsStreaming({
           if (micWsRef.current === ws) {
             micWsRef.current = null;
           }
+          // Give the shared slot back. The interviewer channel does this in its
+          // own `onclose`; this one did not, so a socket that dropped without a
+          // deliberate `micWsClose()` (`micWsFinalizeAndClose` on a socket that
+          // was never OPEN, a server-side close, a network drop) left
+          // `activeOwner` pinned to "me" for the rest of the session — every
+          // system-audio stream was then refused as "model busy" while the
+          // microphone itself had nothing open.
+          releaseStream("me");
           scheduleMicWsReconnect();
         };
         ws.onerror = () => {
