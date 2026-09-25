@@ -619,6 +619,13 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       liveTextRef.current = "";
       utteranceStartedAtRef.current = null;
     }
+    return () => {
+      themWsRef.current.finalizeAndClose();
+      if (liveTimerRef.current !== null) {
+        clearTimeout(liveTimerRef.current);
+        liveTimerRef.current = null;
+      }
+    };
   }, [capturing]);
 
   useEffect(() => {
@@ -696,30 +703,38 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     };
   }, [appendLiveSegment, onInterviewerSpeechActivity, setError]);
   useEffect(() => {
-    let progressUnlisten: (() => void) | undefined;
-    let startUnlisten: (() => void) | undefined;
-    let stopUnlisten: (() => void) | undefined;
-    let errorUnlisten: (() => void) | undefined;
-    let discardedUnlisten: (() => void) | undefined;
+    let cancelled = false;
+    const unlisteners: (() => void)[] = [];
+
+    const addListener = (unlisten: () => void) => {
+      if (cancelled) {
+        unlisten();
+      } else {
+        unlisteners.push(unlisten);
+      }
+    };
 
     const setupContinuousListeners = async () => {
       try {
-        progressUnlisten = await listen("recording-progress", (event) => {
+        const progressUnlisten = await listen("recording-progress", (event) => {
           const seconds = event.payload as number;
           setRecordingProgress(seconds);
         });
+        addListener(progressUnlisten);
 
-        startUnlisten = await listen("continuous-recording-start", () => {
+        const startUnlisten = await listen("continuous-recording-start", () => {
           setRecordingProgress(0);
           setIsRecordingInContinuousMode(true);
         });
+        addListener(startUnlisten);
 
-        stopUnlisten = await listen("continuous-recording-stopped", () => {
+        const stopUnlisten = await listen("continuous-recording-stopped", () => {
           setRecordingProgress(0);
           setIsRecordingInContinuousMode(false);
         });
+        addListener(stopUnlisten);
 
-        errorUnlisten = await listen("audio-encoding-error", (event) => {
+        const errorUnlisten = await listen("audio-encoding-error", (event) => {
           const errorMsg = event.payload as string;
           console.error("Audio encoding error:", errorMsg);
           setError(`Failed to process audio: ${errorMsg}`);
@@ -727,8 +742,9 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
           setIsAIProcessing(false);
           setIsRecordingInContinuousMode(false);
         });
+        addListener(errorUnlisten);
 
-        discardedUnlisten = await listen("speech-discarded", (event) => {
+        const discardedUnlisten = await listen("speech-discarded", (event) => {
           const reason = event.payload as string;
           console.log("Speech discarded:", reason);
           // The VAD opened a stream on `speech-start`, but the engine judged the
@@ -741,19 +757,18 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
             themWsRef.current.finalizeAndClose();
           }
         });
+        addListener(discardedUnlisten);
       } catch (err) {
         console.error("Failed to setup continuous recording listeners:", err);
       }
     };
 
-    setupContinuousListeners();
+    void setupContinuousListeners();
 
     return () => {
-      if (progressUnlisten) progressUnlisten();
-      if (startUnlisten) startUnlisten();
-      if (stopUnlisten) stopUnlisten();
-      if (errorUnlisten) errorUnlisten();
-      if (discardedUnlisten) discardedUnlisten();
+      cancelled = true;
+      unlisteners.forEach((fn) => fn());
+      unlisteners.length = 0;
     };
   }, [setIsAIProcessing, setError]);
 

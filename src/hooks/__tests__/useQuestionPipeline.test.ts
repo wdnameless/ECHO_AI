@@ -244,4 +244,31 @@ describe("useQuestionPipeline", () => {
     });
     expect(mockSelect).toHaveBeenCalledTimes(1);
   });
+
+  it("cancels pending gap timer on unmount", async () => {
+    const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+    const liveSegmentsRef = { current: [] as LiveSegment[] };
+
+    const { result, unmount } = renderHook(() =>
+      useQuestionPipeline({ onTriggerAI, liveSegmentsRef })
+    );
+
+    // Push an incomplete fragment so it arms the gap timer
+    await act(async () => {
+      await result.current.handleInterviewerTranscription("Расскажи о");
+    });
+
+    expect(onTriggerAI).not.toHaveBeenCalled();
+
+    // Unmount before gap timer expires
+    unmount();
+
+    // Advance time past the gap timer threshold
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    // onTriggerAI must NOT have been called because timer was cancelled on unmount
+    expect(onTriggerAI).not.toHaveBeenCalled();
+  });
 });

@@ -136,6 +136,10 @@ export function useMicWsStreaming({
           console.warn("[mic-ws]", err);
           base = "";
         }
+        if (!capturingRef.current) {
+          releaseStream("me");
+          return;
+        }
         if (!base) {
           // Release what was just taken. Ownership is a single slot shared with
           // the interviewer channel, and this path held it while opening

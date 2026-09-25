@@ -32,6 +32,28 @@ export interface LiveSegment {
 export const MAX_LIVE_SEGMENTS = 100;
 export const MAX_HISTORY_MESSAGES = 20;
 
+
+/**
+ * Normalizes messages into chronological order (oldest -> newest) for LLM prompts,
+ * preserving the newest-N window if a limit is specified, regardless of whether the
+ * input array is stored newest-first (useConversationStore) or oldest-first (useCompletion).
+ */
+export function toChronologicalMessages<T extends { timestamp?: number }>(
+  messages: T[],
+  limit?: number
+): T[] {
+  if (messages.length <= 1) {
+    return [...messages];
+  }
+  let selected = messages;
+  if (limit && limit > 0 && messages.length > limit) {
+    const firstTs = messages[0]?.timestamp ?? 0;
+    const lastTs = messages[messages.length - 1]?.timestamp ?? 0;
+    const isNewestFirst = firstTs > lastTs;
+    selected = isNewestFirst ? messages.slice(0, limit) : messages.slice(-limit);
+  }
+  return [...selected].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+}
 /**
  * How long after a line stops growing a new result still continues it.
  *
@@ -127,6 +149,9 @@ export function useConversationStore() {
 
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isSavingRef = useRef<boolean>(false);
+  const hasPendingSaveRef = useRef<boolean>(false);
+  const latestConversationRef = useRef(conversation);
+  latestConversationRef.current = conversation;
 
   useEffect(() => {
     void loadCorrections();
@@ -136,6 +161,7 @@ export function useConversationStore() {
   useEffect(() => {
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
     }
 
     // Only debounce if there are messages to save
@@ -147,26 +173,44 @@ export function useConversationStore() {
       return;
     }
 
-    // Debounce saves (only save 500ms after last change)
-    saveTimeoutRef.current = setTimeout(async () => {
-      // Don't save if already saving (prevent concurrent saves)
-      if (isSavingRef.current) {
+    const performSave = async () => {
+      const conv = latestConversationRef.current;
+      if (!conv.id || conv.updatedAt === 0 || conv.messages.length === 0) {
         return;
       }
 
+      // If save is in flight, remember that another save is required when finished
+      if (isSavingRef.current) {
+        hasPendingSaveRef.current = true;
+        return;
+      }
+
+      isSavingRef.current = true;
+      hasPendingSaveRef.current = false;
+
       try {
-        isSavingRef.current = true;
-        await saveConversation(conversation);
+        await saveConversation(conv);
       } catch (error) {
         console.error("Failed to save system audio conversation:", error);
       } finally {
         isSavingRef.current = false;
+        // Execute trailing save if an update arrived while saving
+        if (hasPendingSaveRef.current) {
+          hasPendingSaveRef.current = false;
+          void performSave();
+        }
       }
+    };
+
+    // Debounce saves (only save 500ms after last change)
+    saveTimeoutRef.current = setTimeout(() => {
+      void performSave();
     }, CONVERSATION_SAVE_DEBOUNCE_MS);
 
     return () => {
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
+        saveTimeoutRef.current = null;
       }
     };
   }, [
@@ -280,7 +324,8 @@ export function useConversationStore() {
   const buildHistory = useCallback(
     (messages: ChatMessage[]): Message[] => {
       const config = getFillerFilterConfig();
-      return messages.slice(0, MAX_HISTORY_MESSAGES).map((msg) => {
+      const chronological = toChronologicalMessages(messages, MAX_HISTORY_MESSAGES);
+      return chronological.map((msg) => {
         const content =
           msg.role === "user" && config.filterAiEnabled
             ? filterFillers(msg.content, config.customFillers)
