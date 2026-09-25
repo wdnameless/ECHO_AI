@@ -176,7 +176,18 @@ export function deepVariableReplacer(
   if (typeof node === "string") {
     let result = node;
     for (const [key, value] of Object.entries(variables)) {
-      result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "g"), value);
+      // A FUNCTION replacement, not a string.
+      //
+      // `String.replace` expands `$`-tokens in a string replacement: `$&` becomes
+      // the matched `{{TEXT}}`, `` $` `` and `$'` the surrounding text, `$1` a
+      // capture group. User speech routinely contains `$` — prices, code, shell
+      // snippets — so a message like "платим $100 и используем $& шаблон" had its
+      // `$&` rewritten into the placeholder, splicing the template back into the
+      // prompt. A function return value is inserted verbatim.
+      result = result.replace(
+        new RegExp(`\\{\\{${key}\\}\\}`, "g"),
+        () => value
+      );
     }
     return result;
   }
