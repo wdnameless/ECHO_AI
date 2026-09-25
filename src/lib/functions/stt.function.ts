@@ -3,7 +3,7 @@ import {
   getByPath,
   blobToBase64,
 } from "./common.function";
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { fetch as tauriFetch, type ClientOptions } from "@tauri-apps/plugin-http";
 import { invoke } from "@tauri-apps/api/core";
 import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
 
@@ -309,7 +309,12 @@ export async function fetchSTT(params: STTParams): Promise<string> {
       body = JSON.stringify(deepVariableReplacer(dataObj, allVariables));
     }
 
-    const fetchFunction = (input: RequestInfo | URL, init?: RequestInit) => {
+    // `ClientOptions` carries the plugin's `maxRedirections` (R13); the browser
+    // `fetch` used for localhost simply ignores keys it does not know.
+    const fetchFunction = (
+      input: RequestInfo | URL,
+      init?: RequestInit & ClientOptions
+    ) => {
       const urlStr = String(input);
       if (urlStr.includes("127.0.0.1") || urlStr.includes("localhost")) {
         return window.fetch(input, init).catch(() => tauriFetch(input, init));
@@ -344,6 +349,9 @@ export async function fetchSTT(params: STTParams): Promise<string> {
           method: curlJson.method || "POST",
           headers: trust.headers,
           body: curlJson.method === "GET" ? undefined : body,
+          // R13: a redirect must not carry credentials to a host the gate did
+          // not approve — see the note in ai-response.function.ts.
+          maxRedirections: trust.maxRedirections,
         });
         unreachable = false;
       } catch (e) {

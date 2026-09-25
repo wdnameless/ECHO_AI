@@ -5,8 +5,8 @@ import {
   AudioVisualizer,
   StatusIndicator,
 } from "./components";
-import { useApp, useBarChrome } from "@/hooks";
-import { useApp as useAppContext } from "@/contexts";
+import { useAppBootstrap, useBarChrome } from "@/hooks";
+import { useApp } from "@/contexts";
 import { HeadphonesIcon, MicIcon, Eye, EyeOff, PinIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ErrorBoundary } from "react-error-boundary";
@@ -23,8 +23,8 @@ import { cn } from "@/lib/utils";
 type AppMode = "dictation" | "meeting";
 
 const App = () => {
-  const { isHidden, systemAudio } = useApp();
-  const { customizable, toggleStealthMode, toggleAlwaysOnTop } = useAppContext();
+  const { isHidden, systemAudio } = useAppBootstrap();
+  const { customizable, toggleStealthMode, toggleAlwaysOnTop } = useApp();
   const platform = getPlatform();
   useBarChrome();
 

@@ -9,7 +9,7 @@ const DEFAULT_TRUSTED_HOSTS: readonly string[] = [
   "0.0.0.0",
 ];
 
-function normalizeHost(hostOrUrl: string): string | null {
+export function normalizeHost(hostOrUrl: string): string | null {
   if (!hostOrUrl) return null;
   const trimmed = hostOrUrl.trim();
   if (!trimmed) return null;
@@ -90,7 +90,10 @@ export function getTrustedHosts(): string[] {
     if (Array.isArray(parsed)) {
       return parsed.filter((item): item is string => typeof item === "string");
     }
-  } catch {}
+  } catch {
+    // Invalid JSON in localStorage, fall back to empty list.
+    return [];
+  }
   return [];
 }
 

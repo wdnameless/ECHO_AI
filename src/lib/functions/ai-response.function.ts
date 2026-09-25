@@ -623,6 +623,14 @@ async function* streamAIResponse(params: {
         headers: trust.headers,
         body: curlJson.method === "GET" ? undefined : JSON.stringify(bodyObj),
         signal,
+        // R13: redirects are disabled. The trust decision above was made for
+        // THIS host; following a redirect would let a provider (or a proxy in
+        // front of it) hand the request — and any provider key carried in a
+        // custom header from the user's curl template — to a host this gate
+        // never approved. reqwest strips only `authorization`/`cookie` on a
+        // cross-host hop, and this app can put keys in arbitrary header names,
+        // so disabling the hop is the only reliable guarantee.
+        maxRedirections: trust.maxRedirections,
       });
     } catch (fetchError) {
       // Check if aborted
@@ -656,6 +664,10 @@ async function* streamAIResponse(params: {
             headers: trust.headers,
             body: curlJson.method === "GET" ? undefined : JSON.stringify(bodyObj),
             signal,
+            // R13: same guarantee as the first attempt — the retry must not
+            // follow a redirect either. Omitting it here made the security
+            // posture depend on whether the gateway happened to return a 502.
+            maxRedirections: trust.maxRedirections,
           });
         } catch {
           /* fall through to the error below */

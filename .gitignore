@@ -60,3 +60,7 @@ src/.archmap/
 
 # Local scratch space: throwaway probes, generated audio, build logs.
 /.tmp/
+
+# A local database belonging to an unrelated tool (control-room), never part of
+# the project: runtime state that would otherwise ride along in every commit.
+/data/

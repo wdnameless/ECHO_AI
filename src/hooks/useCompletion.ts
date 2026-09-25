@@ -1,56 +1,26 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import type {
+  ChatConversation,
+  CompletionState,
+} from "@/types";
+import { toChronologicalMessages } from "./useConversationStore";
 import { useWindowResize } from "./useWindow";
 import { useGlobalShortcuts } from "@/hooks";
-import { MAX_FILES } from "@/config";
 import { useApp } from "@/contexts";
 import {
-  fetchAIResponse,
-  saveConversation,
   getConversationById,
-  generateConversationTitle,
-  shouldUsePluelyAPI,
-  MESSAGE_ID_OFFSET,
   generateConversationId,
-  generateMessageId,
-  generateRequestId,
   getResponseSettings,
 } from "@/lib";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-
-// Types for completion
-interface AttachedFile {
-  id: string;
-  name: string;
-  type: string;
-  base64: string;
-  size: number;
-}
-
-interface ChatMessage {
-  id: string;
-  role: "user" | "assistant" | "system";
-  content: string;
-  timestamp: number;
-}
-
-interface ChatConversation {
-  id: string;
-  title: string;
-  messages: ChatMessage[];
-  createdAt: number;
-  updatedAt: number;
-}
-
-interface CompletionState {
-  input: string;
-  response: string;
-  isLoading: boolean;
-  error: string | null;
-  attachedFiles: AttachedFile[];
-  currentConversationId: string | null;
-  conversationHistory: ChatMessage[];
-}
+import {
+  useCompletionBase,
+  useScreenshotCapture,
+  validateAIProvider,
+  extractImagesBase64,
+  handleEnterSubmit,
+  streamAIResponse,
+  persistConversationTurn,
+} from "./useCompletionCommon";
 
 export const useCompletion = () => {
   const {
@@ -74,267 +44,32 @@ export const useCompletion = () => {
   const [micOpen, setMicOpen] = useState(false);
   const [enableVAD, setEnableVAD] = useState(false);
   const [messageHistoryOpen, setMessageHistoryOpen] = useState(false);
-  const [isFilesPopoverOpen, setIsFilesPopoverOpen] = useState(false);
-  const [isScreenshotLoading, setIsScreenshotLoading] = useState(false);
   const [keepEngaged, setKeepEngaged] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const isProcessingScreenshotRef = useRef(false);
-  const screenshotConfigRef = useRef(screenshotConfiguration);
-  const hasCheckedPermissionRef = useRef(false);
-  const screenshotInitiatedByThisContext = useRef(false);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   const { resizeWindow } = useWindowResize();
 
-  useEffect(() => {
-    screenshotConfigRef.current = screenshotConfiguration;
-  }, [screenshotConfiguration]);
-
-  const scrollAreaRef = useRef<HTMLDivElement>(null);
-
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const currentRequestIdRef = useRef<string | null>(null);
-
-  const setInput = useCallback((value: string) => {
-    setState((prev) => ({ ...prev, input: value }));
-  }, []);
+  const {
+    setInput,
+    setAttachedFiles,
+    setError,
+    beginRequest,
+    isCurrent,
+    cancel,
+    isFilesPopoverOpen,
+    setIsFilesPopoverOpen,
+    addFile,
+    removeFile,
+    clearFiles,
+    onRemoveAllFiles,
+    handleFileSelect,
+    handlePaste,
+  } = useCompletionBase(state, setState);
 
   const setResponse = useCallback((value: string) => {
     setState((prev) => ({ ...prev, response: value }));
   }, []);
-
-  const addFile = useCallback(async (file: File) => {
-    try {
-      const base64 = await fileToBase64(file);
-      const attachedFile: AttachedFile = {
-        id: Date.now().toString(),
-        name: file.name,
-        type: file.type,
-        base64,
-        size: file.size,
-      };
-
-      setState((prev) => ({
-        ...prev,
-        attachedFiles: [...prev.attachedFiles, attachedFile],
-      }));
-    } catch (error) {
-      console.error("Failed to process file:", error);
-    }
-  }, []);
-
-  const removeFile = useCallback((fileId: string) => {
-    setState((prev) => ({
-      ...prev,
-      attachedFiles: prev.attachedFiles.filter((f) => f.id !== fileId),
-    }));
-  }, []);
-
-  const clearFiles = useCallback(() => {
-    setState((prev) => ({ ...prev, attachedFiles: [] }));
-  }, []);
-
-  const submit = useCallback(
-    async (speechText?: string) => {
-      const input = speechText || state.input;
-
-      if (!input.trim()) {
-        return;
-      }
-
-      if (speechText) {
-        setState((prev) => ({
-          ...prev,
-          input: speechText,
-        }));
-      }
-
-      // Generate unique request ID
-      const requestId = generateRequestId();
-      currentRequestIdRef.current = requestId;
-
-      // Cancel any existing request
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-
-      abortControllerRef.current = new AbortController();
-      const signal = abortControllerRef.current.signal;
-
-      try {
-        // Prepare message history for the AI
-        const messageHistory = state.conversationHistory.map((msg) => ({
-          role: msg.role,
-          content: msg.content,
-        }));
-
-        // Handle image attachments
-        const imagesBase64: string[] = [];
-        if (state.attachedFiles.length > 0) {
-          state.attachedFiles.forEach((file) => {
-            if (file.type.startsWith("image/")) {
-              imagesBase64.push(file.base64);
-            }
-          });
-        }
-
-        let fullResponse = "";
-
-        const usePluelyAPI = await shouldUsePluelyAPI();
-        // Check if AI provider is configured
-        if (!selectedAIProvider.provider && !usePluelyAPI) {
-          setState((prev) => ({
-            ...prev,
-            error: "Please select an AI provider in settings",
-          }));
-          return;
-        }
-
-        const provider = allAiProviders.find(
-          (p) => p.id === selectedAIProvider.provider
-        );
-        if (!provider && !usePluelyAPI) {
-          setState((prev) => ({
-            ...prev,
-            error: "Invalid provider selected",
-          }));
-          return;
-        }
-
-        // Clear previous response and set loading state
-        setState((prev) => ({
-          ...prev,
-          isLoading: true,
-          error: null,
-          response: "",
-        }));
-
-        try {
-          // Use the fetchAIResponse function with signal
-          for await (const chunk of fetchAIResponse({
-            provider: usePluelyAPI ? undefined : provider,
-            selectedProvider: selectedAIProvider,
-            systemPrompt: systemPrompt || undefined,
-            history: messageHistory,
-            userMessage: input,
-            imagesBase64,
-            signal,
-          })) {
-            // Only update if this is still the current request
-            if (currentRequestIdRef.current !== requestId) {
-              return; // Request was superseded, stop processing
-            }
-
-            // Check if request was aborted
-            if (signal.aborted) {
-              return; // Request was cancelled, stop processing
-            }
-
-            fullResponse += chunk;
-            setState((prev) => ({
-              ...prev,
-              response: prev.response + chunk,
-            }));
-          }
-        } catch (e: any) {
-          console.warn("[completion]", e);
-          // Only show error if this is still the current request and not aborted
-          if (currentRequestIdRef.current === requestId && !signal.aborted) {
-            setState((prev) => ({
-              ...prev,
-              isLoading: false,
-              error: e.message || "An error occurred",
-            }));
-          }
-          return;
-        }
-
-        // Only proceed if this is still the current request
-        if (currentRequestIdRef.current !== requestId || signal.aborted) {
-          return;
-        }
-
-        setState((prev) => ({ ...prev, isLoading: false }));
-
-        // Focus input after AI response is complete
-        setTimeout(() => {
-          inputRef.current?.focus();
-        }, 100);
-
-        // Save the conversation after successful completion
-        if (fullResponse) {
-          await saveCurrentConversation(
-            input,
-            fullResponse,
-            state.attachedFiles
-          );
-          // Clear input and attached files after saving
-          setState((prev) => ({
-            ...prev,
-            input: "",
-            attachedFiles: [],
-          }));
-        }
-      } catch (error) {
-        console.warn("[completion]", error);
-        // Only show error if not aborted
-        if (!signal?.aborted && currentRequestIdRef.current === requestId) {
-          setState((prev) => ({
-            ...prev,
-            error: error instanceof Error ? error.message : "An error occurred",
-            isLoading: false,
-          }));
-        }
-      }
-    },
-    [
-      state.input,
-      state.attachedFiles,
-      selectedAIProvider,
-      allAiProviders,
-      systemPrompt,
-      state.conversationHistory,
-    ]
-  );
-
-  const cancel = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    currentRequestIdRef.current = null;
-    setState((prev) => ({ ...prev, isLoading: false }));
-  }, []);
-
-  const reset = useCallback(() => {
-    // Don't reset if keep engaged mode is active
-    if (keepEngaged) {
-      return;
-    }
-    cancel();
-    setState((prev) => ({
-      ...prev,
-      input: "",
-      response: "",
-      error: null,
-      attachedFiles: [],
-    }));
-  }, [cancel, keepEngaged]);
-
-  // Helper function to convert file to base64
-  const fileToBase64 = useCallback(async (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = () => {
-        const base64 = (reader.result as string)?.split(",")[1] || "";
-        resolve(base64);
-      };
-      reader.onerror = reject;
-    });
-  }, []);
-
-  // Note: saveConversation, getConversationById, and generateConversationTitle
-  // are now imported from lib/database/chat-history.action.ts
 
   const loadConversation = useCallback((conversation: ChatConversation) => {
     setState((prev) => ({
@@ -362,12 +97,7 @@ export const useCompletion = () => {
   }, []);
 
   const saveCurrentConversation = useCallback(
-    async (
-      userMessage: string,
-      assistantResponse: string,
-      _attachedFiles: AttachedFile[]
-    ) => {
-      // Validate inputs
+    async (userMessage: string, assistantResponse: string) => {
       if (!userMessage || !assistantResponse) {
         console.error("Cannot save conversation: missing message content");
         return;
@@ -377,103 +107,202 @@ export const useCompletion = () => {
         state.currentConversationId || generateConversationId("chat");
       const timestamp = Date.now();
 
-      const userMsg: ChatMessage = {
-        id: generateMessageId("user", timestamp),
-        role: "user",
-        content: userMessage,
-        timestamp,
-      };
-
-      const assistantMsg: ChatMessage = {
-        id: generateMessageId("assistant", timestamp + MESSAGE_ID_OFFSET),
-        role: "assistant",
-        content: assistantResponse,
-        timestamp: timestamp + MESSAGE_ID_OFFSET,
-      };
-
-      const newMessages = [...state.conversationHistory, userMsg, assistantMsg];
-
-      // Get existing conversation if updating
-      let existingConversation = null;
-      if (state.currentConversationId) {
-        try {
-          existingConversation = await getConversationById(
-            state.currentConversationId
-          );
-        } catch (error) {
-          console.error("Failed to get existing conversation:", error);
-        }
-      }
-
-      const title =
-        state.conversationHistory.length === 0
-          ? generateConversationTitle(userMessage)
-          : existingConversation?.title ||
-            generateConversationTitle(userMessage);
-
-      const conversation: ChatConversation = {
-        id: conversationId,
-        title,
-        messages: newMessages,
-        createdAt: existingConversation?.createdAt || timestamp,
-        updatedAt: timestamp,
-      };
-
       try {
-        await saveConversation(conversation);
+        const conversation = await persistConversationTurn({
+          conversationId,
+          lookupExistingId: state.currentConversationId,
+          existingMessages: state.conversationHistory,
+          userMessage,
+          assistantResponse,
+          timestamp,
+          preferNewTitleWhenEmpty: true,
+        });
 
         setState((prev) => ({
           ...prev,
-          currentConversationId: conversationId,
-          conversationHistory: newMessages,
+          currentConversationId: conversation.id,
+          conversationHistory: conversation.messages,
         }));
       } catch (error) {
         console.error("Failed to save conversation:", error);
-        // Show error to user
-        setState((prev) => ({
-          ...prev,
-          error: "Failed to save conversation. Please try again.",
-        }));
+        setError("Failed to save conversation. Please try again.");
       }
     },
-    [state.currentConversationId, state.conversationHistory]
+    [state.currentConversationId, state.conversationHistory, setError]
   );
 
-  // Listen for conversation events from the main ChatHistory component
-  useEffect(() => {
-    const handleConversationSelected = async (event: any) => {
-      console.log(event, "event");
-      // Only the conversation ID is passed through the event
-      const { id } = event.detail;
-      console.log(id, "id");
-      if (!id || typeof id !== "string") {
-        console.error("No conversation ID provided");
+  const runCompletionTurn = useCallback(
+    async (
+      userMessage: string,
+      imagesBase64: string[],
+      clearAttachedOnSuccess: boolean,
+      setPromptAsInput: boolean
+    ) => {
+      const { requestId, signal } = beginRequest();
+
+      try {
+        const messageHistory = toChronologicalMessages(
+          state.conversationHistory
+        ).map((msg) => ({
+          role: msg.role,
+          content: msg.content,
+        }));
+
+        const providerValidation = await validateAIProvider(
+          selectedAIProvider,
+          allAiProviders
+        );
+        if (!providerValidation.ok) {
+          setError(providerValidation.error);
+          return;
+        }
+
         setState((prev) => ({
           ...prev,
-          error: "Invalid conversation selected",
+          ...(setPromptAsInput ? { input: userMessage } : {}),
+          isLoading: true,
+          error: null,
+          response: "",
         }));
+
+        const fullResponse = await streamAIResponse({
+          provider: providerValidation.usePluelyAPI
+            ? undefined
+            : providerValidation.provider,
+          selectedProvider: selectedAIProvider,
+          systemPrompt: systemPrompt || undefined,
+          history: messageHistory,
+          userMessage,
+          imagesBase64,
+          signal,
+          isCurrent: () => isCurrent(requestId, signal),
+          onChunk: (chunk) => {
+            setState((prev) => ({
+              ...prev,
+              response: prev.response + chunk,
+            }));
+          },
+          onError: (errorMessage) => {
+            setError(errorMessage, true);
+          },
+          logTag: "[completion]",
+        });
+
+        if (isCurrent(requestId, signal)) {
+          setState((prev) => ({ ...prev, isLoading: false }));
+        }
+
+        if (fullResponse === null || !isCurrent(requestId, signal)) {
+          return;
+        }
+
+        setTimeout(() => {
+          inputRef.current?.focus();
+        }, 100);
+
+        if (fullResponse) {
+          await saveCurrentConversation(userMessage, fullResponse);
+          setState((prev) => ({
+            ...prev,
+            input: "",
+            ...(clearAttachedOnSuccess ? { attachedFiles: [] } : {}),
+          }));
+        }
+      } catch (error) {
+        console.warn("[completion]", error);
+        if (isCurrent(requestId, signal)) {
+          setError(
+            error instanceof Error ? error.message : "An error occurred",
+            true
+          );
+        }
+      }
+    },
+    [
+      state.conversationHistory,
+      selectedAIProvider,
+      allAiProviders,
+      systemPrompt,
+      beginRequest,
+      isCurrent,
+      setError,
+      saveCurrentConversation,
+    ]
+  );
+
+  const submit = useCallback(
+    async (speechText?: string) => {
+      const input = speechText || state.input;
+      if (!input.trim()) {
         return;
       }
-      console.log(id, "id");
-      try {
-        // Fetch the full conversation from SQLite
-        const conversation = await getConversationById(id);
+      if (speechText) {
+        setInput(speechText);
+      }
+      const imagesBase64 = extractImagesBase64(state.attachedFiles);
+      await runCompletionTurn(input, imagesBase64, true, false);
+    },
+    [state.input, state.attachedFiles, setInput, runCompletionTurn]
+  );
 
+  const reset = useCallback(() => {
+    if (keepEngaged) {
+      return;
+    }
+    cancel();
+    setState((prev) => ({
+      ...prev,
+      input: "",
+      response: "",
+      error: null,
+      attachedFiles: [],
+    }));
+  }, [cancel, keepEngaged]);
+
+  const onAutoScreenshotPrompt = useCallback(
+    async (base64: string, prompt: string) => {
+      await runCompletionTurn(prompt, [base64], false, true);
+    },
+    [runCompletionTurn]
+  );
+
+  const {
+    isScreenshotLoading,
+    captureScreenshot,
+    handleScreenshotSubmit,
+  } = useScreenshotCapture({
+    screenshotConfiguration,
+    attachedFilesCount: state.attachedFiles.length,
+    setAttachedFiles,
+    onAutoPrompt: onAutoScreenshotPrompt,
+    logTag: "[completion]",
+    onError: setError,
+  });
+
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    handleEnterSubmit(e, submit, state.isLoading, state.input);
+  };
+
+  useEffect(() => {
+    const handleConversationSelected = async (event: Event) => {
+      const customEvent = event as CustomEvent<{ id?: string }>;
+      const id = customEvent.detail?.id;
+      if (!id || typeof id !== "string") {
+        console.error("No conversation ID provided");
+        setError("Invalid conversation selected");
+        return;
+      }
+      try {
+        const conversation = await getConversationById(id);
         if (conversation) {
           loadConversation(conversation);
         } else {
           console.error(`Conversation ${id} not found in database`);
-          setState((prev) => ({
-            ...prev,
-            error: "Conversation not found. It may have been deleted.",
-          }));
+          setError("Conversation not found. It may have been deleted.");
         }
       } catch (error) {
         console.error("Failed to load conversation:", error);
-        setState((prev) => ({
-          ...prev,
-          error: "Failed to load conversation. Please try again.",
-        }));
+        setError("Failed to load conversation. Please try again.");
       }
     };
 
@@ -481,9 +310,9 @@ export const useCompletion = () => {
       startNewConversation();
     };
 
-    const handleConversationDeleted = (event: any) => {
-      const deletedId = event.detail;
-      // If the currently active conversation was deleted, start a new one
+    const handleConversationDeleted = (event: Event) => {
+      const customEvent = event as CustomEvent<string>;
+      const deletedId = customEvent.detail;
       if (state.currentConversationId === deletedId) {
         startNewConversation();
       }
@@ -523,243 +352,7 @@ export const useCompletion = () => {
       );
       window.removeEventListener("storage", handleStorageChange);
     };
-  }, [loadConversation, startNewConversation, state.currentConversationId]);
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    const MAX_FILES = 6;
-
-    files.forEach((file) => {
-      if (
-        file.type.startsWith("image/") &&
-        state.attachedFiles.length < MAX_FILES
-      ) {
-        addFile(file);
-      }
-    });
-
-    // Reset input so same file can be selected again
-    e.target.value = "";
-  };
-
-  const handleScreenshotSubmit = useCallback(
-    async (base64: string, prompt?: string) => {
-      if (state.attachedFiles.length >= MAX_FILES) {
-        setState((prev) => ({
-          ...prev,
-          error: `You can only upload ${MAX_FILES} files`,
-        }));
-        return;
-      }
-
-      try {
-        if (prompt) {
-          // Auto mode: Submit directly to AI with screenshot
-          const attachedFile: AttachedFile = {
-            id: Date.now().toString(),
-            name: `screenshot_${Date.now()}.png`,
-            type: "image/png",
-            base64: base64,
-            size: base64.length,
-          };
-
-          // Generate unique request ID
-          const requestId = generateRequestId();
-          currentRequestIdRef.current = requestId;
-
-          // Cancel any existing request
-          if (abortControllerRef.current) {
-            abortControllerRef.current.abort();
-          }
-
-          abortControllerRef.current = new AbortController();
-          const signal = abortControllerRef.current.signal;
-
-          try {
-            // Prepare message history for the AI
-            const messageHistory = state.conversationHistory.map((msg) => ({
-              role: msg.role,
-              content: msg.content,
-            }));
-
-            let fullResponse = "";
-
-            const usePluelyAPI = await shouldUsePluelyAPI();
-            // Check if AI provider is configured
-            if (!selectedAIProvider.provider && !usePluelyAPI) {
-              setState((prev) => ({
-                ...prev,
-                error: "Please select an AI provider in settings",
-              }));
-              return;
-            }
-
-            const provider = allAiProviders.find(
-              (p) => p.id === selectedAIProvider.provider
-            );
-            if (!provider && !usePluelyAPI) {
-              setState((prev) => ({
-                ...prev,
-                error: "Invalid provider selected",
-              }));
-              return;
-            }
-
-            // Clear previous response and set loading state
-            setState((prev) => ({
-              ...prev,
-              input: prompt,
-              isLoading: true,
-              error: null,
-              response: "",
-            }));
-
-            // Use the fetchAIResponse function with image and signal
-            for await (const chunk of fetchAIResponse({
-              provider: usePluelyAPI ? undefined : provider,
-              selectedProvider: selectedAIProvider,
-              systemPrompt: systemPrompt || undefined,
-              history: messageHistory,
-              userMessage: prompt,
-              imagesBase64: [base64],
-              signal,
-            })) {
-              // Only update if this is still the current request
-              if (currentRequestIdRef.current !== requestId || signal.aborted) {
-                return; // Request was superseded or cancelled
-              }
-
-              fullResponse += chunk;
-              setState((prev) => ({
-                ...prev,
-                response: prev.response + chunk,
-              }));
-            }
-
-            // Only proceed if this is still the current request
-            if (currentRequestIdRef.current !== requestId || signal.aborted) {
-              return;
-            }
-
-            setState((prev) => ({ ...prev, isLoading: false }));
-
-            // Focus input after screenshot AI response is complete
-            setTimeout(() => {
-              inputRef.current?.focus();
-            }, 100);
-
-            // Save the conversation after successful completion
-            if (fullResponse) {
-              await saveCurrentConversation(prompt, fullResponse, [
-                attachedFile,
-              ]);
-              // Clear input after saving
-              setState((prev) => ({
-                ...prev,
-                input: "",
-              }));
-            }
-          } catch (e: any) {
-            console.warn("[completion]", e);
-            // Only show error if this is still the current request and not aborted
-            if (currentRequestIdRef.current === requestId && !signal.aborted) {
-              setState((prev) => ({
-                ...prev,
-                error: e.message || "An error occurred",
-              }));
-            }
-          } finally {
-            // Only update loading state if this is still the current request
-            if (currentRequestIdRef.current === requestId && !signal.aborted) {
-              setState((prev) => ({ ...prev, isLoading: false }));
-            }
-          }
-        } else {
-          // Manual mode: Add to attached files
-          const attachedFile: AttachedFile = {
-            id: Date.now().toString(),
-            name: `screenshot_${Date.now()}.png`,
-            type: "image/png",
-            base64: base64,
-            size: base64.length,
-          };
-
-          setState((prev) => ({
-            ...prev,
-            attachedFiles: [...prev.attachedFiles, attachedFile],
-          }));
-        }
-      } catch (error) {
-        console.error("Failed to process screenshot:", error);
-        setState((prev) => ({
-          ...prev,
-          error:
-            error instanceof Error
-              ? error.message
-              : "An error occurred processing screenshot",
-          isLoading: false,
-        }));
-      }
-    },
-    [
-      state.attachedFiles.length,
-      state.conversationHistory,
-      selectedAIProvider,
-      allAiProviders,
-      systemPrompt,
-      saveCurrentConversation,
-      inputRef,
-    ]
-  );
-
-  const onRemoveAllFiles = () => {
-    clearFiles();
-    setIsFilesPopoverOpen(false);
-  };
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      if (!state.isLoading && state.input.trim()) {
-        submit();
-      }
-    }
-  };
-
-  const handlePaste = useCallback(
-    async (e: React.ClipboardEvent) => {
-      // Check if clipboard contains images
-      const items = e.clipboardData?.items;
-      if (!items) return;
-
-      const hasImages = Array.from(items).some((item) =>
-        item.type.startsWith("image/")
-      );
-
-      // If we have images, prevent default text pasting and process images
-      if (hasImages) {
-        e.preventDefault();
-
-        const processedFiles: File[] = [];
-
-        Array.from(items).forEach((item) => {
-          if (
-            item.type.startsWith("image/") &&
-            state.attachedFiles.length + processedFiles.length < MAX_FILES
-          ) {
-            const file = item.getAsFile();
-            if (file) {
-              processedFiles.push(file);
-            }
-          }
-        });
-
-        // Process all files
-        await Promise.all(processedFiles.map((file) => addFile(file)));
-      }
-    },
-    [state.attachedFiles.length, addFile]
-  );
+  }, [loadConversation, startNewConversation, state.currentConversationId, setError]);
 
   const isPopoverOpen =
     state.isLoading ||
@@ -779,7 +372,6 @@ export const useCompletion = () => {
     isFilesPopoverOpen,
   ]);
 
-  // Auto scroll to bottom when response updates
   useEffect(() => {
     const responseSettings = getResponseSettings();
     if (
@@ -800,19 +392,18 @@ export const useCompletion = () => {
     }
   }, [state.response, keepEngaged]);
 
-  // Keyboard arrow key support for scrolling
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isPopoverOpen) return;
 
-      const activeScrollRef = scrollAreaRef.current || scrollAreaRef.current;
+      const activeScrollRef = scrollAreaRef.current;
       const scrollElement = activeScrollRef?.querySelector(
         "[data-radix-scroll-area-viewport]"
-      ) as HTMLElement;
+      ) as HTMLElement | null;
 
       if (!scrollElement) return;
 
-      const scrollAmount = 100; // pixels to scroll
+      const scrollAmount = 100;
 
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -825,19 +416,15 @@ export const useCompletion = () => {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isPopoverOpen, scrollAreaRef]);
+  }, [isPopoverOpen]);
 
-  // Keyboard shortcut for toggling keep engaged mode (Cmd+K / Ctrl+K)
   useEffect(() => {
     const handleToggleShortcut = (e: KeyboardEvent) => {
-      // Only trigger when popover is open
       if (!isPopoverOpen) return;
 
-      // Check for Cmd+K (Mac) or Ctrl+K (Windows/Linux)
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
         setKeepEngaged((prev) => !prev);
-        // Focus the input after toggle (with delay to ensure DOM is ready)
         setTimeout(() => {
           inputRef.current?.focus();
         }, 100);
@@ -848,172 +435,19 @@ export const useCompletion = () => {
     return () => window.removeEventListener("keydown", handleToggleShortcut);
   }, [isPopoverOpen]);
 
-  const captureScreenshot = useCallback(async () => {
-    if (!handleScreenshotSubmit) return;
-
-    const config = screenshotConfigRef.current;
-    screenshotInitiatedByThisContext.current = true;
-    setIsScreenshotLoading(true);
-
-    try {
-      // Check screen recording permission on macOS
-      const platform = navigator.platform.toLowerCase();
-      if (platform.includes("mac") && !hasCheckedPermissionRef.current) {
-        const {
-          checkScreenRecordingPermission,
-          requestScreenRecordingPermission,
-        } = await import("tauri-plugin-macos-permissions-api");
-
-        const hasPermission = await checkScreenRecordingPermission();
-
-        if (!hasPermission) {
-          // Request permission
-          await requestScreenRecordingPermission();
-
-          // Wait a moment and check again
-          await new Promise((resolve) => setTimeout(resolve, 2000));
-
-          const hasPermissionNow = await checkScreenRecordingPermission();
-
-          if (!hasPermissionNow) {
-            setState((prev) => ({
-              ...prev,
-              error:
-                "Screen Recording permission required. Please enable it by going to System Settings > Privacy & Security > Screen & System Audio Recording. If you don't see Echo AI in the list, click the '+' button to add it. If it's already listed, make sure it's enabled. Then restart the app.",
-            }));
-            setIsScreenshotLoading(false);
-            screenshotInitiatedByThisContext.current = false;
-            return;
-          }
-        }
-        hasCheckedPermissionRef.current = true;
-      }
-
-      if (config.enabled) {
-        const base64 = await invoke("capture_to_base64");
-
-        if (config.mode === "auto") {
-          // Auto mode: Submit directly to AI with the configured prompt
-          await handleScreenshotSubmit(base64 as string, config.autoPrompt);
-        } else if (config.mode === "manual") {
-          // Manual mode: Add to attached files without prompt
-          await handleScreenshotSubmit(base64 as string);
-        }
-        screenshotInitiatedByThisContext.current = false;
-      } else {
-        // Selection Mode: Open overlay to select an area
-        isProcessingScreenshotRef.current = false;
-        await invoke("start_screen_capture");
-      }
-    } catch (error) {
-      console.warn("[completion]", error);
-      setState((prev) => ({
-        ...prev,
-        error: "Failed to capture screenshot. Please try again.",
-      }));
-      isProcessingScreenshotRef.current = false;
-      screenshotInitiatedByThisContext.current = false;
-    } finally {
-      if (config.enabled) {
-        setIsScreenshotLoading(false);
-      }
-    }
-  }, [handleScreenshotSubmit]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | undefined;
-
-    const setupListener = async () => {
-      const fn = await listen("captured-selection", async (event: any) => {
-        if (!screenshotInitiatedByThisContext.current) {
-          return;
-        }
-
-        if (isProcessingScreenshotRef.current) {
-          return;
-        }
-
-        isProcessingScreenshotRef.current = true;
-        const base64 = event.payload;
-        const config = screenshotConfigRef.current;
-
-        try {
-          if (config.mode === "auto") {
-            // Auto mode: Submit directly to AI with the configured prompt
-            await handleScreenshotSubmit(base64 as string, config.autoPrompt);
-          } else if (config.mode === "manual") {
-            // Manual mode: Add to attached files without prompt
-            await handleScreenshotSubmit(base64 as string);
-          }
-        } catch (error) {
-          console.error("Error processing selection:", error);
-        } finally {
-          setIsScreenshotLoading(false);
-          screenshotInitiatedByThisContext.current = false;
-          setTimeout(() => {
-            isProcessingScreenshotRef.current = false;
-          }, 100);
-        }
-      });
-      // The listener resolved after the effect was torn down: close it at once,
-      // otherwise it stays registered for the life of the window and a later
-      // capture event runs a handler whose owner is gone.
-      if (cancelled) {
-        fn();
-        return;
-      }
-      unlisten = fn;
-    };
-
-    setupListener();
-
-    return () => {
-      cancelled = true;
-      unlisten?.();
-    };
-  }, [handleScreenshotSubmit]);
-
-  useEffect(() => {
-    const unlisten = listen("capture-closed", () => {
-      setIsScreenshotLoading(false);
-      isProcessingScreenshotRef.current = false;
-      screenshotInitiatedByThisContext.current = false;
-    });
-
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, []);
-
   const toggleRecording = useCallback(() => {
     setEnableVAD(!enableVAD);
     setMicOpen(!micOpen);
   }, [enableVAD, micOpen]);
 
-  // Cleanup abort controller on unmount
-  useEffect(() => {
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
-      currentRequestIdRef.current = null;
-    };
-  }, []);
-
-  // register callbacks for global shortcuts
   useEffect(() => {
     globalShortcuts.registerAudioCallback(toggleRecording);
     globalShortcuts.registerInputRef(inputRef.current);
     globalShortcuts.registerScreenshotCallback(captureScreenshot);
   }, [
-    globalShortcuts.registerAudioCallback,
-    globalShortcuts.registerInputRef,
-    globalShortcuts.registerScreenshotCallback,
+    globalShortcuts,
     toggleRecording,
     captureScreenshot,
-    inputRef,
   ]);
 
   return {

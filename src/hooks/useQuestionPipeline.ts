@@ -8,7 +8,7 @@
  *   stable phrase per pending answer, cleared when the response starts streaming.
  * - Provides reset and question-assembler coordination.
  */
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   QuestionAssembler,
@@ -80,6 +80,13 @@ export function useQuestionPipeline({
       mode: ACTIVE_ASR_MODE,
     });
   }
+  useEffect(() => {
+    return () => {
+      cancelGapTimerRef.current?.();
+      cancelGapTimerRef.current = null;
+    };
+  }, []);
+
 
 
   const clearFiller = useCallback(() => {

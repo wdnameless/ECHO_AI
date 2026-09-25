@@ -353,6 +353,7 @@ export function selectRussianFiller(seedOrIndex?: number | string): string {
 
 export function resetRecentFillers(): void {
   recentFillerIdx = [];
+  recentEnglishFillerIdx = [];
 }
 
 export function normalizeTranscriptText(text: string): string {

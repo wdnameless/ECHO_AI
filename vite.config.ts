@@ -20,22 +20,21 @@ export default defineConfig(async () => ({
   build: {
     rollupOptions: {
       output: {
-        // Split heavy editor/markdown deps out of the startup bundle:
-        // katex, mermaid, cytoscape, highlight are only needed inside
-        // rendered AI answers / dashboard pages, not the main bar.
+        // Only `onnxruntime` is split out by hand — the microphone's VAD needs it
+        // during startup, so it stays in the overlay's graph by design.
+        //
+        // The renderer vendors (katex, mermaid, cytoscape, shiki/highlight) must
+        // NOT be listed here. A manual chunk is a hard module edge: Rollup hoists
+        // it into the entry's static imports, Vite then emits a `modulepreload`
+        // for it in `index.html`, and every app start downloads the lot before
+        // the bar can paint. Measured with the four entries below present:
+        // 13.7 MB at startup (12.6 MB of it `modulepreload`). With them removed
+        // the preloads disappear and startup drops to 1.6 MB. Those libraries are
+        // reached only through the lazily imported markdown renderer, so Rollup
+        // already splits them correctly on its own.
         manualChunks(id) {
-          if (id.includes("node_modules")) {
-            if (id.includes("katex")) return "vendor-katex";
-            if (id.includes("mermaid")) return "vendor-mermaid";
-            if (id.includes("cytoscape")) return "vendor-cytoscape";
-            if (
-              id.includes("highlight.js") ||
-              id.includes("lowlight") ||
-              id.includes("shiki")
-            ) {
-              return "vendor-highlight";
-            }
-            if (id.includes("onnxruntime")) return "vendor-onnx";
+          if (id.includes("node_modules") && id.includes("onnxruntime")) {
+            return "vendor-onnx";
           }
         },
       },

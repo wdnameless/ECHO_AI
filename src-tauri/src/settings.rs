@@ -115,10 +115,33 @@ fn exe_dir() -> Option<PathBuf> {
 ///
 /// Falls back to the temp directory only if the platform reports no config
 /// directory at all, so path resolution can never fail outright.
+///
+/// In test builds this returns a per-process directory under the temp dir
+/// instead of the real one. Two tests write settings through the public API
+/// (`save_settings`), which resolves its target through this function; they
+/// restore the file in a `Drop` guard, so anything that skips unwinding — a
+/// Ctrl-C, a killed job, a panic inside a lock — left the *installed app*
+/// pointing at a test scratch directory, and the engine then received a stub
+/// model path and never started. This was not an edge case: it shipped a
+/// working machine into "recognition does not work" (2026-09-25).
 pub fn app_data_root() -> PathBuf {
-    dirs::config_dir()
-        .map(|dir| dir.join(APP_IDENTIFIER))
-        .unwrap_or_else(std::env::temp_dir)
+    #[cfg(test)]
+    {
+        // One directory per test process: parallel tests in the same binary
+        // share it (they are serialised by SETTINGS_LOCK anyway), separate
+        // binaries never collide.
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("{APP_IDENTIFIER}-test-{pid}"));
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[cfg(not(test))]
+    {
+        dirs::config_dir()
+            .map(|dir| dir.join(APP_IDENTIFIER))
+            .unwrap_or_else(std::env::temp_dir)
+    }
 }
 
 /// The portable root implied by the environment or a marker file, if any.
@@ -135,10 +158,6 @@ fn implied_portable_root() -> Option<PathBuf> {
     }
     let dir = exe_dir()?;
     if dir.join(PORTABLE_MARKER).is_file() || dir.join(".echo-ai").is_dir() {
-        return Some(dir.join(".echo-ai"));
-    }
-    #[cfg(not(test))]
-    if is_writable(&dir) {
         return Some(dir.join(".echo-ai"));
     }
     None
@@ -249,6 +268,23 @@ pub fn is_writable(dir: &Path) -> bool {
 }
 
 /// Path to the secure storage file for the given root and portable state.
+fn find_existing_in_app_roots(filename: &str) -> Option<PathBuf> {
+    if let Some(data_dir) = dirs::data_dir() {
+        let p = data_dir.join(APP_IDENTIFIER).join(filename);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Some(config_dir) = dirs::config_dir() {
+        let p = config_dir.join(APP_IDENTIFIER).join(filename);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Path to the secure storage file for the given root and portable state.
 pub fn secrets_path_for(root: &Path, is_portable: bool) -> PathBuf {
     if is_portable {
         return root.join(SECURE_STORAGE_FILE);
@@ -257,19 +293,31 @@ pub fn secrets_path_for(root: &Path, is_portable: bool) -> PathBuf {
     if root_sec.is_file() {
         return root_sec;
     }
-    if let Some(data_dir) = dirs::data_dir() {
-        let p = data_dir.join(APP_IDENTIFIER).join(SECURE_STORAGE_FILE);
-        if p.is_file() {
-            return p;
-        }
-    }
-    if let Some(config_dir) = dirs::config_dir() {
-        let p = config_dir.join(APP_IDENTIFIER).join(SECURE_STORAGE_FILE);
-        if p.is_file() {
-            return p;
-        }
+    if let Some(existing) = find_existing_in_app_roots(SECURE_STORAGE_FILE) {
+        return existing;
     }
     root_sec
+}
+
+/// Name of the SQLite database file.
+pub const DB_FILE: &str = "pluely.db";
+
+/// The canonical SQLite database file path.
+///
+/// Resolves `pluely.db` through the canonical root so that database access
+/// across modules does not drift between `app_config_dir` and `app_data_dir` (R15).
+pub fn database_path() -> PathBuf {
+    find_existing_in_app_roots(DB_FILE).unwrap_or_else(|| app_data_root().join(DB_FILE))
+}
+
+/// Returns the database path, ensuring its parent directory exists.
+pub fn ensure_database_path() -> Result<PathBuf, String> {
+    let path = database_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create database directory: {e}"))?;
+    }
+    Ok(path)
 }
 
 /// Convenience helper returning the currently resolved secrets path.
@@ -973,5 +1021,50 @@ mod tests {
         let resolved_sec = secrets_path_for(&fake_app_data, false);
         assert_eq!(resolved_sec, sec_file);
         assert!(resolved_sec.is_file());
+    }
+
+    fn with_mock_exe_dir<R>(dir: &Path, f: impl FnOnce() -> R) -> R {
+        std::env::set_var("ECHO_AI_EXE_DIR", dir.to_string_lossy().to_string());
+        let res = f();
+        std::env::remove_var("ECHO_AI_EXE_DIR");
+        res
+    }
+
+    #[test]
+    fn writable_exe_dir_alone_does_not_imply_portable_mode() {
+        let _serial = REAL_SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let test_dir = TestDir::new("writable-not-portable");
+        let dir = test_dir.path();
+        assert!(is_writable(dir));
+
+        let implied = with_mock_exe_dir(dir, implied_portable_root);
+
+        assert_eq!(
+            implied, None,
+            "mere writability of the executable directory must not imply portable mode (R21)"
+        );
+    }
+
+    #[test]
+    fn marker_file_enables_portable_mode() {
+        let _serial = REAL_SETTINGS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let test_dir = TestDir::new("marker-portable");
+        let dir = test_dir.path();
+        std::fs::write(dir.join(PORTABLE_MARKER), b"portable\n").unwrap();
+
+        let implied = with_mock_exe_dir(dir, implied_portable_root);
+
+        assert_eq!(implied, Some(dir.join(".echo-ai")));
+    }
+
+    #[test]
+    fn database_path_points_to_pluely_db() {
+        let db = database_path();
+        assert!(db.ends_with(DB_FILE));
+        assert!(db.to_string_lossy().contains(APP_IDENTIFIER));
     }
 }

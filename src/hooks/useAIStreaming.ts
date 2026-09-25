@@ -14,7 +14,6 @@ import { fetchAIResponse, shouldUsePluelyAPI } from "@/lib/functions";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
 import { startQuestion, recordFirstToken } from "@/lib/metrics";
 import { DEFAULT_SYSTEM_PROMPT } from "@/config";
-import { fillerManager } from "@/lib/filler-manager";
 import type { Message } from "@/types/completion";
 import type { TYPE_PROVIDER } from "@/types";
 import type { ChatMessage, ChatConversation } from "./useConversationStore";
@@ -105,7 +104,6 @@ export function useAIStreaming({
         setIsAIProcessing(true);
         setLastAIResponse("");
         onError("");
-        fillerManager.startMonitoring();
         let fullResponse = "";
 
         const usePluelyAPI = await shouldUsePluelyAPI();
@@ -142,7 +140,6 @@ export function useAIStreaming({
             if (isFirstChunk) {
               isFirstChunk = false;
               recordFirstToken();
-              fillerManager.stop();
               clearFiller();
             }
             fullResponse += chunk;
@@ -171,7 +168,6 @@ export function useAIStreaming({
           }
         } catch (aiError: unknown) {
           console.warn("[ai-stream]", aiError);
-          fillerManager.stop();
           clearFiller();
           const err = aiError as { message?: string };
           onError(err?.message || "Failed to get AI response");
@@ -182,11 +178,9 @@ export function useAIStreaming({
         }
       } catch (err: unknown) {
         console.warn("[ai-stream]", err);
-        fillerManager.stop();
         clearFiller();
       } finally {
         setIsAIProcessing(false);
-        fillerManager.stop();
         clearFiller();
         // After the flag is cleared, so a question held during the answer sees
         // `isAIProcessing === false` and goes out immediately.
@@ -258,7 +252,6 @@ export function useAIStreaming({
           source
         );
       } finally {
-        fillerManager.stop();
         clearFiller();
       }
     },

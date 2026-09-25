@@ -92,6 +92,14 @@ export const useGlobalShortcuts = () => {
   const registerSystemAudioCallback = useCallback((callback: () => void) => {
     systemAudioCallbackRef.current = callback;
     globalSystemAudioCallback = callback;
+    return () => {
+      if (globalSystemAudioCallback === callback) {
+        globalSystemAudioCallback = null;
+      }
+      if (systemAudioCallbackRef.current === callback) {
+        systemAudioCallbackRef.current = null;
+      }
+    };
   }, []);
 
   // Register assistant voice audio callback

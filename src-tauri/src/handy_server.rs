@@ -467,6 +467,83 @@ fn spawn_pluely_asr() -> bool {
 static WATCHDOG_STARTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Maximum consecutive watchdog checks where the engine child is alive but its port
+/// does not respond, before declaring the process hung and forcing a restart.
+/// Checks are 25 seconds apart: 3 checks = ~75 seconds of silence, which is
+/// well past any normal model load or GPU warm-up (typically 2-8 seconds),
+/// but prevents STT from staying permanently dead on CUDA/model deadlock.
+pub const WATCHDOG_HUNG_THRESHOLD: u32 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchdogAction {
+    /// Port is healthy or no model configured; nothing to do.
+    DoNothing,
+    /// Engine child is alive but port not ready; wait for warm-up.
+    WaitChildPort { check: u32, threshold: u32 },
+    /// Child was alive but exceeded hung threshold without serving port; kill it and respawn.
+    KillAndRespawn,
+    /// Child is already dead or not running; spawn directly.
+    RespawnDirectly,
+}
+
+#[derive(Debug, Clone)]
+pub struct WatchdogHungTracker {
+    threshold: u32,
+    consecutive_hung_checks: u32,
+}
+
+impl WatchdogHungTracker {
+    pub const fn new(threshold: u32) -> Self {
+        Self {
+            threshold,
+            consecutive_hung_checks: 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn consecutive_hung_checks(&self) -> u32 {
+        self.consecutive_hung_checks
+    }
+
+    #[cfg(test)]
+    pub fn threshold(&self) -> u32 {
+        self.threshold
+    }
+
+    #[cfg(test)]
+    pub fn reset(&mut self) {
+        self.consecutive_hung_checks = 0;
+    }
+
+    pub fn on_check(
+        &mut self,
+        port_healthy: bool,
+        has_model: bool,
+        child_alive: bool,
+    ) -> WatchdogAction {
+        if port_healthy || !has_model {
+            self.consecutive_hung_checks = 0;
+            return WatchdogAction::DoNothing;
+        }
+
+        if child_alive {
+            self.consecutive_hung_checks += 1;
+            if self.consecutive_hung_checks < self.threshold {
+                return WatchdogAction::WaitChildPort {
+                    check: self.consecutive_hung_checks,
+                    threshold: self.threshold,
+                };
+            } else {
+                self.consecutive_hung_checks = 0;
+                return WatchdogAction::KillAndRespawn;
+            }
+        }
+
+        self.consecutive_hung_checks = 0;
+        WatchdogAction::RespawnDirectly
+    }
+}
+
 /// Background watchdog: if the sidecar dies (crash, OOM, driver reset),
 /// bring it back automatically so recognition never silently disappears.
 fn start_sidecar_watchdog() {
@@ -474,27 +551,47 @@ fn start_sidecar_watchdog() {
         return;
     }
     std::thread::spawn(|| {
+        let mut tracker = WatchdogHungTracker::new(WATCHDOG_HUNG_THRESHOLD);
         loop {
             std::thread::sleep(Duration::from_secs(25));
             // Watch the engine, not "some ASR service": with the fallback
             // serving, a dead engine would otherwise look healthy forever. With
             // no model there is nothing to start, so staying quiet is correct.
-            if native_engine_port().is_some() || find_model_path().is_none() {
-                continue;
-            }
-            // A live child that merely lost its port (model still loading, or a
-            // slow warm-up) must not be duplicated: starting a second engine
-            // made it rebound to the next port and left the renderer streaming
-            // into the old, now-dead one.
-            if let Ok(mut guard) = STT_SERVER.lock() {
+            let port_ok = native_engine_port().is_some();
+            let has_model = find_model_path().is_some();
+
+            let child_alive = if let Ok(mut guard) = STT_SERVER.lock() {
                 if let Some(child) = guard.as_mut() {
-                    if child.try_wait().ok().flatten().is_none() {
-                        eprintln!("[tauri] watchdog: engine child is alive, waiting for its port");
-                        continue;
-                    }
+                    child.try_wait().ok().flatten().is_none()
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            match tracker.on_check(port_ok, has_model, child_alive) {
+                WatchdogAction::DoNothing => continue,
+                WatchdogAction::WaitChildPort { check, threshold } => {
+                    eprintln!(
+                        "[tauri] watchdog: engine child is alive, waiting for its port (check {}/{})",
+                        check, threshold
+                    );
+                    continue;
+                }
+                WatchdogAction::KillAndRespawn => {
+                    eprintln!(
+                        "[tauri] watchdog: engine child hung (alive but unresponsive for {} consecutive checks), killing hung child and restarting...",
+                        WATCHDOG_HUNG_THRESHOLD
+                    );
+                    stop_server();
+                }
+                WatchdogAction::RespawnDirectly => {
+                    eprintln!("[tauri] watchdog: ASR engine is down, restarting...");
+                    stop_server();
                 }
             }
-            eprintln!("[tauri] watchdog: ASR engine is down, restarting...");
+
             if spawn_pluely_asr() {
                 // Give the model a moment to load before next check.
                 std::thread::sleep(Duration::from_secs(8));
@@ -520,6 +617,12 @@ pub fn ensure_server_running() {
 }
 
 /// Stop the server child process (called on app exit).
+///
+/// Terminates the child process immediately and reaps it.
+/// Does not block on socket/port draining, so callers on the UI / main thread
+/// (such as app exit or tray quit) return within a few milliseconds without freezing the UI.
+/// Callers that specifically need the port released before rebinding (such as `restart_server`)
+/// wait for port release inside an async `spawn_blocking` task.
 pub fn stop_server() {
     if let Ok(mut guard) = STT_SERVER.lock() {
         if let Some(mut child) = guard.take() {
@@ -527,10 +630,6 @@ pub fn stop_server() {
             let _ = child.wait();
         }
     }
-    // The engine keeps the model in memory, so a model switch only takes effect
-    // after the process actually exits. Without waiting for the port to free up,
-    // the restart would race the old instance and bind a different port.
-    wait_for_shutdown(Duration::from_secs(8));
 }
 
 /// Waits until the engine port stops responding, up to `timeout`.
@@ -554,6 +653,9 @@ pub async fn restart_server() -> Result<(), String> {
     stop_server();
 
     let started = tauri::async_runtime::spawn_blocking(|| {
+        // Wait for port to be released before rebinding.
+        // Offloaded to spawn_blocking so the caller's thread is not blocked.
+        wait_for_shutdown(Duration::from_secs(8));
         // Give the OS a moment to release the port before rebinding.
         std::thread::sleep(Duration::from_millis(400));
         spawn_pluely_asr()
@@ -776,5 +878,91 @@ mod tests {
         });
         let body = health_body(port).expect("health payload must be recognised");
         assert_eq!(body.get("model").and_then(|m| m.as_str()), Some("small"));
+    }
+
+    #[test]
+    fn watchdog_tracker_counts_consecutive_hung_checks_and_triggers_kill() {
+        let mut tracker = WatchdogHungTracker::new(3);
+
+        // Check 1: child alive, no port -> wait 1/3
+        assert_eq!(
+            tracker.on_check(false, true, true),
+            WatchdogAction::WaitChildPort {
+                check: 1,
+                threshold: 3,
+            }
+        );
+        assert_eq!(tracker.consecutive_hung_checks(), 1);
+
+        // Check 2: child alive, no port -> wait 2/3
+        assert_eq!(
+            tracker.on_check(false, true, true),
+            WatchdogAction::WaitChildPort {
+                check: 2,
+                threshold: 3,
+            }
+        );
+        assert_eq!(tracker.consecutive_hung_checks(), 2);
+
+        // Check 3: child alive, no port -> triggers KillAndRespawn and resets counter
+        assert_eq!(
+            tracker.on_check(false, true, true),
+            WatchdogAction::KillAndRespawn
+        );
+        assert_eq!(tracker.consecutive_hung_checks(), 0);
+    }
+
+    #[test]
+    fn watchdog_tracker_resets_when_port_answers() {
+        let mut tracker = WatchdogHungTracker::new(3);
+
+        // 2 checks with live child and no port
+        let _ = tracker.on_check(false, true, true);
+        let _ = tracker.on_check(false, true, true);
+        assert_eq!(tracker.consecutive_hung_checks(), 2);
+
+        // Port answers!
+        assert_eq!(
+            tracker.on_check(true, true, true),
+            WatchdogAction::DoNothing
+        );
+        assert_eq!(tracker.consecutive_hung_checks(), 0);
+    }
+
+    #[test]
+    fn watchdog_tracker_resets_when_model_is_unloaded() {
+        let mut tracker = WatchdogHungTracker::new(3);
+
+        let _ = tracker.on_check(false, true, true);
+        assert_eq!(tracker.consecutive_hung_checks(), 1);
+
+        // Model unloaded (has_model = false)
+        assert_eq!(
+            tracker.on_check(false, false, true),
+            WatchdogAction::DoNothing
+        );
+        assert_eq!(tracker.consecutive_hung_checks(), 0);
+    }
+
+    #[test]
+    fn watchdog_tracker_respawns_immediately_if_child_is_dead() {
+        let mut tracker = WatchdogHungTracker::new(3);
+
+        // Child is dead (child_alive = false)
+        assert_eq!(
+            tracker.on_check(false, true, false),
+            WatchdogAction::RespawnDirectly
+        );
+        assert_eq!(tracker.consecutive_hung_checks(), 0);
+    }
+
+    #[test]
+    fn stop_server_returns_promptly_when_empty() {
+        let start = std::time::Instant::now();
+        stop_server();
+        assert!(
+            start.elapsed() < Duration::from_millis(150),
+            "stop_server must not block when no server is running"
+        );
     }
 }

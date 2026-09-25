@@ -1,17 +1,22 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useConversationStore } from "../useConversationStore";
+import {
+  useConversationStore,
+  ChatConversation,
+  toChronologicalMessages,
+} from "../useConversationStore";
 import { setCachedCorrections, AsrCorrection } from "@/lib/vocab";
 import {
   saveFillerFilterConfig,
   FILLER_FILTER_STORAGE_KEYS,
 } from "@/lib/filler-filter";
 import { safeLocalStorage } from "@/lib/storage/helper";
+import { saveConversation } from "@/lib/database";
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/storage", () => ({
+vi.mock("@/lib/database", () => ({
   saveConversation: vi.fn().mockResolvedValue(undefined),
   generateConversationTitle: vi.fn((text: string) => `Title: ${text.slice(0, 10)}`),
 }));
@@ -178,5 +183,114 @@ describe("useConversationStore", () => {
 
     const history = result.current.buildHistory(result.current.conversation.messages);
     expect(history[0].content).toBe("[Interviewer (question)] расскажи про Redux");
+  });
+
+  it("builds history in chronological order (oldest -> newest) from multiple interactions", () => {
+    const { result } = renderHook(() => useConversationStore());
+
+    act(() => {
+      vi.setSystemTime(1000);
+      result.current.addInteraction("Question 1", "Answer 1", "them");
+    });
+    act(() => {
+      vi.setSystemTime(2000);
+      result.current.addInteraction("Question 2", "Answer 2", "them");
+    });
+    act(() => {
+      vi.setSystemTime(3000);
+      result.current.addInteraction("Question 3", "Answer 3", "them");
+    });
+
+    // Storage order in conversation.messages remains newest-first
+    expect(result.current.conversation.messages[0].content).toBe("Question 3");
+
+    // History handed to LLM is chronological (oldest -> newest)
+    const history = result.current.buildHistory(result.current.conversation.messages);
+    expect(history).toHaveLength(6);
+    expect(history[0].content).toBe("[Interviewer (question)] Question 1");
+    expect(history[1].content).toBe("Answer 1");
+    expect(history[2].content).toBe("[Interviewer (question)] Question 2");
+    expect(history[3].content).toBe("Answer 2");
+    expect(history[4].content).toBe("[Interviewer (question)] Question 3");
+    expect(history[5].content).toBe("Answer 3");
+  });
+
+  it("performs trailing save without dropping updates when save is in flight", async () => {
+    const saveMock = vi.mocked(saveConversation);
+    saveMock.mockClear();
+    let resolveFirstSave: (val: ChatConversation) => void = () => {};
+    saveMock.mockImplementationOnce(
+      () =>
+        new Promise<ChatConversation>((resolve) => {
+          resolveFirstSave = resolve;
+        })
+    );
+
+    const { result } = renderHook(() => useConversationStore());
+    act(() => {
+      result.current.resetConversation();
+      result.current.addInteraction("Q1", "A1", "them");
+    });
+
+    // Advance 500ms to trigger the first save
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(saveMock).toHaveBeenCalledTimes(1);
+
+    // Add second interaction while first save is still in flight
+    act(() => {
+      result.current.addInteraction("Q2", "A2", "them");
+    });
+
+    // Advance 500ms for debounce timer to fire while first save is still in flight
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    // Concurrency is prevented: still 1 call
+    expect(saveMock).toHaveBeenCalledTimes(1);
+
+    // First save finishes
+    await act(async () => {
+      resolveFirstSave(result.current.conversation);
+    });
+
+    // Trailing save executed with newest state containing both Q1 and Q2
+    expect(saveMock).toHaveBeenCalledTimes(2);
+    const lastSaved = saveMock.mock.calls[1][0] as { messages: Array<{ content: string }> };
+    expect(lastSaved.messages.some((m) => m.content === "Q1")).toBe(true);
+    expect(lastSaved.messages.some((m) => m.content === "Q2")).toBe(true);
+  });
+
+  it("toChronologicalMessages normalizes newest-first arrays to oldest-first", () => {
+    const messages = [
+      { id: "3", timestamp: 3000, content: "three" },
+      { id: "2", timestamp: 2000, content: "two" },
+      { id: "1", timestamp: 1000, content: "one" },
+    ];
+    const result = toChronologicalMessages(messages);
+    expect(result.map((m) => m.content)).toEqual(["one", "two", "three"]);
+  });
+
+  it("toChronologicalMessages selects newest-N window before sorting", () => {
+    const newestFirst = [
+      { id: "4", timestamp: 4000, content: "four" },
+      { id: "3", timestamp: 3000, content: "three" },
+      { id: "2", timestamp: 2000, content: "two" },
+      { id: "1", timestamp: 1000, content: "one" },
+    ];
+    const fromNewest = toChronologicalMessages(newestFirst, 2);
+    expect(fromNewest.map((m) => m.content)).toEqual(["three", "four"]);
+
+    const oldestFirst = [
+      { id: "1", timestamp: 1000, content: "one" },
+      { id: "2", timestamp: 2000, content: "two" },
+      { id: "3", timestamp: 3000, content: "three" },
+      { id: "4", timestamp: 4000, content: "four" },
+    ];
+    const fromOldest = toChronologicalMessages(oldestFirst, 2);
+    expect(fromOldest.map((m) => m.content)).toEqual(["three", "four"]);
   });
 });

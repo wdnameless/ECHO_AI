@@ -7,16 +7,18 @@ import {
   Header,
   Input,
   Switch,
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components";
+import {
   Command,
   CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components";
+} from "@/components/ui/command";
 import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 interface ActivationResponse {
@@ -207,9 +209,28 @@ export const PluelyApiSetup = () => {
     setIsLoading(true);
     setError(null);
     setSuccess(null);
-    setHasActiveLicense(false);
+
+    // R08: Сначала освобождаем место на сервере через deactivate_license_api,
+    // пока учетные данные ещё доступны в secure storage.
+    let deactivationWarning: string | null = null;
     try {
-      // Remove all license data from secure storage in one call
+      const response = await invoke<ActivationResponse>("deactivate_license_api");
+      if (response?.error) {
+        deactivationWarning = response.error;
+      }
+    } catch (err) {
+      console.warn("Server deactivation failed, proceeding with local removal:", err);
+      if (typeof err === "string") {
+        deactivationWarning = err;
+      } else if (err instanceof Error) {
+        deactivationWarning = err.message;
+      } else {
+        deactivationWarning = "Server deactivation failed";
+      }
+    }
+
+    // Локальное удаление: пользователь не должен оставаться заперт, даже если сервер вернул ошибку
+    try {
       await invoke("secure_storage_remove", {
         keys: [
           LICENSE_KEY_STORAGE_KEY,
@@ -218,19 +239,26 @@ export const PluelyApiSetup = () => {
         ],
       });
 
-      setSuccess("License removed successfully!");
-
+      setHasActiveLicense(false);
       // Disable Echo AI API when license is removed
       setPluelyApiEnabled(false);
 
+      if (deactivationWarning) {
+        setError(
+          `License removed locally, but server seat could not be freed: ${deactivationWarning}`
+        );
+      } else {
+        setSuccess("License removed successfully!");
+      }
+
       await fetchModels();
       await loadLicenseStatus(); // Reload status
+      await getActiveLicenseStatus();
     } catch (err) {
-      console.error("Failed to remove license:", err);
+      console.error("Failed to remove license locally:", err);
       setError("Failed to remove license");
     } finally {
       setIsLoading(false);
-      await invoke("deactivate_license_api");
     }
   };
 

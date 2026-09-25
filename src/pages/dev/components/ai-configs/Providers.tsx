@@ -2,14 +2,14 @@ import { Button, Header, Input, Selection, TextInput } from "@/components";
 import { UseSettingsReturn } from "@/types";
 import curl2Json, { ResultJSON } from "@bany/curl-to-json";
 import { Loader2, RefreshCw, TrashIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   buildDynamicMessages,
   deepVariableReplacer,
 } from "@/lib/functions/common.function";
 import { fetchProviderModels } from "@/lib/functions/models.function";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
-import { getSecret, saveSecret, removeSecret, secretKey } from "@/lib/storage/secret-store";
+import { getSecret, secretKey, SequentialSecretWriter } from "@/lib/storage/secret-store";
 
 export const Providers = ({
   allAiProviders,
@@ -62,9 +62,22 @@ export const Providers = ({
    * localStorage), поэтому поле ввода читает его из защищённого хранилища.
    */
   const [apiKey, setApiKey] = useState("");
+  const secretWriter = useMemo(
+    () => new SequentialSecretWriter({ debounceMs: 500 }),
+    []
+  );
+
+  useEffect(() => {
+    return () => {
+      void secretWriter.dispose();
+    };
+  }, [secretWriter]);
 
   useEffect(() => {
     let cancelled = false;
+    // Flush any pending write for previous provider before switching
+    void secretWriter.flush();
+
     void (async () => {
       if (!providerId || !apiKeyVar) {
         setApiKey("");
@@ -75,21 +88,17 @@ export const Providers = ({
     })();
     return () => {
       cancelled = true;
+      void secretWriter.flush();
     };
-  }, [providerId, apiKeyVar]);
+  }, [providerId, apiKeyVar, secretWriter]);
 
   const persistApiKey = useCallback(
-    async (value: string) => {
-      if (!providerId) return;
+    (value: string, immediate = false) => {
       setApiKey(value);
-      const trimmed = value.trim();
-      if (trimmed) {
-        await saveSecret(secretKey.aiProvider(providerId), trimmed);
-      } else {
-        await removeSecret(secretKey.aiProvider(providerId));
-      }
+      if (!providerId) return;
+      secretWriter.write(secretKey.aiProvider(providerId), value, immediate);
     },
-    [providerId]
+    [providerId, secretWriter]
   );
 
   useEffect(() => {
@@ -239,9 +248,12 @@ export const Providers = ({
                 placeholder="**********"
                 value={apiKey}
                 onChange={(value) => {
-                  void persistApiKey(
+                  persistApiKey(
                     typeof value === "string" ? value : value.target.value
                   );
+                }}
+                onBlur={() => {
+                  void secretWriter.flush();
                 }}
                 disabled={false}
                 className="flex-1 h-11 border-1 border-input/50 focus:border-primary/50 transition-colors"
@@ -249,7 +261,7 @@ export const Providers = ({
               {apiKey.trim() ? (
                 <Button
                   onClick={() => {
-                    void persistApiKey("");
+                    persistApiKey("", true);
                   }}
                   size="icon"
                   variant="destructive"

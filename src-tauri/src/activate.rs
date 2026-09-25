@@ -57,14 +57,63 @@ pub struct StorageResult {
     selected_pluely_model: Option<String>,
 }
 
+pub const MAGIC_WINDOWS: &[u8] = b"DPAPI\x01";
+pub const MAGIC_MACOS: &[u8] = b"MCSEC\x01";
+pub const MAGIC_LINUX: &[u8] = b"LXSEC\x01";
+
+pub fn is_encrypted_format(data: &[u8]) -> bool {
+    data.starts_with(MAGIC_WINDOWS)
+        || data.starts_with(MAGIC_MACOS)
+        || data.starts_with(MAGIC_LINUX)
+}
+
+pub fn is_legacy_format(data: &[u8]) -> bool {
+    !is_encrypted_format(data)
+}
+
+/// Symmetric counter-mode keystream cipher using SHA-256.
+///
+/// Encrypts or decrypts `data` by XORing it with `Sha256(key || nonce || counter)`.
+#[allow(dead_code)]
+pub(crate) fn xor_stream(key: &[u8; 32], nonce: &[u8; 16], data: &[u8]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut result = Vec::with_capacity(data.len());
+    let mut counter: u64 = 0;
+    let mut chunk_start = 0;
+
+    while chunk_start < data.len() {
+        let mut hasher = Sha256::new();
+        hasher.update(key);
+        hasher.update(nonce);
+        hasher.update(counter.to_le_bytes());
+        let block = hasher.finalize();
+
+        let chunk_end = (chunk_start + 32).min(data.len());
+        for (i, byte) in data[chunk_start..chunk_end].iter().enumerate() {
+            result.push(byte ^ block[i]);
+        }
+
+        counter += 1;
+        chunk_start = chunk_end;
+    }
+
+    result
+}
+
 #[cfg(target_os = "windows")]
 mod dpapi {
+    use super::MAGIC_WINDOWS;
     use windows::Win32::Foundation::LocalFree;
     use windows::Win32::Security::Cryptography::{
         CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN,
     };
 
-    const MAGIC_HEADER: &[u8] = b"DPAPI\x01";
+    pub const MAGIC_HEADER: &[u8] = MAGIC_WINDOWS;
+
+    #[allow(dead_code)]
+    pub fn is_encrypted(data: &[u8]) -> bool {
+        super::is_encrypted_format(data)
+    }
 
     pub fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
         let data_in = CRYPT_INTEGER_BLOB {
@@ -145,20 +194,168 @@ mod dpapi {
 
 #[cfg(not(target_os = "windows"))]
 mod dpapi {
+    use super::{xor_stream, MAGIC_LINUX, MAGIC_MACOS};
+    use sha2::{Digest, Sha256};
+    use std::process::Command;
+
+    // Protection level differs per platform, and the difference matters:
+    //
+    //   macOS  — a random 256-bit key generated once and stored in the user's
+    //            Keychain (`security` CLI). Real at-rest protection: the
+    //            ciphertext is useless without the Keychain entry.
+    //   Linux  — no such per-user keystore is available without new
+    //            dependencies, so the key is derived from `/etc/machine-id` plus
+    //            `$USER`/`$HOME`. Every one of those is readable by any local
+    //            process, so this is OBFUSCATION, NOT PROTECTION: it stops a
+    //            casual look at a dotfile or an accidental commit, and nothing
+    //            more. An attacker who can read the file can derive the key.
+    //
+    // The honest ceiling is recorded rather than hidden; the file format is the
+    // same on both platforms, so a future real keystore (libsecret/TPM) only has
+    // to replace `get_encryption_key` and the ciphertext keeps working.
+    //
+    // defer: Linux at-rest protection is obfuscation only | ceiling: key derivable from world-readable machine-id/user/home | upgrade: libsecret or TPM-backed key accepted as a dependency
+
+    #[cfg(target_os = "macos")]
+    pub const MAGIC_HEADER: &[u8] = MAGIC_MACOS;
+
+    #[cfg(not(target_os = "macos"))]
+    pub const MAGIC_HEADER: &[u8] = MAGIC_LINUX;
+
+    pub fn is_encrypted(data: &[u8]) -> bool {
+        super::is_encrypted_format(data)
+    }
+
+    fn to_hex(bytes: &[u8]) -> String {
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            use std::fmt::Write;
+            let _ = write!(s, "{:02x}", b);
+        }
+        s
+    }
+
+    fn from_hex(s: &str) -> Option<Vec<u8>> {
+        if s.len() % 2 != 0 {
+            return None;
+        }
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn get_macos_keychain_key() -> Result<[u8; 32], String> {
+        const SERVICE: &str = "com.srikanthnani.pluely.storage";
+        const ACCOUNT: &str = "pluely";
+
+        let output = Command::new("/usr/bin/security")
+            .args(["find-generic-password", "-s", SERVICE, "-a", ACCOUNT, "-w"])
+            .output()
+            .map_err(|e| format!("security CLI execution failed: {e}"))?;
+
+        if output.status.success() {
+            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if let Some(bytes) = from_hex(&s) {
+                if bytes.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    return Ok(arr);
+                }
+            }
+        }
+
+        let mut key = [0u8; 32];
+        let u1 = uuid::Uuid::new_v4();
+        let u2 = uuid::Uuid::new_v4();
+        key[..16].copy_from_slice(u1.as_bytes());
+        key[16..].copy_from_slice(u2.as_bytes());
+        let hex_key = to_hex(&key);
+
+        let add_res = Command::new("/usr/bin/security")
+            .args(["add-generic-password", "-s", SERVICE, "-a", ACCOUNT, "-w", &hex_key, "-U"])
+            .output()
+            .map_err(|e| format!("security add-generic-password failed: {e}"))?;
+
+        if add_res.status.success() {
+            Ok(key)
+        } else {
+            Err("security add-generic-password returned non-zero status".to_string())
+        }
+    }
+
+    fn derive_machine_user_key() -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"pluely-secure-storage-salt-v1");
+
+        // System machine-id
+        if let Ok(id) = std::fs::read_to_string("/etc/machine-id") {
+            hasher.update(id.trim().as_bytes());
+        } else if let Ok(id) = std::fs::read_to_string("/var/lib/dbus/machine-id") {
+            hasher.update(id.trim().as_bytes());
+        } else {
+            hasher.update(b"fallback-machine-id");
+        }
+
+        if let Ok(user) = std::env::var("USER") {
+            hasher.update(user.as_bytes());
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            hasher.update(home.as_bytes());
+        }
+
+        hasher.finalize().into()
+    }
+
+    fn get_encryption_key() -> [u8; 32] {
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(key) = get_macos_keychain_key() {
+                return key;
+            }
+        }
+        derive_machine_user_key()
+    }
+
     pub fn protect(data: &[u8]) -> Result<Vec<u8>, String> {
-        Ok(data.to_vec())
+        let key = get_encryption_key();
+        let nonce = uuid::Uuid::new_v4();
+        let nonce_bytes = nonce.as_bytes();
+
+        let encrypted = xor_stream(&key, nonce_bytes, data);
+        let mut result = Vec::with_capacity(MAGIC_HEADER.len() + 16 + encrypted.len());
+        result.extend_from_slice(MAGIC_HEADER);
+        result.extend_from_slice(nonce_bytes);
+        result.extend_from_slice(&encrypted);
+        Ok(result)
     }
 
     pub fn unprotect(data: &[u8]) -> Result<Vec<u8>, String> {
-        Ok(data.to_vec())
+        if !data.starts_with(MAGIC_HEADER) {
+            // Legacy / unencrypted plaintext JSON format: return raw bytes for serde_json
+            return Ok(data.to_vec());
+        }
+
+        let payload = &data[MAGIC_HEADER.len()..];
+        if payload.len() < 16 {
+            return Err("Payload too short for nonce".to_string());
+        }
+
+        let mut nonce = [0u8; 16];
+        nonce.copy_from_slice(&payload[..16]);
+        let ciphertext = &payload[16..];
+
+        let key = get_encryption_key();
+        let decrypted = xor_stream(&key, &nonce, ciphertext);
+        Ok(decrypted)
     }
 }
 
-/// Reads the secure-storage file, applying DPAPI on Windows.
+/// Reads the secure-storage file, decrypting via DPAPI or platform encryption.
 ///
-/// Public because `api::get_stored_credentials` needs the same format handling:
-/// it must accept the legacy plaintext file AND the encrypted one, and its own
-/// local struct dropped the flattened provider keys.
+/// If the file is in legacy unencrypted JSON format, it is automatically
+/// re-encrypted in the protected format on load (R16).
 pub fn load_secure_storage(storage_path: &std::path::Path) -> Result<SecureStorage, String> {
     if !storage_path.exists() {
         return Ok(SecureStorage::default());
@@ -166,11 +363,24 @@ pub fn load_secure_storage(storage_path: &std::path::Path) -> Result<SecureStora
 
     let raw = fs::read(storage_path)
         .map_err(|e| format!("Failed to read storage file: {}", e))?;
+    let is_legacy = is_legacy_format(&raw);
     let decrypted = dpapi::unprotect(&raw)?;
-    serde_json::from_slice(&decrypted)
-        .map_err(|e| format!("Failed to parse storage file: {}", e))
-}
+    let storage: SecureStorage = serde_json::from_slice(&decrypted)
+        .map_err(|e| format!("Failed to parse storage file: {}", e))?;
 
+    // R16: On successful load of a legacy plaintext file, rewrite it in protected format.
+    // Failure to rewrite must not lose data or fail the load.
+    if is_legacy && !raw.is_empty() {
+        if let Err(e) = save_secure_storage(storage_path, &storage) {
+            eprintln!(
+                "Warning: failed to re-encrypt legacy secure storage {}: {e}",
+                storage_path.display()
+            );
+        }
+    }
+
+    Ok(storage)
+}
 fn save_secure_storage(storage_path: &std::path::Path, storage: &SecureStorage) -> Result<(), String> {
     let content = serde_json::to_vec(storage)
         .map_err(|e| format!("Failed to serialize storage: {}", e))?;
@@ -567,5 +777,80 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_format_detection() {
+        assert!(is_legacy_format(b"{\"license_key\":\"legacy-123\"}"));
+        assert!(!is_encrypted_format(b"{\"license_key\":\"legacy-123\"}"));
+
+        assert!(is_encrypted_format(b"DPAPI\x01some_encrypted_payload"));
+        assert!(!is_legacy_format(b"DPAPI\x01some_encrypted_payload"));
+
+        assert!(is_encrypted_format(b"MCSEC\x01some_encrypted_payload"));
+        assert!(!is_legacy_format(b"MCSEC\x01some_encrypted_payload"));
+
+        assert!(is_encrypted_format(b"LXSEC\x01some_encrypted_payload"));
+        assert!(!is_legacy_format(b"LXSEC\x01some_encrypted_payload"));
+    }
+
+    #[test]
+    fn test_legacy_file_reencrypted_on_load() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-ai-reencrypt-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secure_storage.json");
+
+        let legacy_content = br#"{"license_key":"lic-legacy","instance_id":"inst-legacy",
+            "selected_pluely_model":null,
+            "ai_provider:custom:KEY":"secret-val"}"#;
+        std::fs::write(&path, legacy_content).unwrap();
+
+        // Before load: on disk it is legacy plaintext
+        let on_disk_before = std::fs::read(&path).unwrap();
+        assert!(is_legacy_format(&on_disk_before));
+
+        // Load it: must succeed and trigger rewrite in place (R16)
+        let loaded = load_secure_storage(&path).expect("legacy file must load");
+        assert_eq!(loaded.license_key.as_deref(), Some("lic-legacy"));
+        assert_eq!(loaded.instance_id.as_deref(), Some("inst-legacy"));
+        assert_eq!(
+            loaded.extra.get("ai_provider:custom:KEY").map(String::as_str),
+            Some("secret-val")
+        );
+
+        // After load: on disk it must now be encrypted
+        let on_disk_after = std::fs::read(&path).unwrap();
+        assert!(
+            is_encrypted_format(&on_disk_after),
+            "legacy file must be re-encrypted on disk after successful load"
+        );
+        assert!(!is_legacy_format(&on_disk_after));
+
+        // Reloading the newly encrypted file produces the exact same data
+        let reloaded = load_secure_storage(&path).expect("re-encrypted file must load");
+        assert_eq!(reloaded.license_key.as_deref(), Some("lic-legacy"));
+        assert_eq!(reloaded.instance_id.as_deref(), Some("inst-legacy"));
+        assert_eq!(
+            reloaded.extra.get("ai_provider:custom:KEY").map(String::as_str),
+            Some("secret-val")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_xor_stream_roundtrip() {
+        let key = [42u8; 32];
+        let nonce = [7u8; 16];
+        let plaintext = b"Hello, encrypted at-rest storage on non-Windows platforms!";
+
+        let ciphertext = xor_stream(&key, &nonce, plaintext);
+        assert_ne!(&ciphertext[..], plaintext);
+
+        let decrypted = xor_stream(&key, &nonce, &ciphertext);
+        assert_eq!(&decrypted[..], plaintext);
     }
 }

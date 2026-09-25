@@ -54,6 +54,175 @@ export async function removeSecret(key: string): Promise<void> {
   await invoke("secure_storage_remove", { keys: [key] });
 }
 
+export interface SequentialSecretWriterOptions {
+  /** Debounce delay in milliseconds (default: 500ms). */
+  debounceMs?: number;
+  /** Custom persistence writer (defaults to saveSecret). */
+  saveFn?: (key: string, value: string) => Promise<void>;
+  /** Custom removal handler (defaults to removeSecret). */
+  removeFn?: (key: string) => Promise<void>;
+}
+
+/**
+ * Guarded sequential writer for secrets (R12).
+ * Guarantees:
+ * 1. Debounced writes: rapid input does not hit disk/IPC on every keystroke.
+ * 2. Strict serialization + monotonic sequence: writes to the same key never race or overwrite newer values.
+ * 3. Flush on blur/unmount: pending secrets are never lost when changing focus or unmounting.
+ */
+export class SequentialSecretWriter {
+  private readonly debounceMs: number;
+  private readonly saveFn: (key: string, value: string) => Promise<void>;
+  private readonly removeFn: (key: string) => Promise<void>;
+
+  private seqCounter = 0;
+  private pending = new Map<string, { value: string; seq: number }>();
+  private timers = new Map<string, number | NodeJS.Timeout>();
+  private lastExecutedSeqs = new Map<string, number>();
+  private activePromises = new Map<string, Promise<void>>();
+  constructor(options: SequentialSecretWriterOptions = {}) {
+    this.debounceMs = options.debounceMs ?? 500;
+    this.saveFn = options.saveFn ?? saveSecret;
+    this.removeFn = options.removeFn ?? removeSecret;
+  }
+
+  /** Schedule a write. If immediate is true, flushes without waiting for debounce. */
+  write(key: string, value: string, immediate: boolean = false): void {
+    if (!key) return;
+
+    this.seqCounter += 1;
+    const currentSeq = this.seqCounter;
+    this.pending.set(key, { value, seq: currentSeq });
+
+    const existingTimer = this.timers.get(key);
+    if (existingTimer !== undefined) {
+      clearTimeout(existingTimer);
+      this.timers.delete(key);
+    }
+
+    if (immediate) {
+      void this.flush(key);
+    } else {
+      const timer = setTimeout(() => {
+        this.timers.delete(key);
+        void this.flush(key);
+      }, this.debounceMs);
+      this.timers.set(key, timer);
+    }
+  }
+
+  /** Flush pending writes immediately. If targetKey is omitted, flushes all keys. */
+  async flush(targetKey?: string): Promise<void> {
+    if (targetKey !== undefined) {
+      await this.flushKey(targetKey);
+      return;
+    }
+
+    const keysToFlush = Array.from(
+      new Set([
+        ...this.pending.keys(),
+        ...this.timers.keys(),
+        ...this.activePromises.keys(),
+      ])
+    );
+    await Promise.all(keysToFlush.map((k) => this.flushKey(k)));
+  }
+
+  private async flushKey(key: string): Promise<void> {
+    const existingTimer = this.timers.get(key);
+    if (existingTimer !== undefined) {
+      clearTimeout(existingTimer);
+      this.timers.delete(key);
+    }
+
+    const itemToExecute = this.pending.get(key);
+    if (!itemToExecute) {
+      const active = this.activePromises.get(key);
+      if (active) await active;
+      return;
+    }
+
+    this.pending.delete(key);
+
+    const execute = async () => {
+      const lastSeq = this.lastExecutedSeqs.get(key) ?? 0;
+      if (itemToExecute.seq <= lastSeq) {
+        return;
+      }
+
+      const trimmed = itemToExecute.value.trim();
+      try {
+        if (trimmed) {
+          await this.saveFn(key, trimmed);
+        } else {
+          await this.removeFn(key);
+        }
+        this.lastExecutedSeqs.set(key, itemToExecute.seq);
+      } catch (err) {
+        console.error(`[SequentialSecretWriter] failed to persist secret for ${key}:`, err);
+      }
+    };
+
+    const previousPromise = this.activePromises.get(key);
+    const nextPromise = (async () => {
+      if (previousPromise) {
+        try {
+          await previousPromise;
+        } catch {
+          // Ignore previous error to avoid blocking the queue
+        }
+      }
+      await execute();
+      const nextPending = this.pending.get(key);
+      const currentLastSeq = this.lastExecutedSeqs.get(key) ?? 0;
+      if (nextPending && nextPending.seq > currentLastSeq) {
+        await this.flushKey(key);
+      }
+    })();
+
+    this.activePromises.set(key, nextPromise);
+    try {
+      await nextPromise;
+    } finally {
+      if (this.activePromises.get(key) === nextPromise) {
+        this.activePromises.delete(key);
+      }
+    }
+  }
+
+  /** Cancel pending writes without flushing. */
+  cancel(targetKey?: string): void {
+    if (targetKey !== undefined) {
+      const timer = this.timers.get(targetKey);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        this.timers.delete(targetKey);
+      }
+      this.pending.delete(targetKey);
+      return;
+    }
+
+    for (const timer of this.timers.values()) {
+      clearTimeout(timer);
+    }
+    this.timers.clear();
+    this.pending.clear();
+  }
+
+  /** Clean up by flushing all pending writes and clearing timers. */
+  async dispose(): Promise<void> {
+    await this.flush();
+  }
+
+  getPending(key: string): { value: string; seq: number } | undefined {
+    return this.pending.get(key);
+  }
+
+  getLastExecutedSeq(key: string): number {
+    return this.lastExecutedSeqs.get(key) ?? 0;
+  }
+}
+
 /**
  * Matches a literal bearer token inside a curl template.
  *

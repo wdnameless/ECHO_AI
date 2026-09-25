@@ -56,6 +56,9 @@ export async function withNoStream<T>(
     };
     waiters.add(wake);
   });
+  if (activeOwner !== null) {
+    throw new Error(`ASR model busy: stream active (owned by ${activeOwner})`);
+  }
 
   return fn();
 }

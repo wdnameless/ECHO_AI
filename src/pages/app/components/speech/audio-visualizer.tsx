@@ -51,6 +51,14 @@ export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = 0;
     }
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        const dpr = window.devicePixelRatio || 1;
+        ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+      }
+    }
     // Stop all oscillators
     oscillatorsRef.current.forEach((osc) => {
       try {
@@ -246,7 +254,7 @@ export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
     // the panel refreshes at 240 Hz — redrawing 512 bars on every one of those
     // frames was the single most expensive thing on the capture path.
     let lastPaint = 0;
-
+    let isCleared = false;
     const drawFrame = (now: number) => {
       // Stop drawing as soon as recording ends: this loop used to re-request itself
       // unconditionally, so a stopped capture kept burning a frame budget forever.
@@ -261,16 +269,23 @@ export function AudioVisualizer({ stream, isRecording }: AudioVisualizerProps) {
 
       // Skip the repaint when no bars are lit: silence is the common case while
       // the copilot waits, and clearing 512 bars per frame for a flat line is waste.
+      // But when sound stops, clear once so the last bars don't freeze on screen.
       let loudest = 0;
       analyser.getByteFrequencyData(frequencyData);
       for (let i = 0; i < bufferLength; i++) {
         if (frequencyData[i] > loudest) loudest = frequencyData[i];
       }
-      if (loudest === 0) return;
+      if (loudest === 0) {
+        if (!isCleared) {
+          ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
+          isCleared = true;
+        }
+        return;
+      }
+      isCleared = false;
 
       // Use CSS pixels for clearing
       ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-
       // Calculate dimensions in CSS pixels
       const barWidth = Math.max(
         AUDIO_CONFIG.MIN_BAR_WIDTH,

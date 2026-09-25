@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 use std::sync::LazyLock;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,14 +18,9 @@ fn get_pool_mutex() -> &'static Mutex<Option<SqlitePool>> {
     &DB_POOL
 }
 
-fn get_db_path<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    // Same file the SQL plugin preloads and migrates, in every mode.
-    let mut path = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("Failed to get app config dir: {}", e))?;
-    path.push("pluely.db");
-    Ok(path)
+fn get_db_path<R: tauri::Runtime>(_app: &AppHandle<R>) -> Result<PathBuf, String> {
+    // Canonical database resolution shared with settings and SQL plugin (R15).
+    crate::settings::ensure_database_path()
 }
 
 async fn get_or_init_pool<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<SqlitePool, String> {
@@ -119,4 +114,15 @@ pub async fn delete_correction<R: tauri::Runtime>(
         .map_err(|e| e.to_string())?;
 
     Ok(res.rows_affected() > 0)
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn vocab_db_path_matches_settings_database_path() {
+        let db_path = crate::settings::database_path();
+        assert!(db_path.ends_with(crate::settings::DB_FILE));
+        assert!(db_path.to_string_lossy().contains(crate::settings::APP_IDENTIFIER));
+    }
 }

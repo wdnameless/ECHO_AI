@@ -1,0 +1,32 @@
+schema: spec-driven
+created: 2026-09-25
+title: "Fix all audit findings: data loss, dead capture, leaks"
+status: implemented
+verified: 2026-09-25
+slices:
+  - id: s1-database
+    title: "БД: prune kept-сообщений, миграция, лимиты"
+    status: implemented
+  - id: s2-speaker
+    title: "Захват: таймаут тишины, мьютекс на сэмпл"
+    status: implemented
+  - id: s3-backend-lifecycle
+    title: "Rust: watchdog, stop_server, БД, portable"
+    status: implemented
+  - id: s4-license-secrets
+    title: "Лицензия и секреты: порядок, слушатели"
+    status: implemented
+  - id: s5-hooks-state
+    title: "Хуки: история, сохранения, утечки"
+    status: implemented
+  - id: s6-security-misc
+    title: "Безопасность и мусор: редиректы, barrel"
+    status: implemented
+  - id: s7-ui-render
+    title: "Рендер: контекст, фид, профили"
+    status: implemented
+notes: >
+  Требования R01–R30 выведены из аудита
+  `.workflow/audit-2026-09-25-architecture.md` (4 read-only ревьюера плюс
+  верификация оркестратором на указанных строках).
+  P0-1 воспроизведён до фикса: 150 kept id дали 0 строк.

@@ -42,6 +42,23 @@ import {
   resetUserMarkdownProfile,
 } from "@/lib/storage/user-facts";
 
+export function isDraftDirty(
+  draft: PromptProfile | null,
+  original: PromptProfile | undefined
+): boolean {
+  if (!draft || !original) return false;
+  return (
+    draft.name !== original.name ||
+    draft.description !== original.description ||
+    draft.systemPrompt !== original.systemPrompt ||
+    draft.humanizerEnabled !== original.humanizerEnabled ||
+    draft.interviewMode !== original.interviewMode ||
+    draft.customStyle !== original.customStyle ||
+    draft.ragResumeEnabled !== original.ragResumeEnabled ||
+    draft.ragJobEnabled !== original.ragJobEnabled
+  );
+}
+
 export const PromptProfilesSettings = () => {
   const {
     promptProfiles,
@@ -64,6 +81,8 @@ export const PromptProfilesSettings = () => {
   );
   // Deleting a profile throws away a hand-written prompt, so it asks first.
   const [pendingDelete, setPendingDelete] = useState<PromptProfile | null>(null);
+  // Profile switch confirmation when a draft has unsaved edits
+  const [pendingSwitch, setPendingSwitch] = useState<PromptProfile | null>(null);
 
   // Self-Evolution Memory States
   const [facts, setFacts] = useState<UserFact[]>(() => getUserFacts());
@@ -106,6 +125,41 @@ export const PromptProfilesSettings = () => {
     setEditing(false);
     setDraft(null);
   }, [draft, updatePromptProfile]);
+
+  const handleSelectProfile = useCallback(
+    (profile: PromptProfile) => {
+      if (profile.id === activeProfileId && !editing) return;
+
+      if (editing && draft) {
+        if (profile.id === draft.id) return;
+        const original = promptProfiles.find((p) => p.id === draft.id);
+        if (isDraftDirty(draft, original)) {
+          setPendingSwitch(profile);
+          return;
+        }
+        setEditing(false);
+        setDraft(null);
+      }
+
+      selectPromptProfile(profile.id);
+    },
+    [activeProfileId, editing, draft, promptProfiles, selectPromptProfile]
+  );
+
+  const handleConfirmSwitchSave = useCallback(() => {
+    if (!pendingSwitch || !draft) return;
+    saveDraft();
+    selectPromptProfile(pendingSwitch.id);
+    setPendingSwitch(null);
+  }, [pendingSwitch, draft, saveDraft, selectPromptProfile]);
+
+  const handleConfirmSwitchDiscard = useCallback(() => {
+    if (!pendingSwitch) return;
+    setEditing(false);
+    setDraft(null);
+    selectPromptProfile(pendingSwitch.id);
+    setPendingSwitch(null);
+  }, [pendingSwitch, selectPromptProfile]);
 
   const handleCreate = useCallback(() => {
     const name = newName.trim();
@@ -186,7 +240,7 @@ export const PromptProfilesSettings = () => {
           return (
             <div
               key={profile.id}
-              onClick={() => selectPromptProfile(profile.id)}
+              onClick={() => handleSelectProfile(profile)}
               className={cn(
                 "group relative flex items-start gap-3 rounded-xl border p-3 text-left transition-all cursor-pointer select-none",
                 isActive
@@ -580,7 +634,14 @@ export const PromptProfilesSettings = () => {
                 <Button size="sm" onClick={saveDraft}>
                   Save profile
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setEditing(false);
+                    setDraft(null);
+                  }}
+                >
                   Cancel
                 </Button>
               </>
@@ -620,6 +681,43 @@ export const PromptProfilesSettings = () => {
               >
                 <Trash2Icon className="size-3.5 mr-1" />
                 Удалить
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Switch profile with unsaved changes confirmation */}
+      {pendingSwitch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-md space-y-3 rounded-xl border border-border bg-background p-5">
+            <h3 className="text-sm font-semibold">
+              Несохранённые изменения
+            </h3>
+            <p className="text-xs text-muted-foreground">
+              В профиле «{draft?.name || activeProfile?.name}» есть несохранённые
+              изменения. Сохранить их перед переключением на «{pendingSwitch.name}»?
+            </p>
+            <div className="flex justify-end gap-2 pt-1">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setPendingSwitch(null)}
+              >
+                Отмена
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-destructive hover:bg-destructive/10"
+                onClick={handleConfirmSwitchDiscard}
+              >
+                Не сохранять
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleConfirmSwitchSave}
+              >
+                Сохранить и перейти
               </Button>
             </div>
           </div>

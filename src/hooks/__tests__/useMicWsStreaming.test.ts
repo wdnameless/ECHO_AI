@@ -608,4 +608,40 @@ describe("useMicWsStreaming", () => {
     expect(ws.sentData[2]).toBe(frame2);
     expect(ws.sentData[3]).toBe(frame3);
   });
+
+  it("does not open socket and releases stream if capture was stopped during getAsrBaseUrl", async () => {
+    let resolveBaseUrl: (url: string) => void = () => {};
+    vi.mocked(getAsrBaseUrl).mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          resolveBaseUrl = resolve;
+        })
+    );
+
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useMicWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    act(() => {
+      result.current.micWsWantRef.current = true;
+      result.current.micWsConnect();
+    });
+
+    // Stream should have been acquired initially
+    expect(asrGate.tryAcquireStream("them")).toBe(false);
+
+    // Capture stops while getAsrBaseUrl is pending
+    capturingRef.current = false;
+
+    // Resolve getAsrBaseUrl
+    await act(async () => {
+      resolveBaseUrl("http://127.0.0.1:8765");
+    });
+
+    // No WebSocket should have been created
+    expect(MockWebSocket.instances).toHaveLength(0);
+    // Stream should have been released
+    expect(asrGate.tryAcquireStream("them")).toBe(true);
+  });
 });

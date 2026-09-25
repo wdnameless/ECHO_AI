@@ -5,7 +5,7 @@ import { safeLocalStorage, migrateLocalStorageToSQLite, autoCleanOnStartup } fro
 import { getShortcutsConfig } from "@/lib/storage";
 import { invoke } from "@tauri-apps/api/core";
 
-export const useApp = () => {
+export const useAppBootstrap = () => {
   const systemAudio = useSystemAudio();
   const [isHidden, setIsHidden] = useState(false);
   // Initialize title management

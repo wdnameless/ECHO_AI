@@ -1,9 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
   upsertUtterance,
   finalizeUtterance,
   selectRussianFiller,
   selectFillerForText,
+  resetRecentFillers,
   detectTextLanguage,
   RUSSIAN_FILLERS,
   RUSSIAN_INTERVIEW_FILLERS,
@@ -13,6 +14,10 @@ import {
 } from "../transcript-stabilizer";
 
 describe("transcript-stabilizer", () => {
+  beforeEach(() => {
+    resetRecentFillers();
+  });
+
   it("creates a new partial utterance and keeps stable id during streaming updates", () => {
     let list: TranscriptUtterance[] = [];
     const first = upsertUtterance(list, {
@@ -149,5 +154,23 @@ describe("transcript-stabilizer", () => {
     });
     const finalized = finalizeUtterance(res.list, "non-existent-id");
     expect(finalized).toEqual(res.list);
+  });
+  it("resets English recent filler indices allowing the same filler after reset", () => {
+    const randomSpy = vi.spyOn(Math, "random");
+    try {
+      // Return index 0 (0 / ENGLISH_FILLERS.length)
+      randomSpy.mockReturnValue(0);
+      const first = selectFillerForText("Hello world");
+      expect(first).toBe(ENGLISH_FILLERS[0]);
+
+      // Sequence: if recent is NOT reset, 0 is rejected and next random (index 1) is chosen.
+      // If recent IS reset, 0 is accepted immediately on first roll.
+      randomSpy.mockReturnValueOnce(0).mockReturnValueOnce(1 / ENGLISH_FILLERS.length);
+      resetRecentFillers();
+      const second = selectFillerForText("Hello world");
+      expect(second).toBe(ENGLISH_FILLERS[0]);
+    } finally {
+      randomSpy.mockRestore();
+    }
   });
 });

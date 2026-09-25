@@ -8,8 +8,28 @@ use std::task::{Poll, Waker};
 use std::thread;
 use std::time::Duration;
 use tracing::error;
-use wasapi::{get_default_device, DeviceCollection, Direction, SampleType, StreamMode, WaveFormat};
+use wasapi::{
+    get_default_device, DeviceCollection, Direction, SampleType, StreamMode, WasapiError,
+    WaveFormat,
+};
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+
+/// Result of waiting on a capture event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EventWaitAction {
+    Continue,
+    Terminate,
+}
+
+/// Pure decision function: determines if an event wait outcome should continue or terminate capture.
+/// On WASAPI loopback streams, silence produces no events, so timeouts are normal and must not terminate.
+pub(crate) fn handle_event_wait_result(res: &Result<(), WasapiError>) -> EventWaitAction {
+    match res {
+        Ok(()) => EventWaitAction::Continue,
+        Err(WasapiError::EventTimeout) => EventWaitAction::Continue,
+        Err(_) => EventWaitAction::Terminate,
+    }
+}
 
 pub fn get_input_devices() -> Result<Vec<AudioDevice>> {
     let mut devices = Vec::new();
@@ -158,6 +178,7 @@ impl SpeakerInput {
 
         SpeakerStream {
             sample_queue,
+            local_buffer: VecDeque::with_capacity(4096),
             waker_state,
             capture_thread: Some(capture_thread),
             actual_sample_rate,
@@ -173,6 +194,7 @@ struct WakerState {
 
 pub struct SpeakerStream {
     sample_queue: Arc<Mutex<VecDeque<f32>>>,
+    local_buffer: VecDeque<f32>,
     waker_state: Arc<Mutex<WakerState>>,
     capture_thread: Option<thread::JoinHandle<()>>,
     actual_sample_rate: u32,
@@ -181,6 +203,17 @@ pub struct SpeakerStream {
 impl SpeakerStream {
     pub fn sample_rate(&self) -> u32 {
         self.actual_sample_rate
+    }
+
+    fn try_pop_or_refill(&mut self) -> Option<f32> {
+        if let Some(sample) = self.local_buffer.pop_front() {
+            return Some(sample);
+        }
+        let mut queue = self.sample_queue.lock().unwrap();
+        if !queue.is_empty() {
+            std::mem::swap(&mut *queue, &mut self.local_buffer);
+        }
+        self.local_buffer.pop_front()
     }
 
     fn capture_audio_loop(
@@ -252,6 +285,15 @@ impl SpeakerStream {
                 let mut diag_ticks: u32 = 0;
                 let mut diag_bytes: usize = 0;
                 let mut diag_empty: u32 = 0;
+                let mut diag_silence_timeouts: u32 = 0;
+                let signal_shutdown = |waker_state: &Arc<Mutex<WakerState>>| {
+                    let mut state = waker_state.lock().unwrap();
+                    state.shutdown = true;
+                    if let Some(waker) = state.waker.take() {
+                        drop(state);
+                        waker.wake();
+                    }
+                };
 
                 loop {
                     {
@@ -261,38 +303,38 @@ impl SpeakerStream {
                         }
                     }
 
-                    if h_event.wait_for_event(3000).is_err() {
-                        error!("Echo AI timeout error, stopping capture");
-                        // Mark the stream finished AND wake the consumer.
-                        //
-                        // A bare `break` left `shutdown` false and never woke the
-                        // waker, and `poll_next` returns `Pending` whenever the
-                        // queue is empty — so the task looping on
-                        // `stream.next().await` (commands.rs) waited forever on a
-                        // thread that had already exited. Three seconds of silence
-                        // on a loopback device (which pumps no buffers while
-                        // nothing plays) was enough to trigger it.
-                        let mut state = waker_state.lock().unwrap();
-                        state.shutdown = true;
-                        if let Some(waker) = state.waker.take() {
-                            drop(state);
-                            waker.wake();
+                    let wait_res = h_event.wait_for_event(1000);
+                    match handle_event_wait_result(&wait_res) {
+                        EventWaitAction::Continue => {
+                            if wait_res.is_err() {
+                                // Loopback silence: no audio playing, normal timeout.
+                                diag_silence_timeouts += 1;
+                                continue;
+                            }
                         }
-                        break;
+                        EventWaitAction::Terminate => {
+                            if let Err(e) = wait_res {
+                                error!("Echo AI event error, stopping capture: {}", e);
+                            }
+                            signal_shutdown(&waker_state);
+                            break;
+                        }
                     }
 
                     let mut temp_queue = VecDeque::new();
                     if let Err(e) = render_client.read_from_device_to_deque(&mut temp_queue) {
-                        error!("Echo AI Failed to read audio data: {}", e);
-                        diag_empty += 1;
-                        continue;
+                        error!("Echo AI Failed to read audio data, stopping capture: {}", e);
+                        signal_shutdown(&waker_state);
+                        break;
                     }
-
                     if temp_queue.is_empty() {
                         diag_empty += 1;
                         diag_ticks += 1;
                         if diag_ticks.is_multiple_of(50) {
-                            eprintln!("[capture] tick={} empty_reads={} total_bytes={}", diag_ticks, diag_empty, diag_bytes);
+                            eprintln!(
+                                "[capture] tick={} empty_reads={} total_bytes={} timeouts={}",
+                                diag_ticks, diag_empty, diag_bytes, diag_silence_timeouts
+                            );
                         }
                         continue;
                     }
@@ -408,36 +450,139 @@ impl Stream for SpeakerStream {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        {
-            let state = self.waker_state.lock().unwrap();
-            if state.shutdown {
-                return Poll::Ready(None);
-            }
+        let this = self.get_mut();
+
+        if let Some(sample) = this.try_pop_or_refill() {
+            return Poll::Ready(Some(sample));
         }
 
+        // Both local buffer and shared queue are empty: check for shutdown or register waker.
         {
-            let mut queue = self.sample_queue.lock().unwrap();
-            if let Some(sample) = queue.pop_front() {
-                return Poll::Ready(Some(sample));
-            }
-        }
-
-        {
-            let mut state = self.waker_state.lock().unwrap();
+            let mut state = this.waker_state.lock().unwrap();
             if state.shutdown {
                 return Poll::Ready(None);
             }
             state.has_data = false;
             state.waker = Some(cx.waker().clone());
-            drop(state);
         }
 
-        {
-            let mut queue = self.sample_queue.lock().unwrap();
-            match queue.pop_front() {
-                Some(sample) => Poll::Ready(Some(sample)),
-                None => Poll::Pending,
-            }
+        // Double check shared queue in case samples arrived before waker registration.
+        if let Some(sample) = this.try_pop_or_refill() {
+            return Poll::Ready(Some(sample));
         }
+
+        Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::StreamExt;
+
+    #[test]
+    fn test_handle_event_wait_result() {
+        assert_eq!(
+            handle_event_wait_result(&Ok(())),
+            EventWaitAction::Continue
+        );
+        assert_eq!(
+            handle_event_wait_result(&Err(WasapiError::EventTimeout)),
+            EventWaitAction::Continue,
+            "Timeout must not be fatal on loopback capture"
+        );
+        assert_eq!(
+            handle_event_wait_result(&Err(WasapiError::DeviceNotFound("test".to_string()))),
+            EventWaitAction::Terminate,
+            "Genuine device error must terminate capture"
+        );
+        assert_eq!(
+            handle_event_wait_result(&Err(WasapiError::ClientNotInit)),
+            EventWaitAction::Terminate
+        );
+    }
+
+    fn create_test_stream() -> (SpeakerStream, Arc<Mutex<VecDeque<f32>>>, Arc<Mutex<WakerState>>) {
+        let sample_queue = Arc::new(Mutex::new(VecDeque::new()));
+        let waker_state = Arc::new(Mutex::new(WakerState {
+            waker: None,
+            has_data: false,
+            shutdown: false,
+        }));
+        let stream = SpeakerStream {
+            sample_queue: sample_queue.clone(),
+            local_buffer: VecDeque::new(),
+            waker_state: waker_state.clone(),
+            capture_thread: None,
+            actual_sample_rate: 44100,
+        };
+        (stream, sample_queue, waker_state)
+    }
+
+    #[tokio::test]
+    async fn test_speaker_stream_batching_and_order() {
+        let (mut stream, sample_queue, _) = create_test_stream();
+        let expected_samples: Vec<f32> = (0..500).map(|i| (i as f32) * 0.001).collect();
+
+        // Push all samples into shared queue
+        {
+            let mut queue = sample_queue.lock().unwrap();
+            queue.extend(expected_samples.iter().copied());
+        }
+
+        // First poll should batch-swap all samples into local_buffer
+        let first = stream.next().await;
+        assert_eq!(first, Some(expected_samples[0]));
+
+        // After first poll, sample_queue should have been drained into local_buffer (batching)
+        {
+            let queue = sample_queue.lock().unwrap();
+            assert_eq!(queue.len(), 0, "sample_queue should be drained in batch");
+        }
+        assert_eq!(
+            stream.local_buffer.len(),
+            499,
+            "local_buffer should hold remaining batched samples"
+        );
+
+        // Read remaining samples and verify bit-identical content and order
+        let mut collected = vec![first.unwrap()];
+        for _ in 1..500 {
+            collected.push(stream.next().await.unwrap());
+        }
+        assert_eq!(collected, expected_samples);
+    }
+
+    #[tokio::test]
+    async fn test_speaker_stream_shutdown_after_draining() {
+        let (mut stream, sample_queue, waker_state) = create_test_stream();
+
+        {
+            let mut queue = sample_queue.lock().unwrap();
+            queue.push_back(0.42);
+        }
+
+        // Mark shutdown while sample is queued
+        {
+            let mut state = waker_state.lock().unwrap();
+            state.shutdown = true;
+        }
+
+        // Buffered sample must be yielded first
+        assert_eq!(stream.next().await, Some(0.42));
+
+        // Once empty, stream must yield None
+        assert_eq!(stream.next().await, None);
+    }
+
+    #[test]
+    fn test_speaker_stream_pending_on_empty() {
+        let (mut stream, _, _) = create_test_stream();
+
+        // Polling empty stream when not shutdown must return Pending, not None
+        let waker = futures_util::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        let res = std::pin::Pin::new(&mut stream).poll_next(&mut cx);
+        assert_eq!(res, Poll::Pending);
     }
 }
