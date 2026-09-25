@@ -47,3 +47,4 @@ describe("deepVariableReplacer", () => {
     expect(out).toEqual({ a: "$&", b: ["$&"], c: { d: "$&" } });
   });
 });
+

@@ -272,6 +272,11 @@ export function useSystemAudio() {
     pendingScreenshotRef,
     setPendingScreenshot,
     onError: setError,
+    // A question heard while the answer was still streaming is held by the
+    // manager; ask it now that the AI is free.
+    onProcessingComplete: () => {
+      autoAskManagerRef.current?.releaseHeld();
+    },
   });
 
   handleTriggerAIRef.current = triggerAIForQuestion;

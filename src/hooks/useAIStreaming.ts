@@ -44,6 +44,15 @@ export interface UseAIStreamingProps {
   pendingScreenshotRef: React.MutableRefObject<string | null>;
   setPendingScreenshot: (val: string | null) => void;
   onError: (msg: string) => void;
+  /**
+   * Fired once an answer finishes (or fails), after `isAIProcessing` is cleared.
+   *
+   * The auto-ask manager holds a question that arrived while the AI was busy;
+   * this is its signal to ask it. Kept as a callback rather than letting the
+   * manager poll, so the held question is asked immediately instead of at the
+   * next interval.
+   */
+  onProcessingComplete?: () => void;
 }
 
 export function useAIStreaming({
@@ -61,6 +70,7 @@ export function useAIStreaming({
   pendingScreenshotRef,
   setPendingScreenshot,
   onError,
+  onProcessingComplete,
 }: UseAIStreamingProps) {
   const [isAIProcessing, setIsAIProcessing] = useState(false);
   const [lastAIResponse, setLastAIResponse] = useState<string>("");
@@ -178,12 +188,16 @@ export function useAIStreaming({
         setIsAIProcessing(false);
         fillerManager.stop();
         clearFiller();
+        // After the flag is cleared, so a question held during the answer sees
+        // `isAIProcessing === false` and goes out immediately.
+        onProcessingComplete?.();
       }
     },
     [
       selectedAIProvider,
       allAiProviders,
       onError,
+      onProcessingComplete,
       pendingScreenshotRef,
       setPendingScreenshot,
       clearFiller,

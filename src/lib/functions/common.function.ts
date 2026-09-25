@@ -89,6 +89,7 @@ export function processUserMessageTemplate(
     /\{\{TEXT\}\}/g,
     () => escapeForJson(userMessage)
   );
+
   const result = JSON.parse(templateStr);
 
   const imageReplacer = (node: any): any => {
@@ -101,13 +102,16 @@ export function processUserMessageTemplate(
         const imageTemplate = node[imageTemplateIndex];
         const imageParts =
           imagesBase64.length > 0
-            ? imagesBase64.map((img) => {
-                const partStr = JSON.stringify(imageTemplate).replace(
-                  /\{\{IMAGE\}\}/g,
-                  img
-                );
-                return JSON.parse(partStr);
-              })
+            ? imagesBase64
+                .map((img) => {
+                  const partStr = JSON.stringify(imageTemplate).replace(
+                    /\{\{IMAGE\}\}/g,
+                    // Function form: a base64 payload can contain `$`-tokens that
+                    // a string replacement would expand into the template.
+                    () => img
+                  );
+                  return JSON.parse(partStr);
+                })
             : [];
 
         const finalArray = [

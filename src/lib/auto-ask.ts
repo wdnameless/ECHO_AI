@@ -122,6 +122,15 @@ export interface AutoAskManagerOptions {
 export class AutoAskManager {
   private timer: NodeJS.Timeout | number | null = null;
   private pendingText: string | null = null;
+  /**
+   * A question heard while the AI was still answering.
+   *
+   * The interviewer keeps talking during an answer, and the eligibility check
+   * rejects anything that arrives while `isAIProcessing` is true — so every
+   * such question was dropped outright, never asked and never heard again.
+   * One is kept here and dispatched when the answer finishes.
+   */
+  private heldText: string | null = null;
   private options: AutoAskManagerOptions;
 
   constructor(options: AutoAskManagerOptions) {
@@ -147,8 +156,44 @@ export class AutoAskManager {
   public dispatchNow(text: string): void {
     this.cancelTimer();
     this.pendingText = null;
-    if (!this.isEligible(text)) return;
+
+    // Mode / enabled / filler checks still apply. Only `isAIProcessing` is
+    // treated differently below: it is a "not now", not a "never".
+    const config = this.options.getConfig
+      ? this.options.getConfig()
+      : getAutoAskConfig();
+    if (config.enabled === false || config.mode === "manual") return;
+    if (isFillerOrBackchannel(text)) return;
+
+    // A real question that arrives mid-answer is held, not discarded.
+    if (this.options.isAIProcessing()) {
+      this.heldText = text.trim();
+      return;
+    }
     void this.options.onDispatch(text);
+  }
+
+  /**
+   * Flushes a question that was held during an answer.
+   *
+   * Call this when the AI finishes: without it the held question would sit
+   * forever, which is the same silence the queue exists to remove.
+   */
+  public releaseHeld(): void {
+    const text = this.heldText;
+    this.heldText = null;
+    if (!text) return;
+    if (this.options.isAIProcessing()) {
+      // Still busy (a new answer started first): keep holding it.
+      this.heldText = text;
+      return;
+    }
+    void this.options.onDispatch(text);
+  }
+
+  /** True when a question is waiting for the current answer to finish. */
+  public hasHeld(): boolean {
+    return this.heldText !== null;
   }
 
   /**
