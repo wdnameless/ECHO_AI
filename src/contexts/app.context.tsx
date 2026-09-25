@@ -55,6 +55,7 @@ import {
   useContext,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -74,7 +75,7 @@ const validateAndProcessCurlProviders = (
         try {
           curl2Json(p.curl);
           return true;
-        } catch (e) {
+        } catch {
           return false;
         }
 
@@ -310,7 +311,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, []);
 
-  const activeJobProfile = jobProfiles.find((p) => p.id === activeJobProfileId) || null;
+  const activeJobProfile = useMemo(
+    () => jobProfiles.find((p) => p.id === activeJobProfileId) || null,
+    [jobProfiles, activeJobProfileId]
+  );
 
   const [selectedAudioDevices, setSelectedAudioDevices] = useState<{
     input: { id: string; name: string };
@@ -377,17 +381,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   });
 
   // Wrapper to sync supportsImages to localStorage
-  const setSupportsImages = (value: boolean) => {
+  const setSupportsImages = useCallback((value: boolean) => {
     setSupportsImagesState(value);
     safeLocalStorage.setItem(STORAGE_KEYS.SUPPORTS_IMAGES, String(value));
-  };
+  }, []);
 
   // Echo AI API State
   const [pluelyApiEnabled, setPluelyApiEnabledState] = useState<boolean>(
     safeLocalStorage.getItem(STORAGE_KEYS.PLUELY_API_ENABLED) === "true"
   );
 
-  const getActiveLicenseStatus = async (): Promise<boolean> => {
+  const getActiveLicenseStatus = useCallback(async (): Promise<boolean> => {
     try {
       // Single source of truth: check_license_status Rust command
       // In dev builds, Rust returns true (cfg!(debug_assertions)).
@@ -399,7 +403,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       setHasActiveLicense(false);
       return false;
     }
-  };
+  }, []);
 
   useEffect(() => {
     const syncLicenseState = async () => {
@@ -418,8 +422,34 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     syncLicenseState();
   }, [hasActiveLicense]);
 
+
+  const updateCursor = useCallback((type: CursorType | undefined) => {
+    try {
+      const currentWindow = getCurrentWindow();
+      const platform = getPlatform();
+      // For Linux, always use default cursor
+      if (platform === "linux") {
+        document.documentElement.style.setProperty("--cursor-type", "default");
+        return;
+      }
+      const windowLabel = currentWindow.label;
+
+      if (windowLabel === "dashboard") {
+        // For dashboard, always use default cursor
+        document.documentElement.style.setProperty("--cursor-type", "default");
+        return;
+      }
+
+      // For overlay windows (main, capture-overlay-*)
+      const safeType = type || "invisible";
+      const cursorValue = type === "invisible" ? "none" : safeType;
+      document.documentElement.style.setProperty("--cursor-type", cursorValue);
+    } catch {
+      document.documentElement.style.setProperty("--cursor-type", "default");
+    }
+  }, []);
   // Function to load AI, STT, system prompt and screenshot config data from storage
-  const loadData = () => {
+  const loadData = useCallback(() => {
     // Load system prompt
     const savedSystemPrompt = safeLocalStorage.getItem(
       STORAGE_KEYS.SYSTEM_PROMPT
@@ -472,15 +502,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       STORAGE_KEYS.SELECTED_AI_PROVIDER
     );
     if (savedSelectedAi) {
-      const parsedAi = JSON.parse(savedSelectedAi);
-      // Migrate stored variables: canonicalize duplicate/case-collision keys
-      if (parsedAi && typeof parsedAi === "object" && parsedAi.variables) {
-        parsedAi.variables = canonicalizeVariables(parsedAi.variables);
+      try {
+        const parsedAi = JSON.parse(savedSelectedAi);
+        // Migrate stored variables: canonicalize duplicate/case-collision keys
+        if (parsedAi && typeof parsedAi === "object" && parsedAi.variables) {
+          parsedAi.variables = canonicalizeVariables(parsedAi.variables);
+        }
+        // No legacy-model shim: the user's stored selection is the source of
+        // truth. The old recurring "gemini 3.6 flash high" rewrite clobbered
+        // newer user selections and re-persisted them every app start.
+        setSelectedAIProvider(parsedAi);
+      } catch {
+        console.warn("Failed to parse selected AI provider");
       }
-      // No legacy-model shim: the user's stored selection is the source of
-      // truth. The old recurring "gemini 3.6 flash high" rewrite clobbered
-      // newer user selections and re-persisted them every app start.
-      setSelectedAIProvider(parsedAi);
     } else {
       // Default to Nullform AI Gateway with gemini-3.6-flash-low
       const defaultAi = {
@@ -502,8 +536,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       STORAGE_KEYS.SELECTED_STT_PROVIDER
     );
     if (savedSelectedStt) {
-      setSelectedSttProvider(JSON.parse(savedSelectedStt));
-    } else {
+      try {
+        setSelectedSttProvider(JSON.parse(savedSelectedStt));
+      } catch {
+        console.warn("Failed to parse selected STT provider");
+      }
       // Default to the local speech engine
       const defaultStt = {
         provider: "handy-local-whisper",
@@ -566,33 +603,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         console.warn("Failed to parse selected audio devices");
       }
     }
-  };
-
-  const updateCursor = (type: CursorType | undefined) => {
-    try {
-      const currentWindow = getCurrentWindow();
-      const platform = getPlatform();
-      // For Linux, always use default cursor
-      if (platform === "linux") {
-        document.documentElement.style.setProperty("--cursor-type", "default");
-        return;
-      }
-      const windowLabel = currentWindow.label;
-
-      if (windowLabel === "dashboard") {
-        // For dashboard, always use default cursor
-        document.documentElement.style.setProperty("--cursor-type", "default");
-        return;
-      }
-
-      // For overlay windows (main, capture-overlay-*)
-      const safeType = type || "invisible";
-      const cursorValue = type === "invisible" ? "none" : safeType;
-      document.documentElement.style.setProperty("--cursor-type", cursorValue);
-    } catch (error) {
-      document.documentElement.style.setProperty("--cursor-type", "default");
-    }
-  };
+  }, [updateCursor]);
 
   // Load data on mount
   useEffect(() => {
@@ -761,7 +772,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             // No model selected, assume no image support
             setSupportsImages(false);
           }
-        } catch (error) {
+        } catch {
           setSupportsImages(false);
         }
       } else {
@@ -817,210 +828,284 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [selectedSttProvider]);
 
   // Computed all AI providers
-  const allAiProviders: TYPE_PROVIDER[] = [
-    ...AI_PROVIDERS,
-    ...customAiProviders,
-  ];
+  const allAiProviders: TYPE_PROVIDER[] = useMemo(
+    () => [...AI_PROVIDERS, ...customAiProviders],
+    [customAiProviders]
+  );
 
   // Computed all STT providers
-  const allSttProviders: TYPE_PROVIDER[] = [
-    ...SPEECH_TO_TEXT_PROVIDERS,
-    ...customSttProviders,
-  ];
+  const allSttProviders: TYPE_PROVIDER[] = useMemo(
+    () => [...SPEECH_TO_TEXT_PROVIDERS, ...customSttProviders],
+    [customSttProviders]
+  );
 
-  const onSetSelectedAIProvider = ({
-    provider,
-    variables,
-  }: {
-    provider: string;
-    variables: Record<string, string>;
-  }) => {
-    if (provider && !allAiProviders.some((p) => p.id === provider)) {
-      console.warn(`Invalid AI provider ID: ${provider}`);
-      return;
-    }
-
-    // Update supportsImages immediately when provider changes
-    if (!pluelyApiEnabled) {
-      const selectedProvider = allAiProviders.find((p) => p.id === provider);
-      if (selectedProvider) {
-        const hasImageSupport =
-          selectedProvider.curl?.includes("{{IMAGE}}") ?? false;
-        setSupportsImages(hasImageSupport);
-      } else {
-        setSupportsImages(true);
-      }
-    }
-
-    const canonicalVars = canonicalizeVariables(variables);
-    aiSelectionDirtyRef.current = true;
-    setSelectedAIProvider((prev) => ({
-      ...prev,
+  const onSetSelectedAIProvider = useCallback(
+    ({
       provider,
-      variables: canonicalVars,
-    }));
-  };
-
-  // Setter for selected STT with validation
-  const onSetSelectedSttProvider = ({
-    provider,
-    variables,
-  }: {
-    provider: string;
-    variables: Record<string, string>;
-  }) => {
-    if (provider && !allSttProviders.some((p) => p.id === provider)) {
-      console.warn(`Invalid STT provider ID: ${provider}`);
-      return;
-    }
-
-    setSelectedSttProvider((prev) => ({ ...prev, provider, variables }));
-  };
-
-  // Toggle handlers
-  const toggleAppIconVisibility = async (isVisible: boolean) => {
-    const newState = updateAppIconVisibility(isVisible);
-    setCustomizable(newState);
-    try {
-      await invoke("set_app_icon_visibility", { visible: isVisible });
-      loadData();
-    } catch (error) {
-      console.error("Failed to toggle app icon visibility:", error);
-    }
-  };
-
-  const toggleAlwaysOnTop = async (isEnabled: boolean) => {
-    const newState = updateAlwaysOnTop(isEnabled);
-    setCustomizable(newState);
-    try {
-      await invoke("set_always_on_top", { enabled: isEnabled });
-      loadData();
-    } catch (error) {
-      console.error("Failed to toggle always on top:", error);
-    }
-  };
-
-  const toggleStealthMode = async (isEnabled: boolean) => {
-    const newState = updateStealthMode(isEnabled);
-    setCustomizable(newState);
-    try {
-      await invoke("set_stealth_mode", { enabled: isEnabled });
-      loadData();
-    } catch (error) {
-      console.error("Failed to toggle stealth mode:", error);
-    }
-  };
-
-  const toggleAutostart = async (isEnabled: boolean) => {
-    const newState = updateAutostart(isEnabled);
-    setCustomizable(newState);
-    try {
-      if (isEnabled) {
-        await enable();
-      } else {
-        await disable();
+      variables,
+    }: {
+      provider: string;
+      variables: Record<string, string>;
+    }) => {
+      if (provider && !allAiProviders.some((p) => p.id === provider)) {
+        console.warn(`Invalid AI provider ID: ${provider}`);
+        return;
       }
-      loadData();
-    } catch (error) {
-      console.error("Failed to toggle autostart:", error);
-      const revertedState = updateAutostart(!isEnabled);
-      setCustomizable(revertedState);
-    }
-  };
 
-  const setCursorType = (type: CursorType) => {
-    setCustomizable((prev) => ({ ...prev, cursor: { type } }));
-    updateCursor(type);
-    updateCursorType(type);
-    loadData();
-  };
-
-  const setPluelyApiEnabled = async (enabled: boolean) => {
-    setPluelyApiEnabledState(enabled);
-    safeLocalStorage.setItem(STORAGE_KEYS.PLUELY_API_ENABLED, String(enabled));
-
-    if (enabled) {
-      try {
-        const storage = await invoke<{
-          selected_pluely_model?: string;
-        }>("secure_storage_get");
-
-        if (storage.selected_pluely_model) {
-          const model = JSON.parse(storage.selected_pluely_model);
-          const hasImageSupport = model.modality?.includes("image") ?? false;
+      // Update supportsImages immediately when provider changes
+      if (!pluelyApiEnabled) {
+        const selectedProvider = allAiProviders.find((p) => p.id === provider);
+        if (selectedProvider) {
+          const hasImageSupport =
+            selectedProvider.curl?.includes("{{IMAGE}}") ?? false;
           setSupportsImages(hasImageSupport);
         } else {
-          // No model selected, assume no image support
+          setSupportsImages(true);
+        }
+      }
+
+      const canonicalVars = canonicalizeVariables(variables);
+      aiSelectionDirtyRef.current = true;
+      setSelectedAIProvider((prev) => ({
+        ...prev,
+        provider,
+        variables: canonicalVars,
+      }));
+    },
+    [allAiProviders, pluelyApiEnabled, setSupportsImages]
+  );
+
+  // Setter for selected STT with validation
+  const onSetSelectedSttProvider = useCallback(
+    ({
+      provider,
+      variables,
+    }: {
+      provider: string;
+      variables: Record<string, string>;
+    }) => {
+      if (provider && !allSttProviders.some((p) => p.id === provider)) {
+        console.warn(`Invalid STT provider ID: ${provider}`);
+        return;
+      }
+
+      setSelectedSttProvider((prev) => ({ ...prev, provider, variables }));
+    },
+    [allSttProviders]
+  );
+
+  // Toggle handlers
+  const toggleAppIconVisibility = useCallback(
+    async (isVisible: boolean) => {
+      const newState = updateAppIconVisibility(isVisible);
+      setCustomizable(newState);
+      try {
+        await invoke("set_app_icon_visibility", { visible: isVisible });
+        loadData();
+      } catch (error) {
+        console.error("Failed to toggle app icon visibility:", error);
+      }
+    },
+    [loadData]
+  );
+
+  const toggleAlwaysOnTop = useCallback(
+    async (isEnabled: boolean) => {
+      const newState = updateAlwaysOnTop(isEnabled);
+      setCustomizable(newState);
+      try {
+        await invoke("set_always_on_top", { enabled: isEnabled });
+        loadData();
+      } catch (error) {
+        console.error("Failed to toggle always on top:", error);
+      }
+    },
+    [loadData]
+  );
+
+  const toggleStealthMode = useCallback(
+    async (isEnabled: boolean) => {
+      const newState = updateStealthMode(isEnabled);
+      setCustomizable(newState);
+      try {
+        await invoke("set_stealth_mode", { enabled: isEnabled });
+        loadData();
+      } catch (error) {
+        console.error("Failed to toggle stealth mode:", error);
+      }
+    },
+    [loadData]
+  );
+
+  const toggleAutostart = useCallback(
+    async (isEnabled: boolean) => {
+      const newState = updateAutostart(isEnabled);
+      setCustomizable(newState);
+      try {
+        if (isEnabled) {
+          await enable();
+        } else {
+          await disable();
+        }
+        loadData();
+      } catch (error) {
+        console.error("Failed to toggle autostart:", error);
+        const revertedState = updateAutostart(!isEnabled);
+        setCustomizable(revertedState);
+      }
+    },
+    [loadData]
+  );
+
+  const setCursorType = useCallback(
+    (type: CursorType) => {
+      setCustomizable((prev) => ({ ...prev, cursor: { type } }));
+      updateCursor(type);
+      updateCursorType(type);
+      loadData();
+    },
+    [updateCursor, loadData]
+  );
+
+  const setPluelyApiEnabled = useCallback(
+    async (enabled: boolean) => {
+      setPluelyApiEnabledState(enabled);
+      safeLocalStorage.setItem(STORAGE_KEYS.PLUELY_API_ENABLED, String(enabled));
+
+      if (enabled) {
+        try {
+          const storage = await invoke<{
+            selected_pluely_model?: string;
+          }>("secure_storage_get");
+
+          if (storage.selected_pluely_model) {
+            const model = JSON.parse(storage.selected_pluely_model);
+            const hasImageSupport = model.modality?.includes("image") ?? false;
+            setSupportsImages(hasImageSupport);
+          } else {
+            // No model selected, assume no image support
+            setSupportsImages(false);
+          }
+        } catch (error) {
+          console.debug("Failed to check Echo AI model image support:", error);
           setSupportsImages(false);
         }
-      } catch (error) {
-        console.debug("Failed to check Echo AI model image support:", error);
-        setSupportsImages(false);
-      }
-    } else {
-      // Switching to regular provider - check if curl contains {{IMAGE}}
-      const provider = allAiProviders.find(
-        (p) => p.id === selectedAIProvider.provider
-      );
-      if (provider) {
-        const hasImageSupport = provider.curl?.includes("{{IMAGE}}") ?? false;
-        setSupportsImages(hasImageSupport);
       } else {
-        setSupportsImages(true);
+        // Switching to regular provider - check if curl contains {{IMAGE}}
+        const provider = allAiProviders.find(
+          (p) => p.id === selectedAIProvider.provider
+        );
+        if (provider) {
+          const hasImageSupport = provider.curl?.includes("{{IMAGE}}") ?? false;
+          setSupportsImages(hasImageSupport);
+        } else {
+          setSupportsImages(true);
+        }
       }
-    }
 
-    loadData();
-  };
+      loadData();
+    },
+    [setSupportsImages, allAiProviders, selectedAIProvider.provider, loadData]
+  );
 
   // Create the context value (extend IContextType accordingly)
-  const value: IContextType = {
-    systemPrompt,
-    setSystemPrompt,
-    allAiProviders,
-    customAiProviders,
-    selectedAIProvider,
-    onSetSelectedAIProvider,
-    allSttProviders,
-    customSttProviders,
-    selectedSttProvider,
-    onSetSelectedSttProvider,
-    screenshotConfiguration,
-    setScreenshotConfiguration,
-    customizable,
-    toggleAppIconVisibility,
-    toggleAlwaysOnTop,
-    toggleAutostart,
-    toggleStealthMode,
-    loadData,
-    pluelyApiEnabled,
-    setPluelyApiEnabled,
-    hasActiveLicense,
-    setHasActiveLicense,
-    getActiveLicenseStatus,
-    selectedAudioDevices,
-    setSelectedAudioDevices,
-    setCursorType,
-    supportsImages,
-    setSupportsImages,
-    promptProfiles,
-    refreshPromptProfiles,
-    activeProfileId,
-    selectPromptProfile,
-    updatePromptProfile,
-    createPromptProfile,
-    deletePromptProfile,
-    resetPromptProfile,
-    jobProfiles,
-    activeJobProfileId,
-    activeJobProfile,
-    selectJobProfile,
-    updateJobProfile,
-    createJobProfile,
-    deleteJobProfile,
-    applyJobProfile,
-    refreshJobProfiles,
-  };
+  // Create the context value (memoized with full dependency list)
+  const value: IContextType = useMemo(
+    () => ({
+      systemPrompt,
+      setSystemPrompt,
+      allAiProviders,
+      customAiProviders,
+      selectedAIProvider,
+      onSetSelectedAIProvider,
+      allSttProviders,
+      customSttProviders,
+      selectedSttProvider,
+      onSetSelectedSttProvider,
+      screenshotConfiguration,
+      setScreenshotConfiguration,
+      customizable,
+      toggleAppIconVisibility,
+      toggleAlwaysOnTop,
+      toggleAutostart,
+      toggleStealthMode,
+      loadData,
+      pluelyApiEnabled,
+      setPluelyApiEnabled,
+      hasActiveLicense,
+      setHasActiveLicense,
+      getActiveLicenseStatus,
+      selectedAudioDevices,
+      setSelectedAudioDevices,
+      setCursorType,
+      supportsImages,
+      setSupportsImages,
+      promptProfiles,
+      refreshPromptProfiles,
+      activeProfileId,
+      selectPromptProfile,
+      updatePromptProfile,
+      createPromptProfile,
+      deletePromptProfile,
+      resetPromptProfile,
+      jobProfiles,
+      activeJobProfileId,
+      activeJobProfile,
+      selectJobProfile,
+      updateJobProfile,
+      createJobProfile,
+      deleteJobProfile,
+      applyJobProfile,
+      refreshJobProfiles,
+    }),
+    [
+      systemPrompt,
+      setSystemPrompt,
+      allAiProviders,
+      customAiProviders,
+      selectedAIProvider,
+      onSetSelectedAIProvider,
+      allSttProviders,
+      customSttProviders,
+      selectedSttProvider,
+      onSetSelectedSttProvider,
+      screenshotConfiguration,
+      setScreenshotConfiguration,
+      customizable,
+      toggleAppIconVisibility,
+      toggleAlwaysOnTop,
+      toggleAutostart,
+      toggleStealthMode,
+      loadData,
+      pluelyApiEnabled,
+      setPluelyApiEnabled,
+      hasActiveLicense,
+      setHasActiveLicense,
+      getActiveLicenseStatus,
+      selectedAudioDevices,
+      setSelectedAudioDevices,
+      setCursorType,
+      supportsImages,
+      setSupportsImages,
+      promptProfiles,
+      refreshPromptProfiles,
+      activeProfileId,
+      selectPromptProfile,
+      updatePromptProfile,
+      createPromptProfile,
+      deletePromptProfile,
+      resetPromptProfile,
+      jobProfiles,
+      activeJobProfileId,
+      activeJobProfile,
+      selectJobProfile,
+      updateJobProfile,
+      createJobProfile,
+      deleteJobProfile,
+      applyJobProfile,
+      refreshJobProfiles,
+    ]
+  );
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };

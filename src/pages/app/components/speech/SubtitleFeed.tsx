@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CaptionsIcon,
   CheckIcon,
@@ -155,6 +155,493 @@ const KIND_BADGE: Record<FeedKind, { label: string; cls: string }> = {
   },
 };
 
+const StreamingAiRow = memo(function StreamingAiRow({
+  text,
+  copied,
+  onCopy,
+}: {
+  text: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  const badge = KIND_BADGE["ai"];
+  return (
+    <div
+      className={cn(
+        "relative rounded-lg border p-2 space-y-1 transition-shadow",
+        "border-violet-500/40 bg-violet-500/5 shadow-[0_0_0_1px_rgba(139,92,246,0.08)] opacity-90"
+      )}
+    >
+      <div className="flex items-center justify-between text-[0.6em]">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 font-semibold px-1 py-px rounded border uppercase tracking-wide",
+            badge.cls
+          )}
+        >
+          <SparklesIcon className="w-2.5 h-2.5" />
+          {badge.label}
+        </span>
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={onCopy}
+            className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:opacity-100 text-muted-foreground hover:text-foreground"
+            title="Скопировать ответ"
+          >
+            {copied ? (
+              <CheckIcon className="w-3 h-3 text-emerald-500" />
+            ) : (
+              <CopyIcon className="w-3 h-3" />
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid gap-x-2 w-full min-w-0 max-w-full grid-cols-1">
+        <div
+          className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
+          style={{
+            wordBreak: "break-word",
+            overflowWrap: "anywhere",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {formatSpokenAnswer(text).map((p, i) => (
+            <p key={i} className="leading-relaxed">
+              {p}
+            </p>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+});
+
+const AiFeedRow = memo(function AiFeedRow({
+  id,
+  text,
+  streaming,
+  feedback,
+  translation,
+  translationsOn,
+  copied,
+  isDislikeOpen,
+  customReason,
+  onCopy,
+  onDeepen,
+  onFeedback,
+  onToggleDislike,
+  onCustomReasonChange,
+}: {
+  id: string;
+  text: string;
+  streaming?: boolean;
+  feedback?: "like" | "dislike";
+  translation?: string;
+  translationsOn: boolean;
+  copied: boolean;
+  isDislikeOpen: boolean;
+  customReason: string;
+  onCopy: (id: string, text: string) => void;
+  onDeepen?: () => void;
+  onFeedback: (
+    id: string,
+    text: string,
+    rating: "like" | "dislike",
+    reason?: string
+  ) => void;
+  onToggleDislike: (id: string) => void;
+  onCustomReasonChange: (val: string) => void;
+}) {
+  const badge = KIND_BADGE["ai"];
+  return (
+    <div
+      className={cn(
+        "relative rounded-lg border p-2 space-y-1 transition-shadow",
+        "border-violet-500/40 bg-violet-500/5 shadow-[0_0_0_1px_rgba(139,92,246,0.08)]",
+        streaming && "opacity-90"
+      )}
+    >
+      <div className="flex items-center justify-between text-[0.6em]">
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 font-semibold px-1 py-px rounded border uppercase tracking-wide",
+            badge.cls
+          )}
+        >
+          <SparklesIcon className="w-2.5 h-2.5" />
+          {badge.label}
+        </span>
+        <div className="flex items-center gap-0.5">
+          {feedback ? (
+            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium px-1">
+              <CheckIcon className="w-3 h-3" />
+              {feedback === "like" ? "паттерн усвоен" : "учтено"}
+            </span>
+          ) : (
+            !streaming && (
+              <div className="flex items-center gap-0.5 relative">
+                {onDeepen && (
+                  <button
+                    className="p-0.5 rounded hover:bg-violet-500/10 text-muted-foreground hover:text-violet-500"
+                    title="Углубить эту тему: продолжить рассказ"
+                    onClick={onDeepen}
+                  >
+                    <SparklesIcon className="w-3 h-3" />
+                  </button>
+                )}
+                <button
+                  className="p-0.5 rounded hover:bg-emerald-500/10 text-muted-foreground hover:text-emerald-500"
+                  title="Лайк: закрепить стиль ответа"
+                  onClick={() => onFeedback(id, text, "like")}
+                >
+                  <ThumbsUpIcon className="w-3 h-3" />
+                </button>
+                <button
+                  className="p-0.5 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-500"
+                  title="Дизлайк: указать, что улучшить"
+                  onClick={() => onToggleDislike(id)}
+                >
+                  <ThumbsDownIcon className="w-3 h-3" />
+                </button>
+                {isDislikeOpen && (
+                  <div className="absolute right-0 top-5 z-40 w-72 rounded-lg border border-border/80 bg-background/95 p-1.5 shadow-lg text-[10px] space-y-0.5 animate-in fade-in duration-100 max-h-80 overflow-y-auto">
+                    <div className="px-2 py-1 font-semibold text-muted-foreground border-b border-border/40 uppercase tracking-wider text-[8px]">
+                      Что улучшить в ответах?
+                    </div>
+                    {DISLIKE_REASONS.map((reason) => (
+                      <button
+                        key={reason}
+                        onClick={() => onFeedback(id, text, "dislike", reason)}
+                        className="w-full text-left px-2 py-1 rounded hover:bg-muted text-foreground/90 transition-colors"
+                      >
+                        {reason}
+                      </button>
+                    ))}
+                    <div className="border-t border-border/40 pt-1 mt-1 flex items-center gap-1 px-1">
+                      <input
+                        value={customReason}
+                        onChange={(ev) => onCustomReasonChange(ev.target.value)}
+                        onKeyDown={(ev) => {
+                          if (ev.key === "Enter" && customReason.trim()) {
+                            onFeedback(id, text, "dislike", customReason.trim());
+                          }
+                        }}
+                        placeholder="Своя причина…"
+                        className="flex-1 min-w-0 bg-transparent border border-border/60 rounded px-1.5 py-0.5 text-[10px] outline-none focus:border-primary/60"
+                      />
+                      <button
+                        onClick={() => {
+                          if (customReason.trim()) {
+                            onFeedback(id, text, "dislike", customReason.trim());
+                          }
+                        }}
+                        className="px-1 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20"
+                        title="Отправить"
+                      >
+                        ✓
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          )}
+          <button
+            onClick={() => onCopy(id, text)}
+            className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:opacity-100 text-muted-foreground hover:text-foreground"
+            title="Скопировать ответ"
+          >
+            {copied ? (
+              <CheckIcon className="w-3 h-3 text-emerald-500" />
+            ) : (
+              <CopyIcon className="w-3 h-3" />
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div
+        className={cn(
+          "grid gap-x-2 w-full min-w-0 max-w-full",
+          translationsOn && !streaming ? "grid-cols-2" : "grid-cols-1"
+        )}
+      >
+        <div
+          className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
+          style={{
+            wordBreak: "break-word",
+            overflowWrap: "anywhere",
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {formatSpokenAnswer(text).map((p, i) => (
+            <p key={i} className="leading-relaxed">
+              {streaming ? p : <HoverTranslate text={p} />}
+            </p>
+          ))}
+        </div>
+        {translationsOn && !streaming && (
+          <div className="min-w-0 flex items-start border-l border-border/30 pl-2">
+            {translation === undefined ? (
+              <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/50 mt-1" />
+            ) : (
+              <p
+                className="text-[0.8em] leading-relaxed text-violet-700/90 dark:text-violet-300/90"
+                style={{
+                  wordBreak: "break-word",
+                  overflowWrap: "anywhere",
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {translation}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+});
+
+const SpeechFeedRow = memo(function SpeechFeedRow({
+  id,
+  kind,
+  text,
+  streaming,
+  translation,
+  translationsOn,
+  isEditing,
+  editWrongWord,
+  editRightWord,
+  editInputRef,
+  isSavingCorrection,
+  showAskAI,
+  isAskDisabled,
+  showFillerBelow,
+  activeFiller,
+  copied,
+  onCopy,
+  onAskAI,
+  onStartInlineEdit,
+  onCancelInlineEdit,
+  onSaveInlineEdit,
+  onEditRightWordChange,
+}: {
+  id: string;
+  kind: "me" | "them";
+  text: string;
+  streaming?: boolean;
+  translation?: string;
+  translationsOn: boolean;
+  isEditing: boolean;
+  editWrongWord: string;
+  editRightWord: string;
+  editInputRef: React.RefObject<HTMLInputElement | null>;
+  isSavingCorrection: boolean;
+  showAskAI: boolean;
+  isAskDisabled: boolean;
+  showFillerBelow: boolean;
+  activeFiller?: string | null;
+  copied: boolean;
+  onCopy: (id: string, text: string) => void;
+  onAskAI?: (utteranceId: string, text: string, source: "me" | "them") => Promise<void>;
+  onStartInlineEdit: (rowId: string, text: string, sel?: string) => void;
+  onCancelInlineEdit: () => void;
+  onSaveInlineEdit: (originalText: string, wrongWord: string, rightWord: string) => void;
+  onEditRightWordChange: (val: string) => void;
+}) {
+  const badge = KIND_BADGE[kind];
+  return (
+    <div className="space-y-0.5">
+      <div
+        className={cn(
+          "group grid gap-x-2 py-0.5 border-b border-border/20 hover:bg-muted/30 rounded transition-colors w-full min-w-0 max-w-full",
+          translationsOn ? "grid-cols-2" : "grid-cols-1"
+        )}
+      >
+        <div className="flex items-start gap-1.5 min-w-0 overflow-hidden">
+          <span
+            className={cn(
+              "shrink-0 mt-px inline-flex items-center gap-0.5 text-[0.56em] font-semibold px-1 py-px rounded border uppercase tracking-wide",
+              badge.cls
+            )}
+          >
+            {kind === "me" ? (
+              <MicIcon className="w-2.5 h-2.5" />
+            ) : (
+              <HeadphonesIcon className="w-2.5 h-2.5" />
+            )}
+            {badge.label}
+          </span>
+
+          {isEditing ? (
+            <div className="flex-1 min-w-0 flex flex-col gap-1 py-0.5">
+              <div className="flex items-center gap-1">
+                <span
+                  className="shrink-0 h-6 px-1.5 inline-flex items-center text-[0.72em] font-medium text-muted-foreground bg-muted/50 border border-border rounded"
+                  title="Распознано (не редактируется)"
+                >
+                  {editWrongWord}
+                </span>
+                <span className="text-[0.7em] text-muted-foreground">→</span>
+                <input
+                  ref={editInputRef}
+                  type="text"
+                  value={editRightWord}
+                  onChange={(e) => onEditRightWordChange(e.target.value)}
+                  placeholder="Как правильно?"
+                  className="flex-1 min-w-0 h-6 px-1.5 py-0.5 text-[0.74em] font-medium bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
+                  onKeyDown={(evt) => {
+                    if (evt.key === "Escape") {
+                      evt.preventDefault();
+                      onCancelInlineEdit();
+                    } else if (evt.key === "Enter") {
+                      evt.preventDefault();
+                      if (editWrongWord && editRightWord) {
+                        void onSaveInlineEdit(text, editWrongWord, editRightWord);
+                      }
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (editWrongWord && editRightWord) {
+                      void onSaveInlineEdit(text, editWrongWord, editRightWord);
+                    }
+                  }}
+                  disabled={isSavingCorrection || !editRightWord.trim()}
+                  className="shrink-0 h-6 px-1.5 inline-flex items-center gap-1 rounded text-[0.68em] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  title="Сохранить в словарь"
+                >
+                  {isSavingCorrection ? (
+                    <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                  ) : (
+                    <CheckIcon className="w-2.5 h-2.5" />
+                  )}
+                  Сохранить
+                </button>
+                <button
+                  type="button"
+                  onClick={onCancelInlineEdit}
+                  className="shrink-0 h-6 px-1 inline-flex items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                  title="Отмена (Esc)"
+                >
+                  <XIcon className="w-3 h-3" />
+                </button>
+              </div>
+              <span className="text-[0.62em] text-muted-foreground">
+                Enter — сохранить в словарь ASR, Esc — отмена
+              </span>
+            </div>
+          ) : (
+            <p
+              onMouseUp={() => {
+                const sel = window.getSelection()?.toString().trim();
+                if (sel && sel.split(/\s+/).length <= 4) {
+                  onStartInlineEdit(id, text, sel);
+                }
+              }}
+              className={cn(
+                "flex-1 min-w-0 text-[0.76em] leading-snug break-words cursor-text",
+                kind === "me"
+                  ? "text-foreground/80"
+                  : "text-foreground/95 font-medium",
+                streaming && "italic text-muted-foreground"
+              )}
+              style={{
+                wordBreak: "break-word",
+                overflowWrap: "anywhere",
+                whiteSpace: "pre-wrap",
+              }}
+              title="Выделите слово для исправления"
+            >
+              {streaming ? text : <HoverTranslate text={text} />}
+            </p>
+          )}
+
+          {!isEditing && (
+            <button
+              type="button"
+              onClick={() => onStartInlineEdit(id, text)}
+              className={cn(
+                "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.62em] font-medium transition-colors border",
+                "text-muted-foreground hover:text-foreground border-border/40 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
+                "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              )}
+              aria-label="Исправить"
+              title="Исправить слово в словаре"
+            >
+              <PencilIcon className="w-2.5 h-2.5" />
+              Исправить
+            </button>
+          )}
+
+          {showAskAI && (
+            <button
+              type="button"
+              onClick={() => onAskAI?.(id, text, "me")}
+              disabled={isAskDisabled}
+              className={cn(
+                "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.62em] font-medium transition-colors border",
+                "text-violet-600 dark:text-violet-300 border-violet-500/30 hover:bg-violet-500/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-500",
+                "disabled:opacity-40 disabled:pointer-events-none"
+              )}
+              aria-label="Спросить ИИ"
+              title="Спросить ИИ"
+            >
+              <SparklesIcon className="w-2.5 h-2.5" />
+              Спросить ИИ
+            </button>
+          )}
+          {!isEditing && (
+            <button
+              onClick={() => onCopy(id, text)}
+              className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted-foreground hover:text-foreground mt-0.5"
+              title="Скопировать"
+            >
+              {copied ? (
+                <CheckIcon className="w-3 h-3 text-emerald-500" />
+              ) : (
+                <CopyIcon className="w-3 h-3" />
+              )}
+            </button>
+          )}
+        </div>
+        {translationsOn && (
+          <div className="min-w-0 flex items-start">
+            {translation === undefined ? (
+              <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
+            ) : (
+              <p
+                className="flex-1 min-w-0 text-[0.72em] leading-snug text-primary/75 break-words"
+                style={{
+                  wordBreak: "break-word",
+                  overflowWrap: "anywhere",
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {translation}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+      {showFillerBelow && (
+        <div
+          className="flex items-center gap-1.5 py-1 px-2 rounded border border-violet-500/20 bg-violet-500/5 text-violet-600 dark:text-violet-300 text-[0.72em]"
+          role="status"
+          aria-live="polite"
+        >
+          <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+          <span className="truncate">{activeFiller}</span>
+        </div>
+      )}
+    </div>
+  );
+});
+
 export const SubtitleFeed = ({
   conversation,
   liveSegments,
@@ -231,7 +718,6 @@ export const SubtitleFeed = ({
     [onCorrectWord]
   );
   const [editingRowId, setEditingRowId] = useState<string | null>(null);
-  const [editOriginalText, setEditOriginalText] = useState("");
   const [editWrongWord, setEditWrongWord] = useState("");
   const [editRightWord, setEditRightWord] = useState("");
   const [isSavingCorrection, setIsSavingCorrection] = useState(false);
@@ -250,7 +736,6 @@ export const SubtitleFeed = ({
       }
       if (!wrong) return; // no target word - do not open popover
       setEditingRowId(rowId);
-      setEditOriginalText(currentText);
       setEditWrongWord(wrong);
       setEditRightWord("");
     },
@@ -259,7 +744,6 @@ export const SubtitleFeed = ({
 
   const cancelInlineEdit = useCallback(() => {
     setEditingRowId(null);
-    setEditOriginalText("");
     setEditWrongWord("");
     setEditRightWord("");
     setIsSavingCorrection(false);
@@ -312,12 +796,6 @@ export const SubtitleFeed = ({
   const [heldCount, setHeldCount] = useState(0);
   const paused = feedPaused;
 
-  // Stable timestamp for the in-flight AI row so it never jumps position.
-  const liveAiTsRef = useRef<number>(0);
-  useEffect(() => {
-    if (isAIProcessing && !liveAiTsRef.current) liveAiTsRef.current = Date.now();
-    if (!isAIProcessing) liveAiTsRef.current = 0;
-  }, [isAIProcessing]);
 
   // Chronological feed, rendered INVERTED: newest row at the top so fresh
   // questions/answers are always visible without any scrolling.
@@ -342,13 +820,6 @@ export const SubtitleFeed = ({
     // over it (the final supersedes the preview).
     const finalizedKeys = new Set<string>();
     const push = (e: FeedEntry) => {
-      if (e.id === "live-ai-answer") {
-        // The in-flight AI row grows token by token: ONE fixed key so it
-        // updates in place instead of stacking prefix rows.
-        const prev = map.get("live-ai-answer");
-        if (!prev || prev.streaming) map.set("live-ai-answer", e);
-        return;
-      }
       const textKey = `${e.kind}:${normalizeText(e.text).slice(0, 40)}`;
       if (e.streaming) {
         // Streaming identity = stable per-utterance id (one id per channel's
@@ -380,15 +851,6 @@ export const SubtitleFeed = ({
         text: seg.text,
         ts: seg.timestamp,
         streaming: seg.partial,
-      });
-    }
-    if (isAIProcessing && lastAIResponse?.trim()) {
-      push({
-        id: "live-ai-answer",
-        kind: "ai",
-        text: lastAIResponse,
-        ts: liveAiTsRef.current || Date.now(),
-        streaming: true,
       });
     }
 
@@ -437,7 +899,7 @@ export const SubtitleFeed = ({
     return merged
       .sort((a, b) => b.ts - a.ts)
       .slice(0, 80);
-  }, [conversation.messages, liveSegments, lastAIResponse, isAIProcessing]);
+  }, [conversation.messages, liveSegments]);
 
   // What is actually on screen: live feed, or the frozen snapshot while paused.
   // Apply any in-place user overrides (e.g. from corrections).
@@ -469,14 +931,27 @@ export const SubtitleFeed = ({
     const el = scrollRef.current;
     if (!el || paused) return;
     const newest = visible[0];
-    const feedKey = newest ? `${newest.id}:${newest.text.length}` : "";
+    const feedKey = newest ? newest.id : "";
     if (feedKey === prevFeedKeyRef.current) return;
     prevFeedKeyRef.current = feedKey;
     // Only auto-scroll when the user is already reading the top (hasn't
     // scrolled away into history).
     if (el.scrollTop > 100) return;
-    el.scrollTo({ top: 0, behavior: "auto" });
+    el.scrollTo?.({ top: 0, behavior: "auto" });
   }, [visible, paused]);
+
+  // One-shot scroll to top when AI processing begins
+  const prevAiProcessingRef = useRef(false);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || paused) return;
+    if (isAIProcessing && !prevAiProcessingRef.current) {
+      if (el.scrollTop <= 100) {
+        el.scrollTo?.({ top: 0, behavior: "auto" });
+      }
+    }
+    prevAiProcessingRef.current = isAIProcessing;
+  }, [isAIProcessing, paused]);
 
   // Count rows that arrived while the feed is frozen.
   useEffect(() => {
@@ -555,7 +1030,7 @@ export const SubtitleFeed = ({
     };
   }, [entries, translationsOn]);
 
-  const handleCopy = async (id: string, text: string) => {
+  const handleCopy = useCallback(async (id: string, text: string) => {
     try {
       await navigator.clipboard.writeText(text);
       setCopiedId(id);
@@ -563,7 +1038,11 @@ export const SubtitleFeed = ({
     } catch {
       /* clipboard unavailable */
     }
-  };
+  }, []);
+
+  const toggleDislikeMenu = useCallback((id: string) => {
+    setDislikeMenuFor((v) => (v === id ? null : id));
+  }, []);
 
   // Self-evolution: nearest interviewer phrase is the question context.
   const questionContextFor = useCallback(
@@ -845,10 +1324,9 @@ export const SubtitleFeed = ({
           </div>
         )}
 
-        {/* Immediate filler/thinking row in AI answer block so the bridge phrase appears instantly for user to speak aloud */}
-        {isAIProcessing &&
-          !lastAIResponse?.trim() &&
-          !entries.some((e) => e.kind === "ai" && e.streaming) && (
+        {/* Immediate filler/thinking row or streaming AI answer (isolated cheap subtree) */}
+        {!paused && isAIProcessing && (
+          !lastAIResponse?.trim() ? (
             <div className="my-1.5 p-3 rounded-lg border border-violet-500/30 bg-violet-500/5 text-violet-600 dark:text-violet-300 shadow-sm transition-all animate-in fade-in">
               <div className="flex items-center gap-1.5 mb-1 text-[0.72em] font-medium text-violet-500/90 tracking-wide uppercase">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -858,191 +1336,48 @@ export const SubtitleFeed = ({
                 «{activeFiller || fallbackFiller}»
               </div>
             </div>
-          )}
+          ) : (
+            <StreamingAiRow
+              text={lastAIResponse}
+              copied={copiedId === "live-ai-answer"}
+              onCopy={() => handleCopy("live-ai-answer", lastAIResponse)}
+            />
+          )
+        )}
 
         {visible.map((e) => {
-          const badge = KIND_BADGE[e.kind];
           const key = e.text.trim();
           const rowId = e.id;
           const translation = translations[key];
           const isAI = e.kind === "ai";
-          const fb = feedbackGiven[e.id];
 
           if (isAI) {
-            /* Prominent AI answer card */
             return (
-              <div
+              <AiFeedRow
                 key={rowId}
-                className={cn(
-                  "relative rounded-lg border p-2 space-y-1 transition-shadow",
-                  "border-violet-500/40 bg-violet-500/5 shadow-[0_0_0_1px_rgba(139,92,246,0.08)]",
-                  e.streaming && "opacity-90"
-                )}
-              >
-                <div className="flex items-center justify-between text-[0.6em]">
-                  <span
-                    className={cn(
-                      "inline-flex items-center gap-1 font-semibold px-1 py-px rounded border uppercase tracking-wide",
-                      badge.cls
-                    )}
-                  >
-                    <SparklesIcon className="w-2.5 h-2.5" />
-                    {badge.label}
-                  </span>
-                  <div className="flex items-center gap-0.5">
-                    {fb ? (
-                      <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium px-1">
-                        <CheckIcon className="w-3 h-3" />
-                        {fb === "like" ? "паттерн усвоен" : "учтено"}
-                      </span>
-                    ) : (
-                      !e.streaming && (
-                        <div className="flex items-center gap-0.5 relative">
-                          {onDeepen && (
-                            <button
-                              className="p-0.5 rounded hover:bg-violet-500/10 text-muted-foreground hover:text-violet-500"
-                              title="Углубить эту тему: продолжить рассказ"
-                              onClick={handleDeepen}
-                            >
-                              <SparklesIcon className="w-3 h-3" />
-                            </button>
-                          )}
-                          <button
-                            className="p-0.5 rounded hover:bg-emerald-500/10 text-muted-foreground hover:text-emerald-500"
-                            title="Лайк: закрепить стиль ответа"
-                            onClick={() => giveFeedback(e.id, e.text, "like")}
-                          >
-                            <ThumbsUpIcon className="w-3 h-3" />
-                          </button>
-                          <button
-                            className="p-0.5 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-500"
-                            title="Дизлайк: указать, что улучшить"
-                            onClick={() =>
-                              setDislikeMenuFor((v) =>
-                                v === e.id ? null : e.id
-                              )
-                            }
-                          >
-                            <ThumbsDownIcon className="w-3 h-3" />
-                          </button>
-                          {dislikeMenuFor === e.id && (
-                            <div className="absolute right-0 top-5 z-40 w-72 rounded-lg border border-border/80 bg-background/95 p-1.5 shadow-lg text-[10px] space-y-0.5 animate-in fade-in duration-100 max-h-80 overflow-y-auto">
-                              <div className="px-2 py-1 font-semibold text-muted-foreground border-b border-border/40 uppercase tracking-wider text-[8px]">
-                                Что улучшить в ответах?
-                              </div>
-                              {DISLIKE_REASONS.map((reason) => (
-                                <button
-                                  key={reason}
-                                  onClick={() =>
-                                    giveFeedback(e.id, e.text, "dislike", reason)
-                                  }
-                                  className="w-full text-left px-2 py-1 rounded hover:bg-muted text-foreground/90 transition-colors"
-                                >
-                                  {reason}
-                                </button>
-                              ))}
-                              <div className="border-t border-border/40 pt-1 mt-1 flex items-center gap-1 px-1">
-                                <input
-                                  value={customReason}
-                                  onChange={(ev) =>
-                                    setCustomReason(ev.target.value)
-                                  }
-                                  onKeyDown={(ev) => {
-                                    if (ev.key === "Enter" && customReason.trim()) {
-                                      giveFeedback(
-                                        e.id,
-                                        e.text,
-                                        "dislike",
-                                        customReason.trim()
-                                      );
-                                    }
-                                  }}
-                                  placeholder="Своя причина…"
-                                  className="flex-1 min-w-0 bg-transparent border border-border/60 rounded px-1.5 py-0.5 text-[10px] outline-none focus:border-primary/60"
-                                />
-                                <button
-                                  onClick={() => {
-                                    if (customReason.trim()) {
-                                      giveFeedback(
-                                        e.id,
-                                        e.text,
-                                        "dislike",
-                                        customReason.trim()
-                                      );
-                                    }
-                                  }}
-                                  className="px-1 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20"
-                                  title="Отправить"
-                                >
-                                  ✓
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )
-                    )}
-                    <button
-                      onClick={() => handleCopy(rowId, e.text)}
-                      className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:opacity-100 text-muted-foreground hover:text-foreground"
-                      title="Скопировать ответ"
-                    >
-                      {copiedId === rowId ? (
-                        <CheckIcon className="w-3 h-3 text-emerald-500" />
-                      ) : (
-                        <CopyIcon className="w-3 h-3" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-
-                <div
-                  className={cn(
-                    "grid gap-x-2 w-full min-w-0 max-w-full",
-                    // A live row gets the full width: split in half, the growing
-                    // text wrapped into a tall one-word-wide column that was
-                    // painful to read while someone was still speaking.
-                    translationsOn && !e.streaming ? "grid-cols-2" : "grid-cols-1"
-                  )}
-                >
-                  <div
-                    className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
-                    style={{
-                      wordBreak: "break-word",
-                      overflowWrap: "anywhere",
-                      whiteSpace: "pre-wrap",
-                    }}
-                  >
-                    {formatSpokenAnswer(e.text).map((p, i) => (
-                      <p key={i} className="leading-relaxed">
-                        {e.streaming ? p : <HoverTranslate text={p} />}
-                      </p>
-                    ))}
-                  </div>
-                  {translationsOn && !e.streaming && (
-                    <div className="min-w-0 flex items-start border-l border-border/30 pl-2">
-                      {translation === undefined ? (
-                        <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/50 mt-1" />
-                      ) : (
-                        <p
-                          className="text-[0.8em] leading-relaxed text-violet-700/90 dark:text-violet-300/90"
-                          style={{
-                            wordBreak: "break-word",
-                            overflowWrap: "anywhere",
-                            whiteSpace: "pre-wrap",
-                          }}
-                        >
-                          {translation}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
+                id={rowId}
+                text={e.text}
+                streaming={e.streaming}
+                feedback={feedbackGiven[rowId]}
+                translation={translation}
+                translationsOn={translationsOn}
+                copied={copiedId === rowId}
+                isDislikeOpen={dislikeMenuFor === rowId}
+                customReason={customReason}
+                onCopy={handleCopy}
+                onDeepen={onDeepen ? handleDeepen : undefined}
+                onFeedback={giveFeedback}
+                onToggleDislike={toggleDislikeMenu}
+                onCustomReasonChange={setCustomReason}
+              />
             );
           }
 
           /* Compact speech rows (me / them) */
+          // `isAI` above already returned, so only speech kinds reach here; the
+          // cast is what states that to the type system (FeedKind includes "ai",
+          // which `SpeechFeedRow` deliberately does not accept).
+          const speechKind = e.kind as "me" | "them";
           const isPending = pendingUtteranceId === e.id;
           const isEditing = editingRowId === rowId;
           const showAskAI = e.kind === "me" && !e.streaming && Boolean(onAskAI) && !isEditing;
@@ -1050,195 +1385,31 @@ export const SubtitleFeed = ({
           const showFillerBelow = isPending && Boolean(activeFiller);
 
           return (
-            <div key={rowId} className="space-y-0.5">
-              <div
-                className={cn(
-                  "group grid gap-x-2 py-0.5 border-b border-border/20 hover:bg-muted/30 rounded transition-colors w-full min-w-0 max-w-full",
-                  translationsOn ? "grid-cols-2" : "grid-cols-1"
-                )}
-              >
-                <div className="flex items-start gap-1.5 min-w-0 overflow-hidden">
-                  <span
-                    className={cn(
-                      "shrink-0 mt-px inline-flex items-center gap-0.5 text-[0.56em] font-semibold px-1 py-px rounded border uppercase tracking-wide",
-                      badge.cls
-                    )}
-                  >
-                    {e.kind === "me" ? (
-                      <MicIcon className="w-2.5 h-2.5" />
-                    ) : (
-                      <HeadphonesIcon className="w-2.5 h-2.5" />
-                    )}
-                    {badge.label}
-                  </span>
-
-                  {isEditing ? (
-                    <div className="flex-1 min-w-0 flex flex-col gap-1 py-0.5">
-                      <div className="flex items-center gap-1">
-                        <span
-                          className="shrink-0 h-6 px-1.5 inline-flex items-center text-[0.72em] font-medium text-muted-foreground bg-muted/50 border border-border rounded"
-                          title="Распознано (не редактируется)"
-                        >
-                          {editWrongWord}
-                        </span>
-                        <span className="text-[0.7em] text-muted-foreground">→</span>
-                        <input
-                          ref={editInputRef}
-                          type="text"
-                          value={editRightWord}
-                          onChange={(e) => setEditRightWord(e.target.value)}
-                          placeholder="Как правильно?"
-                          className="flex-1 min-w-0 h-6 px-1.5 py-0.5 text-[0.74em] font-medium bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
-                          onKeyDown={(evt) => {
-                            if (evt.key === "Escape") {
-                              evt.preventDefault();
-                              cancelInlineEdit();
-                            } else if (evt.key === "Enter") {
-                              evt.preventDefault();
-                              if (editWrongWord && editRightWord) {
-                                void saveInlineEdit(editOriginalText, editWrongWord, editRightWord);
-                              }
-                            }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (editWrongWord && editRightWord) {
-                              void saveInlineEdit(editOriginalText, editWrongWord, editRightWord);
-                            }
-                          }}
-                          disabled={isSavingCorrection || !editRightWord.trim()}
-                          className="shrink-0 h-6 px-1.5 inline-flex items-center gap-1 rounded text-[0.68em] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                          title="Сохранить в словарь"
-                        >
-                          {isSavingCorrection ? (
-                            <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                          ) : (
-                            <CheckIcon className="w-2.5 h-2.5" />
-                          )}
-                          Сохранить
-                        </button>
-                        <button
-                          type="button"
-                          onClick={cancelInlineEdit}
-                          className="shrink-0 h-6 px-1 inline-flex items-center justify-center rounded text-muted-foreground hover:text-foreground"
-                          title="Отмена (Esc)"
-                        >
-                          <XIcon className="w-3 h-3" />
-                        </button>
-                      </div>
-                      <span className="text-[0.62em] text-muted-foreground">
-                        Enter — сохранить в словарь ASR, Esc — отмена
-                      </span>
-                    </div>
-                  ) : (
-                    <p
-                      onMouseUp={() => {
-                        // Selection-based correction: allowed during
-                        // streaming. Selected text (up to 4 words) pre-fills
-                        // the popover field; a plain click does nothing.
-                        const sel = window.getSelection()?.toString().trim();
-                        if (sel && sel.split(/\s+/).length <= 4) {
-                          startInlineEdit(rowId, e.text, sel);
-                        }
-                      }}
-                      className={cn(
-                        "flex-1 min-w-0 text-[0.76em] leading-snug break-words cursor-text",
-                        e.kind === "me"
-                          ? "text-foreground/80"
-                          : "text-foreground/95 font-medium",
-                        e.streaming && "italic text-muted-foreground"
-                      )}
-                      style={{
-                        wordBreak: "break-word",
-                        overflowWrap: "anywhere",
-                        whiteSpace: "pre-wrap",
-                      }}
-                      title="Выделите слово для исправления"
-                    >
-                      {e.streaming ? e.text : <HoverTranslate text={e.text} />}
-                    </p>
-                  )}
-
-                  {!isEditing && (
-                    <button
-                      type="button"
-                      onClick={() => startInlineEdit(rowId, e.text)}
-                      className={cn(
-                        "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.62em] font-medium transition-colors border",
-                        "text-muted-foreground hover:text-foreground border-border/40 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
-                        "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                      )}
-                      aria-label="Исправить"
-                      title="Исправить слово в словаре"
-                    >
-                      <PencilIcon className="w-2.5 h-2.5" />
-                      Исправить
-                    </button>
-                  )}
-
-                  {showAskAI && (
-                    <button
-                      type="button"
-                      onClick={() => onAskAI?.(e.id, e.text, "me")}
-                      disabled={isAskDisabled}
-                      className={cn(
-                        "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.62em] font-medium transition-colors border",
-                        "text-violet-600 dark:text-violet-300 border-violet-500/30 hover:bg-violet-500/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-500",
-                        "disabled:opacity-40 disabled:pointer-events-none"
-                      )}
-                      aria-label="Спросить ИИ"
-                      title="Спросить ИИ"
-                    >
-                      <SparklesIcon className="w-2.5 h-2.5" />
-                      Спросить ИИ
-                    </button>
-                  )}
-                  {!isEditing && (
-                    <button
-                      onClick={() => handleCopy(rowId, e.text)}
-                      className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted-foreground hover:text-foreground mt-0.5"
-                      title="Скопировать"
-                    >
-                      {copiedId === rowId ? (
-                        <CheckIcon className="w-3 h-3 text-emerald-500" />
-                      ) : (
-                        <CopyIcon className="w-3 h-3" />
-                      )}
-                    </button>
-                  )}
-                </div>
-                {translationsOn && (
-                  <div className="min-w-0 flex items-start">
-                    {translation === undefined ? (
-                      <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
-                    ) : (
-                      <p
-                        className="flex-1 min-w-0 text-[0.72em] leading-snug text-primary/75 break-words"
-                        style={{
-                          wordBreak: "break-word",
-                          overflowWrap: "anywhere",
-                          whiteSpace: "pre-wrap",
-                        }}
-                      >
-                        {translation}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-              {showFillerBelow && (
-                <div
-                  className="flex items-center gap-1.5 py-1 px-2 rounded border border-violet-500/20 bg-violet-500/5 text-violet-600 dark:text-violet-300 text-[0.72em]"
-                  role="status"
-                  aria-live="polite"
-                >
-                  <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-                  <span className="truncate">{activeFiller}</span>
-                </div>
-              )}
-            </div>
+            <SpeechFeedRow
+              key={rowId}
+              id={rowId}
+              kind={speechKind}
+              text={e.text}
+              streaming={e.streaming}
+              translation={translation}
+              translationsOn={translationsOn}
+              isEditing={isEditing}
+              editWrongWord={editWrongWord}
+              editRightWord={editRightWord}
+              editInputRef={editInputRef}
+              isSavingCorrection={isSavingCorrection}
+              showAskAI={showAskAI}
+              isAskDisabled={isAskDisabled}
+              showFillerBelow={showFillerBelow}
+              activeFiller={activeFiller}
+              copied={copiedId === rowId}
+              onCopy={handleCopy}
+              onAskAI={onAskAI}
+              onStartInlineEdit={startInlineEdit}
+              onCancelInlineEdit={cancelInlineEdit}
+              onSaveInlineEdit={saveInlineEdit}
+              onEditRightWordChange={setEditRightWord}
+            />
           );
         })}
       </div>
