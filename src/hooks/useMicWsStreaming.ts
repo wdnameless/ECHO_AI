@@ -137,6 +137,11 @@ export function useMicWsStreaming({
           base = "";
         }
         if (!base) {
+          // Release what was just taken. Ownership is a single slot shared with
+          // the interviewer channel, and this path held it while opening
+          // nothing — so the other side's stream was refused for as long as the
+          // retries kept failing, and its reconnect counter climbed instead.
+          releaseStream("me");
           scheduleMicWsReconnect();
           return;
         }
@@ -146,6 +151,7 @@ export function useMicWsStreaming({
           ws = new WebSocket(wsUrl);
         } catch (err) {
           console.warn("[mic-ws]", err);
+          releaseStream("me");
           scheduleMicWsReconnect();
           return;
         }

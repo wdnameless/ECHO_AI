@@ -87,6 +87,33 @@ describe("useThemWsStreaming session usage", () => {
     expect(MockWebSocket.instances).toHaveLength(1);
   });
 
+  it("recovers when a finalized socket never reports its close", async () => {
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useThemWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    await act(async () => { result.current.start(); });
+    const first = MockWebSocket.instances[0];
+    act(() => first.triggerOpen());
+
+    // The utterance ends and the finalize is sent, but the server's close never
+    // arrives (refused finalize, stale port). `stoppedByUsRef` is only cleared by
+    // that close, so the next utterance's frames were discarded outright and the
+    // interviewer's text appeared only from the end-of-speech batch pass —
+    // "стало лучше, но я не вижу стриминг текстовый когда собеседник говорит".
+    act(() => result.current.finalizeUtterance());
+    expect(first.readyState).toBe(MockWebSocket.OPEN);
+
+    await act(async () => { result.current.feedFrame(frame()); });
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    const second = MockWebSocket.instances[1];
+    act(() => second.triggerOpen());
+    // The frame that arrived while the socket was deaf is delivered, not lost.
+    expect(second.sent.some((d) => d instanceof ArrayBuffer)).toBe(true);
+  });
+
   it("reopens on the next audio frame after a finalize-driven close", async () => {
     const capturingRef = { current: true };
     const { result } = renderHook(() =>

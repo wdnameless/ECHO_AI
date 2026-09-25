@@ -216,30 +216,43 @@ export function useThemWsStreaming({
   /** Sends one PCM frame (f32 LE @16 kHz), dropping it if the socket is not up. */
   const feedFrame = useCallback((pcm: ArrayBuffer) => {
     const ws = wsRef.current;
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    // `stoppedByUsRef` marks a socket that already answered a finalize: the
+    // utterance it served is over, so this frame belongs to the next one.
+    const belongsToFinishedUtterance = stoppedByUsRef.current;
+
+    if (ws && ws.readyState === WebSocket.OPEN && !belongsToFinishedUtterance) {
       try {
         ws.send(pcm);
       } catch {
         // socket died between the check and the send
       }
-    } else if (capturingRef.current && !stoppedByUsRef.current) {
-      if (frameBufferRef.current.length >= 24) {
-        frameBufferRef.current.shift();
-      }
-      frameBufferRef.current.push(pcm);
-      // Speech is here, so the socket is worth opening now: a reopen requested
-      // by the previous finalize waited for exactly this moment instead of
-      // holding an engine session through the silence.
-      //
-      // Clearing the flag before the (async) connect is what keeps this to one
-      // attempt: every later frame in the same window finds it already false,
-      // and `connectRef` itself returns while a socket is connecting or open.
-      if (pendingReconnectRef.current) {
-        pendingReconnectRef.current = false;
-        void connectRef.current();
-      }
+      return;
     }
-  }, [capturingRef]);
+
+    if (!capturingRef.current) return;
+
+    // Audio is arriving, so any earlier utterance is over.
+    //
+    // A frame used to be dropped outright while this flag was set, and the flag
+    // is only cleared by the socket's own `onclose` — so a socket that answered
+    // a finalize and then never closed left this channel permanently deaf. Every
+    // partial was discarded and the interviewer's text appeared only once, from
+    // the end-of-speech batch pass: "стало лучше, но я не вижу стриминг текстовый
+    // когда собеседник говорит".
+    stoppedByUsRef.current = false;
+    pendingReconnectRef.current = false;
+
+    // `connectRef` refuses to open while `wsRef` still holds a socket
+    // (`readyState <= OPEN`), so a stale one has to go first. Closing clears the
+    // frame buffer, hence the order below: close, then queue this frame.
+    if (ws) close();
+
+    if (frameBufferRef.current.length >= 24) {
+      frameBufferRef.current.shift();
+    }
+    frameBufferRef.current.push(pcm);
+    void connectRef.current();
+  }, [capturingRef, close]);
 
   /**
    * Flushes the current utterance WITHOUT dropping the socket.

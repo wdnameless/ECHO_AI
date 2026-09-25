@@ -3,6 +3,8 @@ import { renderHook, act } from "@testing-library/react";
 import { useMicWsStreaming } from "../useMicWsStreaming";
 import { getAsrBaseUrl } from "@/lib/asr-discovery";
 import { getAsrLanguage } from "@/lib/asr-language";
+import * as asrGate from "@/lib/asr-gate";
+import { resetAsrGateForTests } from "@/lib/asr-gate";
 
 vi.mock("@/lib/asr-discovery", () => ({
   getAsrBaseUrl: vi.fn(),
@@ -73,12 +75,35 @@ describe("useMicWsStreaming", () => {
     global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     vi.mocked(getAsrBaseUrl).mockResolvedValue("http://127.0.0.1:8765");
     vi.mocked(getAsrLanguage).mockReturnValue("ru");
+    resetAsrGateForTests();
   });
 
   afterEach(() => {
     vi.useRealTimers();
     global.WebSocket = originalWebSocket;
     vi.clearAllMocks();
+  });
+
+  it("releases the model when it cannot resolve a base URL", async () => {
+    vi.mocked(getAsrBaseUrl).mockResolvedValue("");
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useMicWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    act(() => {
+      result.current.micWsWantRef.current = true;
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Ownership is one slot shared with the interviewer channel. Holding it
+    // while opening nothing is what starved the other side's stream, so the
+    // real assertion is that the other channel can take the model now.
+    expect(asrGate.tryAcquireStream("them")).toBe(true);
   });
 
   it("connects to ASR streaming endpoint and sends language config on open", async () => {
