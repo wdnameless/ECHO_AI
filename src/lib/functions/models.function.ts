@@ -163,7 +163,10 @@ export async function fetchProviderModels(
 
   let rawUrl = parsedCurl.url;
   for (const [k, v] of Object.entries(variables)) {
-    rawUrl = rawUrl.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), v);
+    // A function replacement: a string one expands `$`-tokens, and an API key or
+    // model name containing `$&` would be spliced into the URL as the matched
+    // placeholder, producing a request to the wrong path.
+    rawUrl = rawUrl.replace(new RegExp(`\\{\\{${k}\\}\\}`, "g"), () => v);
   }
 
   const modelsUrl = resolveModelsUrl(providerId, rawUrl);

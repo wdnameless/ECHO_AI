@@ -444,12 +444,25 @@ export const Providers = ({
               }
               const finalBody = JSON.stringify(bodyObj);
 
+              // Substitute the variables in the HEADERS as well.
+              //
+              // Only `bodyObj` went through `deepVariableReplacer`, so a header
+              // such as `Authorization: Bearer {{API_KEY}}` was sent literally —
+              // the provider answered 401 and "Test provider" failed for every
+              // config that keeps its key in a header, which is all of them. The
+              // real pipeline replaces the headers too
+              // (`ai-response.function.ts`: `deepVariableReplacer(curlJson.header, …)`).
+              const finalHeaders = deepVariableReplacer(
+                (json?.header ?? {}) as Record<string, unknown>,
+                vars
+              ) as Record<string, string>;
+
               const started = Date.now();
               const res = await tauriFetch(url, {
                 method: json?.method || "POST",
                 headers: {
                   "Content-Type": "application/json",
-                  ...(json?.header ?? {}),
+                  ...finalHeaders,
                 },
                 body: finalBody,
               });

@@ -82,9 +82,12 @@ export function processUserMessageTemplate(
   const escapeForJson = (value: string) =>
     JSON.stringify(value ?? "").slice(1, -1);
 
+  // A function replacement, like `deepVariableReplacer`: a string replacement
+  // expands `$`-tokens (`$&`, `` $` ``, `$'`, `$1`) in the user's own words, so
+  // "платим $100 и $& важно" was spliced back into the template as `{{TEXT}}`.
   const templateStr = JSON.stringify(template).replace(
     /\{\{TEXT\}\}/g,
-    escapeForJson(userMessage)
+    () => escapeForJson(userMessage)
   );
   const result = JSON.parse(templateStr);
 
