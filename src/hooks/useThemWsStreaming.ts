@@ -306,6 +306,16 @@ export function useThemWsStreaming({
     } catch {
       // connection already dying
     }
+    // The engine releases the model on `finalize`, not on the socket closing.
+    //
+    // Measured against the running sidecar: with a stream open, an HTTP
+    // transcription answers `500 transcription failed: model busy: a stream is
+    // active on this model`; send `finalize` and the same call returns 200 while
+    // the socket is still briefly open. Holding our slot until `onclose` therefore
+    // made the HTTP path fail for the whole close window — `withNoStream` only
+    // waits 300ms, while the socket stayed open past that, and the user saw the
+    // 500 verbatim.
+    releaseStream("them");
   }, []);
 
   const finalizeAndClose = useCallback(() => {

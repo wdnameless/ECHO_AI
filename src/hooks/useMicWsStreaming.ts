@@ -230,9 +230,15 @@ export function useMicWsStreaming({
         console.warn("[mic-ws]", err);
         // connection already dying - fall through to close
       }
-      // Give the server a moment to flush the 'final' event, then close.
-      // Kept in a ref: the user can start the next utterance inside these 400 ms,
-      // and an orphaned timer then closed the socket that had just been opened.
+      // Free the shared model slot NOW; only the socket close is deferred.
+      //
+      // The engine releases the model on `finalize` (measured: the same HTTP
+      // call that answers `500 model busy` while a stream is open returns 200
+      // right after a finalize, with the socket still briefly open). Holding the
+      // slot for the full 400ms flush window made the batch path fail:
+      // `withNoStream` waits at most 300ms, so the transcription ran while this
+      // side still owned the model and the user saw the 500 verbatim.
+      releaseStream("me");
       if (micWsFinalizeTimerRef.current !== null) {
         clearTimeout(micWsFinalizeTimerRef.current);
       }

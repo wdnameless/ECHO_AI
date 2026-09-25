@@ -392,7 +392,12 @@ fn guard_settings_visibility<R: Runtime>(app: AppHandle<R>, window: WebviewWindo
             tokio::time::sleep(interval).await;
 
             if SETTINGS_REQUESTED.load(Ordering::SeqCst) {
-                return;
+                // The user asked for the window: leave it alone for now, but keep
+                // the guard running. Returning here killed the task for the whole
+                // session, so once Settings had been opened a single time nothing
+                // hid it again — `SETTINGS_REQUESTED` is cleared when the window
+                // closes, and the guard has to still be there to act on that.
+                continue;
             }
             match app.get_webview_window("dashboard") {
                 Some(win) => {
@@ -440,6 +445,14 @@ fn setup_dashboard_close_handler<R: Runtime>(window: &WebviewWindow<R>) {
             if let Err(e) = window_clone.hide() {
                 eprintln!("Failed to hide dashboard window on close: {}", e);
             }
+            // The user is done with it, so the guard must protect again.
+            //
+            // This flag is a one-way latch unless it is cleared here: once the
+            // user had opened Settings even once, the guard returned for the rest
+            // of the session and every later unrequested reveal (WebView2
+            // attaching, activation, a session event) left the window on screen —
+            // the "settings open by themselves" report.
+            SETTINGS_REQUESTED.store(false, Ordering::SeqCst);
         }
         tauri::WindowEvent::Focused(true) if !SETTINGS_REQUESTED.load(Ordering::SeqCst) => {
             hide_at_os_level(&window_clone);

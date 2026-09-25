@@ -99,6 +99,8 @@ const App = () => {
       }}
     >
       <div
+        data-tauri-drag-region="true"
+        onMouseDown={handleDragMouseDown}
         className={`w-screen h-screen flex overflow-hidden justify-center items-start px-2 pt-1 ${
           isHidden ? "hidden pointer-events-none" : ""
         }`}

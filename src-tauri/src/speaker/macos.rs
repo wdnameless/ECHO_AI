@@ -174,9 +174,11 @@ impl SpeakerInput {
             Some(ref uid) if !uid.is_empty() && uid != "default" => {
                 match find_output_device_by_uid(uid) {
                     Some(device) => device,
-                    None => {
-                        ca::System::default_output_device().expect("No default output device found")
-                    }
+                    // Propagate, like the arm below. This was an `expect()`: a
+                    // saved device UID that no longer exists (unplugged interface,
+                    // renamed aggregate device) panicked the app instead of
+                    // returning the error the caller already handles.
+                    None => ca::System::default_output_device()?,
                 }
             }
             _ => ca::System::default_output_device()?,
