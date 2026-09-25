@@ -30,18 +30,18 @@ fn get_secure_storage_path(_app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
-struct SecureStorage {
+pub struct SecureStorage {
     #[serde(default)]
-    license_key: Option<String>,
+    pub license_key: Option<String>,
     #[serde(default)]
-    instance_id: Option<String>,
+    pub instance_id: Option<String>,
     #[serde(default)]
-    selected_pluely_model: Option<String>,
+    pub selected_pluely_model: Option<String>,
     /// Произвольные секреты (ключи провайдеров, поисковых сервисов).
     /// Flatten сохраняет обратную совместимость: файл, записанный прежней
     /// версией, читается без изменений, а новые ключи ложатся рядом.
     #[serde(default, flatten)]
-    extra: HashMap<String, String>,
+    pub extra: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -154,7 +154,12 @@ mod dpapi {
     }
 }
 
-fn load_secure_storage(storage_path: &std::path::Path) -> Result<SecureStorage, String> {
+/// Reads the secure-storage file, applying DPAPI on Windows.
+///
+/// Public because `api::get_stored_credentials` needs the same format handling:
+/// it must accept the legacy plaintext file AND the encrypted one, and its own
+/// local struct dropped the flattened provider keys.
+pub fn load_secure_storage(storage_path: &std::path::Path) -> Result<SecureStorage, String> {
     if !storage_path.exists() {
         return Ok(SecureStorage::default());
     }
@@ -474,5 +479,93 @@ mod tests {
         let legacy_plaintext = b"{\"license_key\":\"legacy-key\"}";
         let result = dpapi::unprotect(legacy_plaintext).expect("legacy unprotect failed");
         assert_eq!(result, legacy_plaintext);
+    }
+
+    /// The loader must survive both file formats AND keep the flattened secrets.
+    ///
+    /// `api::get_stored_credentials` used to do its own `fs::read_to_string` +
+    /// `serde_json::from_str` with a local struct that had no `extra` field. Two
+    /// consequences, both pinned here:
+    ///
+    ///  * `read_to_string` cannot read the encrypted file — DPAPI output is
+    ///    binary, so UTF-8 decoding fails and every licence call errors;
+    ///  * the flattened provider keys that share the file with `license_key`
+    ///    were parsed away (and a later save would have dropped them).
+    #[test]
+    fn test_load_secure_storage_reads_both_formats_and_keeps_extra() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-ai-secstore-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secure_storage.json");
+
+        // A file written before v1.2.13: plaintext, with a provider key beside
+        // the licence fields.
+        let legacy = br#"{"license_key":"lic-1","instance_id":"inst-1",
+            "selected_pluely_model":null,
+            "ai_provider:nullform-gateway:API_KEY":"sk-secret"}"#;
+        std::fs::write(&path, legacy).unwrap();
+        let loaded = load_secure_storage(&path).expect("legacy file must load");
+        assert_eq!(loaded.license_key.as_deref(), Some("lic-1"));
+        assert_eq!(loaded.instance_id.as_deref(), Some("inst-1"));
+        assert_eq!(
+            loaded.extra.get("ai_provider:nullform-gateway:API_KEY").map(String::as_str),
+            Some("sk-secret"),
+            "the flattened provider key must survive the read"
+        );
+
+        // The same content in the encrypted format written since v1.2.13.
+        let protected = dpapi::protect(legacy).expect("protect failed");
+        std::fs::write(&path, &protected).unwrap();
+        let reloaded = load_secure_storage(&path).expect("encrypted file must load");
+        assert_eq!(reloaded.license_key.as_deref(), Some("lic-1"));
+        assert_eq!(
+            reloaded.extra.get("ai_provider:nullform-gateway:API_KEY").map(String::as_str),
+            Some("sk-secret")
+        );
+
+        // A save must not drop the extra keys either.
+        save_secure_storage(&path, &reloaded).expect("save failed");
+        let after = load_secure_storage(&path).expect("reload failed");
+        assert_eq!(
+            after.extra.get("ai_provider:nullform-gateway:API_KEY").map(String::as_str),
+            Some("sk-secret")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pins the reason `get_stored_credentials` must not use `fs::read_to_string`.
+    ///
+    /// DPAPI output is binary, so the encrypted file is not valid UTF-8 — the old
+    /// reader failed on it and every licence call returned an error. If someone
+    /// reintroduces a string read, this test says why it is wrong.
+    #[test]
+    fn test_encrypted_file_is_not_valid_utf8() {
+        let plaintext = br#"{"license_key":"lic-1","instance_id":"inst-1"}"#;
+        let protected = dpapi::protect(plaintext).expect("protect failed");
+
+        // The loader handles it...
+        let dir = std::env::temp_dir().join(format!(
+            "echo-ai-secstore-utf8-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secure_storage.json");
+        std::fs::write(&path, &protected).unwrap();
+        assert!(
+            load_secure_storage(&path).is_ok(),
+            "the loader must read the encrypted file"
+        );
+
+        // ...while a plain string read cannot.
+        #[cfg(target_os = "windows")]
+        assert!(
+            std::fs::read_to_string(&path).is_err(),
+            "DPAPI output must not decode as UTF-8 — this is why the reader cannot use read_to_string"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

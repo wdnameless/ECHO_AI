@@ -54,13 +54,6 @@ fn get_secure_storage_path(_app: &AppHandle) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct SecureStorage {
-    license_key: Option<String>,
-    instance_id: Option<String>,
-    selected_pluely_model: Option<String>,
-}
-
 pub async fn get_stored_credentials(
     app: &AppHandle,
 ) -> Result<(String, String, Option<Model>), String> {
@@ -70,11 +63,16 @@ pub async fn get_stored_credentials(
         return Err("No license found. Please activate your license first.".to_string());
     }
 
-    let content = fs::read_to_string(&storage_path)
-        .map_err(|e| format!("Failed to read storage file: {}", e))?;
-
-    let storage: SecureStorage = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse storage file: {}", e))?;
+    // Read through the canonical loader in `activate`, which applies Windows
+    // DPAPI and understands both formats (the legacy plaintext file and the
+    // `DPAPI\x01`-prefixed one written since v1.2.13). This module used to do
+    // `fs::read_to_string` + its own `serde_json::from_str`:
+    //
+    //  * `read_to_string` rejects the encrypted file — DPAPI output is binary, so
+    //    UTF-8 decoding fails, and every licence call errored out;
+    //  * the local struct has no `#[serde(flatten)] extra` field, so the provider
+    //    API keys that live beside `license_key` were dropped.
+    let storage = crate::activate::load_secure_storage(&storage_path)?;
 
     let license_key = storage
         .license_key
