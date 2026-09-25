@@ -3,6 +3,30 @@
  * (e.g., "угу", "мгм", "ага", "yeah", "uh-huh") and actual questions or substantive queries.
  */
 
+/**
+ * Letters whose repetition is a filler sound rather than a word.
+ *
+ * The recogniser writes a lengthened hesitation out ("ммм", "эээ", "ааа",
+ * "hmmm"), which an exact-match list cannot cover. Only letters that are filler
+ * sounds on their own are listed, so repeated real words ("ии", "вв") — rare, but
+ * not filler — stay untouched.
+ */
+const STRETCHED_FILLER_LETTERS = new Set(["м", "э", "а", "о", "х", "h", "m", "e", "u"]);
+
+/**
+ * A filler sound written out: one letter repeated ("ммм", "аааа"), or a
+ * consonant hum closed by a nasal ("hmm", "hmmm", "hnn"). The recogniser emits
+ * both forms, and neither is a word in either language.
+ */
+const STRETCHED_WORD = /^(.)\1{1,5}$/u;
+const HUMMED_WORD = /^[hmn]{2,6}$/u;
+
+/** True for a sound that is only a hesitation, never a word. */
+function isStretchedFiller(word: string): boolean {
+  if (STRETCHED_WORD.test(word)) return STRETCHED_FILLER_LETTERS.has(word[0]);
+  return HUMMED_WORD.test(word);
+}
+
 const FILLER_PATTERNS = new Set([
   // Russian fillers and backchannels
   "угу",
@@ -186,10 +210,21 @@ export function isFillerOrBackchannel(text: string): boolean {
   // Direct match in filler set
   if (FILLER_PATTERNS.has(normalized)) return true;
 
+  // A stretched filler sound: the recogniser writes the lengthened vowel out
+  // ("ммм", "эээ", "аааа", "hmmm"), so the exact-match list above misses the
+  // most common backchannel there is — every one of them was reaching the AI as
+  // a question. Collapse a run of one letter and match it against the one-letter
+  // fillers ("м", "э", "а", "h"), keeping real short words like "и" or "в"
+  // untouched because those are not filler sounds.
+  const collapsed = normalized.replace(/\s+/g, "");
+  if (isStretchedFiller(collapsed)) return true;
+
   // Check if utterance is just 1 or 2 repeated filler words (e.g. "угу угу", "да да")
   const words = normalized.split(" ").filter(Boolean);
   if (words.length <= 3) {
-    const allFillers = words.every((w) => FILLER_PATTERNS.has(w) || w.length <= 2);
+    const allFillers = words.every(
+      (w) => FILLER_PATTERNS.has(w) || w.length <= 2 || isStretchedFiller(w)
+    );
     if (allFillers) return true;
   }
 
