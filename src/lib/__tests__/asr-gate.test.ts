@@ -59,15 +59,16 @@ describe("ASR stream gate", () => {
     expect(work).toHaveBeenCalledTimes(1);
   });
 
-  it("gives up waiting after the timeout instead of hanging", async () => {
+  it("fails fast with an error after the timeout if the stream is still active", async () => {
     vi.useFakeTimers();
     expect(tryAcquireStream("them")).toBe(true);
     const work = vi.fn().mockResolvedValue("late");
 
     const pending = withNoStream(work, 1000);
+    const assertion = expect(pending).rejects.toThrow(/busy|stream active/i);
     await vi.advanceTimersByTimeAsync(1000);
 
-    await expect(pending).resolves.toBe("late");
-    expect(work).toHaveBeenCalledTimes(1);
+    await assertion;
+    expect(work).not.toHaveBeenCalled();
   });
 });

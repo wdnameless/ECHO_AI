@@ -83,7 +83,6 @@ export async function transcribeWithFallback({
   if (
     result &&
     !isSttErrorMessage(result) &&
-    !/HTTP \d+/.test(result) &&
     !result.startsWith("Network error")
   ) {
     return result;
