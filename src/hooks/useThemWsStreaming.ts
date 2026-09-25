@@ -230,6 +230,10 @@ export function useThemWsStreaming({
       // Speech is here, so the socket is worth opening now: a reopen requested
       // by the previous finalize waited for exactly this moment instead of
       // holding an engine session through the silence.
+      //
+      // Clearing the flag before the (async) connect is what keeps this to one
+      // attempt: every later frame in the same window finds it already false,
+      // and `connectRef` itself returns while a socket is connecting or open.
       if (pendingReconnectRef.current) {
         pendingReconnectRef.current = false;
         void connectRef.current();

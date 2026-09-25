@@ -361,7 +361,61 @@ describe("useMicWsStreaming", () => {
     expect(MockWebSocket.instances).toHaveLength(1);
   });
 
-  it("reconnects after the fixed 400ms delay on connection drop", async () => {
+  it("resets the backoff once a reconnect is served", async () => {
+    const onPartialTranscript = vi.fn();
+    const capturingRef = { current: true };
+
+    const { result } = renderHook(() =>
+      useMicWsStreaming({
+        capturingRef,
+        onPartialTranscript,
+      })
+    );
+
+    act(() => {
+      result.current.micWsWantRef.current = true;
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Two refusals grow the delay to 800ms.
+    for (let i = 0; i < 2; i++) {
+      const ws = MockWebSocket.instances[i];
+      act(() => {
+        ws.close();
+      });
+      act(() => {
+        vi.advanceTimersByTime(400 * 2 ** i + 1);
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+
+    // A served socket resets it, so the next drop retries at the base delay
+    // again instead of staying pinned to the ceiling for the rest of the call.
+    act(() => {
+      MockWebSocket.instances[2].triggerOpen();
+    });
+    act(() => {
+      MockWebSocket.instances[2].close();
+    });
+    act(() => {
+      vi.advanceTimersByTime(399);
+    });
+    const countBefore = MockWebSocket.instances.length;
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(MockWebSocket.instances.length).toBe(countBefore + 1);
+  });
+
+  it("backs off while reconnects keep being refused", async () => {
     const onPartialTranscript = vi.fn();
     const capturingRef = { current: true };
 
@@ -384,12 +438,11 @@ describe("useMicWsStreaming", () => {
     act(() => {
       ws1.close();
     });
-    // Before the reconnect delay elapses: no new socket yet.
+    // First retry still fires at the base 400ms delay.
     act(() => {
       vi.advanceTimersByTime(399);
     });
     expect(MockWebSocket.instances).toHaveLength(1);
-    // Fixed 400ms reconnect delay (fast recovery to minimize lost audio).
     act(() => {
       vi.advanceTimersByTime(1);
     });
@@ -398,13 +451,15 @@ describe("useMicWsStreaming", () => {
     });
     expect(MockWebSocket.instances).toHaveLength(2);
 
-    // Second drop reconnects with the SAME fixed delay (no backoff growth).
+    // The second attempt is refused too, so the delay doubles to 800ms: this
+    // channel is waiting for the other side to release the single model, and
+    // retrying every 400ms only produced refused sockets.
     const ws2 = MockWebSocket.instances[1];
     act(() => {
       ws2.close();
     });
     act(() => {
-      vi.advanceTimersByTime(399);
+      vi.advanceTimersByTime(799);
     });
     expect(MockWebSocket.instances).toHaveLength(2);
     act(() => {

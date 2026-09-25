@@ -15,6 +15,8 @@ import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
 import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
 const MIC_WS_RECONNECT_MS = 400;
+/** Cap on the retry delay once several attempts in a row have been refused. */
+const MIC_WS_RECONNECT_MAX_MS = 3000;
 
 /**
  * Maximum number of PCM frames buffered while WebSocket is connecting or waiting
@@ -37,6 +39,8 @@ export function useMicWsStreaming({
   const micWsWantRef = useRef(false);
   const micFrameBufferRef = useRef<ArrayBuffer[]>([]);
   const micWsReconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+  /** Consecutive refused reconnects, for the backoff. Reset when the socket opens. */
+  const micWsReconnectAttemptsRef = useRef(0);
   const micWsStoppedByUsRef = useRef(false);
   const micWsConnectRef = useRef<() => void>(() => {});
   /** True once the open stream answered this utterance with any text. */
@@ -96,11 +100,20 @@ export function useMicWsStreaming({
     }
     if (!micWsWantRef.current || !capturingRef.current) return;
     if (micWsReconnectTimerRef.current) return;
+    // Back off while the retries fail.
+    //
+    // The model serves one stream at a time, so this channel's reconnect is
+    // refused for as long as the other side holds it. A flat 400ms retry spent
+    // that wait hammering the engine — eight refusals inside one utterance, each
+    // counted in the UI and each re-paying the base-URL lookup. The delay grows
+    // to a second and resets as soon as the socket opens.
+    const delay = Math.min(MIC_WS_RECONNECT_MS * 2 ** micWsReconnectAttemptsRef.current, MIC_WS_RECONNECT_MAX_MS);
+    micWsReconnectAttemptsRef.current += 1;
     micWsReconnectTimerRef.current = setTimeout(() => {
       micWsReconnectTimerRef.current = null;
       recordWsReconnect();
       micWsConnectRef.current();
-    }, MIC_WS_RECONNECT_MS);
+    }, delay);
   }, [capturingRef]);
   const micWsConnect = useCallback(() => {
     micWsConnectRef.current = () => {
@@ -146,6 +159,9 @@ export function useMicWsStreaming({
           );
           micWsRef.current = ws;
           micWsStoppedByUsRef.current = false;
+          // A served connection means the retries were worth it; start the next
+          // backoff from the base delay again.
+          micWsReconnectAttemptsRef.current = 0;
 
           // Flush buffered frames queued while socket was connecting or model was locked
           while (micFrameBufferRef.current.length > 0) {
