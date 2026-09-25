@@ -137,6 +137,28 @@ describe("useThemWsStreaming session usage", () => {
     expect(second.sent.some((d) => d instanceof ArrayBuffer)).toBe(true);
   });
 
+  it("does not churn the socket while the handshake is still running", async () => {
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useThemWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    await act(async () => { result.current.start(); });
+    const first = MockWebSocket.instances[0];
+    // Deliberately NOT opened: the socket sits in CONNECTING while audio pours
+    // in at ~33 frames a second. Closing it to "replace" it here would restart
+    // the handshake on every frame, so the socket would never finish opening and
+    // no live text would ever appear.
+    await act(async () => {
+      for (let i = 0; i < 20; i++) result.current.feedFrame(frame());
+    });
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    act(() => first.triggerOpen());
+    // Everything heard during the handshake is delivered, not discarded.
+    expect(first.sent.filter((d) => d instanceof ArrayBuffer).length).toBeGreaterThan(0);
+  });
+
   it("keeps one socket through a whole utterance", async () => {
     const capturingRef = { current: true };
     const { result } = renderHook(() =>

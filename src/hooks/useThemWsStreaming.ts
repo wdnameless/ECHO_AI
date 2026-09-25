@@ -231,27 +231,45 @@ export function useThemWsStreaming({
 
     if (!capturingRef.current) return;
 
-    // Audio is arriving, so any earlier utterance is over.
-    //
-    // A frame used to be dropped outright while this flag was set, and the flag
-    // is only cleared by the socket's own `onclose` — so a socket that answered
-    // a finalize and then never closed left this channel permanently deaf. Every
-    // partial was discarded and the interviewer's text appeared only once, from
-    // the end-of-speech batch pass: "стало лучше, но я не вижу стриминг текстовый
-    // когда собеседник говорит".
-    stoppedByUsRef.current = false;
-    pendingReconnectRef.current = false;
+    if (belongsToFinishedUtterance) {
+      // Audio is arriving, so the previous utterance is over.
+      //
+      // A frame used to be dropped outright while this flag was set, and the
+      // flag is only cleared by the socket's own `onclose` — so a socket that
+      // answered a finalize and then never closed left this channel permanently
+      // deaf. Every partial was discarded and the interviewer's text appeared
+      // only once, from the end-of-speech batch pass: "стало лучше, но я не вижу
+      // стриминг текстовый когда собеседник говорит".
+      stoppedByUsRef.current = false;
+      pendingReconnectRef.current = false;
+      // `connectRef` refuses to open while `wsRef` holds a socket
+      // (`readyState <= OPEN`), so the finished one has to go first. Closing
+      // clears the frame buffer, hence the order below: close, queue the frame,
+      // then open the socket that will flush it.
+      if (ws) close();
 
-    // `connectRef` refuses to open while `wsRef` still holds a socket
-    // (`readyState <= OPEN`), so a stale one has to go first. Closing clears the
-    // frame buffer, hence the order below: close, then queue this frame.
-    if (ws) close();
+      if (frameBufferRef.current.length >= 24) {
+        frameBufferRef.current.shift();
+      }
+      frameBufferRef.current.push(pcm);
+      void connectRef.current();
+      return;
+    }
+
+    if (ws && ws.readyState === WebSocket.CONNECTING) {
+      // The handshake is still running and will flush what is buffered on open.
+      // Closing it here would restart the handshake on every frame — frames
+      // arrive ~33 times a second, so the socket would never finish opening and
+      // no live text would ever appear.
+    } else if (!ws) {
+      pendingReconnectRef.current = false;
+      void connectRef.current();
+    }
 
     if (frameBufferRef.current.length >= 24) {
       frameBufferRef.current.shift();
     }
     frameBufferRef.current.push(pcm);
-    void connectRef.current();
   }, [capturingRef, close]);
 
   /**
