@@ -215,6 +215,9 @@ export async function fetchProviderModels(
     method: "GET",
     headers: trust.headers,
     signal: options?.signal,
+    // R13: the trust decision covers this host only — see the note in
+    // ai-response.function.ts. A redirect must not carry credentials onward.
+    maxRedirections: trust.maxRedirections,
   });
 
   if (!response.ok) {

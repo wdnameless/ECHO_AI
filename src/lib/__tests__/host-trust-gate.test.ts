@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   resolveOutboundHeaders,
+  resolveRedirect,
   listSecretHeaders,
   setHostTrustPrompt,
   resetHostTrustPromptForTests,
@@ -26,6 +27,17 @@ describe("host-trust-gate", () => {
           "Content-Type": "application/json",
         })
       ).toEqual(["Authorization", "x-api-key"]);
+    });
+    it("detects arbitrary provider headers containing key/token/secret/auth", () => {
+      expect(
+        listSecretHeaders({
+          "my-api-key": "secret",
+          "provider_token": "tok",
+          "client-secret": "sec",
+          "x-custom-auth": "auth",
+          "Accept": "application/json",
+        })
+      ).toEqual(["my-api-key", "provider_token", "client-secret", "x-custom-auth"]);
     });
 
     it("never returns header values", () => {
@@ -113,6 +125,47 @@ describe("host-trust-gate", () => {
 
       expect(seenHost).toBe("evil.example");
       expect(seenSecrets).toEqual(["Authorization"]);
+    });
+
+    it("always returns maxRedirections: 0 so client cannot follow redirects blindly", async () => {
+      setHostTrustPrompt(async () => "trust" as HostTrustDecision);
+      const result = await resolveOutboundHeaders(untrusted, headers);
+      expect(result.maxRedirections).toBe(0);
+    });
+
+    describe("resolveRedirect (R13)", () => {
+      it("allows same-host redirect without re-prompting", async () => {
+        const res = await resolveRedirect(
+          "https://api.openai.com/v1/chat",
+          "https://api.openai.com/v2/chat",
+          headers
+        );
+        expect(res.allowed).toBe(true);
+        expect(res.maxRedirections).toBe(0);
+        expect(res.headers).toEqual(headers);
+      });
+
+      it("denies cross-host redirect when untrusted and no prompt registered (fail-closed)", async () => {
+        const res = await resolveRedirect(
+          "https://api.openai.com/v1/chat",
+          "https://evil.example/redirect-landing",
+          headers
+        );
+        expect(res.allowed).toBe(false);
+        expect(res.headers).toEqual({});
+      });
+
+      it("strips secrets on cross-host redirect when user selects without-secrets", async () => {
+        setHostTrustPrompt(async () => "without-secrets" as HostTrustDecision);
+        const res = await resolveRedirect(
+          "https://api.openai.com/v1/chat",
+          "https://evil.example/redirect-landing",
+          headers
+        );
+        expect(res.allowed).toBe(true);
+        expect(res.headers).not.toHaveProperty("Authorization");
+        expect(res.headers["Content-Type"]).toBe("application/json");
+      });
     });
   });
 });
