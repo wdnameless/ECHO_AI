@@ -167,13 +167,20 @@ export async function getAllConversations(): Promise<ChatConversation[]> {
       return [];
     }
 
-    // Get all messages for these conversations in one query
+    // Get all messages for these conversations in chunks of at most 100 IDs (MESSAGES_PER_QUERY)
+    // to prevent exceeding SQLite parameter limits when history grows.
     const conversationIds = conversations.map((c) => c.id);
-    const placeholders = conversationIds.map(() => "?").join(",");
-    const allMessages = await db.select<DbMessage[]>(
-      `SELECT * FROM messages WHERE conversation_id IN (${placeholders}) ORDER BY conversation_id, timestamp ASC`,
-      conversationIds
-    );
+    const MESSAGES_PER_QUERY = 100;
+    const allMessages: DbMessage[] = [];
+    for (let i = 0; i < conversationIds.length; i += MESSAGES_PER_QUERY) {
+      const chunk = conversationIds.slice(i, i + MESSAGES_PER_QUERY);
+      const placeholders = chunk.map(() => "?").join(",");
+      const chunkMessages = await db.select<DbMessage[]>(
+        `SELECT * FROM messages WHERE conversation_id IN (${placeholders}) ORDER BY conversation_id, timestamp ASC`,
+        chunk
+      );
+      allMessages.push(...chunkMessages);
+    }
 
     // Group messages by conversation_id
     const messagesByConversation = new Map<string, DbMessage[]>();
@@ -317,13 +324,34 @@ export async function updateConversation(
       await db.execute("DELETE FROM messages WHERE conversation_id = ?", [
         conversation.id,
       ]);
+    } else if (keptIds.length <= 900) {
+      // Single atomic DELETE with all kept IDs. Chunking `NOT IN` was a critical bug (P0-1):
+      // chunk 1 deleted everything outside chunk 1, then chunk 2 deleted chunk 1, wiping all rows.
+      // For <= 900 messages, all IDs safely fit within SQLite's 999 parameter limit.
+      const placeholders = keptIds.map(() => "?").join(", ");
+      await db.execute(
+        `DELETE FROM messages WHERE conversation_id = ? AND id NOT IN (${placeholders})`,
+        [conversation.id, ...keptIds]
+      );
     } else {
-      const BATCH_SIZE = 100;
-      for (let i = 0; i < keptIds.length; i += BATCH_SIZE) {
-        const chunk = keptIds.slice(i, i + BATCH_SIZE);
+      // For large conversations exceeding SQLite's parameter limit (>900 messages), delete the
+      // complement by selecting existing message IDs and batch-deleting only the IDs to remove with `IN (...)`.
+      // Batching `id IN (...)` is safe because deleting a subset never deletes retained IDs.
+      const existingRows = await db.select<{ id: string }[]>(
+        "SELECT id FROM messages WHERE conversation_id = ?",
+        [conversation.id]
+      );
+      const keptSet = new Set(keptIds);
+      const idsToDelete = existingRows
+        .map((r) => r.id)
+        .filter((id) => !keptSet.has(id));
+
+      const DELETE_BATCH_SIZE = 100;
+      for (let i = 0; i < idsToDelete.length; i += DELETE_BATCH_SIZE) {
+        const chunk = idsToDelete.slice(i, i + DELETE_BATCH_SIZE);
         const placeholders = chunk.map(() => "?").join(", ");
         await db.execute(
-          `DELETE FROM messages WHERE conversation_id = ? AND id NOT IN (${placeholders})`,
+          `DELETE FROM messages WHERE conversation_id = ? AND id IN (${placeholders})`,
           [conversation.id, ...chunk]
         );
       }
@@ -552,12 +580,12 @@ export async function migrateLocalStorageToSQLite(): Promise<{
       }
     }
 
-    // Mark migration as complete even if some failed
-    safeLocalStorage.setItem(migrationKey, "true");
-
-    // Clear localStorage chat history after migration attempt
-    safeLocalStorage.removeItem(LEGACY_CHAT_HISTORY_KEY);
-
+    // Only remove the legacy key and mark complete when every conversation migrated successfully (R26).
+    // If any failed, preserve the source so data is not lost from both places.
+    if (errorCount === 0) {
+      safeLocalStorage.setItem(migrationKey, "true");
+      safeLocalStorage.removeItem(LEGACY_CHAT_HISTORY_KEY);
+    }
     const message =
       errorCount > 0
         ? `Migrated ${migratedCount}/${conversations.length} conversations (${errorCount} failed)`
@@ -566,7 +594,7 @@ export async function migrateLocalStorageToSQLite(): Promise<{
     console.log(message);
 
     return {
-      success: migratedCount > 0 || errorCount === 0,
+      success: errorCount === 0,
       migratedCount,
       error:
         errorCount > 0
@@ -575,8 +603,6 @@ export async function migrateLocalStorageToSQLite(): Promise<{
     };
   } catch (error) {
     console.error("Migration failed:", error);
-    // Mark as attempted to prevent infinite retry loops
-    safeLocalStorage.setItem(migrationKey, "true");
     return {
       success: false,
       migratedCount: 0,
