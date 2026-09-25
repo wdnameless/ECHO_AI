@@ -11,6 +11,7 @@ import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import curl2Json from "@bany/curl-to-json";
 import { shouldUsePluelyAPI } from "./pluely.api";
+import { raceStall } from "./stall-guard";
 import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
 import { getSecret, secretKey } from "@/lib/storage/secret-store";
 import { getResponseSettings, RESPONSE_LENGTHS, LANGUAGES } from "@/lib";
@@ -708,37 +709,35 @@ async function* streamAIResponse(params: {
      */
     const STALL_TIMEOUT_MS = 25_000;
     let receivedAnyContent = false;
-    let stallTimer: ReturnType<typeof setTimeout> | null = null;
-    let stalled = false;
 
-    const armStallGuard = () => {
-      if (stallTimer !== null) clearTimeout(stallTimer);
-      stallTimer = setTimeout(() => {
-        stalled = true;
-        // Unblock the pending read: cancelling the reader makes it resolve.
-        void reader.cancel().catch(() => {});
-      }, STALL_TIMEOUT_MS);
-    };
-    armStallGuard();
-    const clearStallGuard = () => {
-      if (stallTimer !== null) {
-        clearTimeout(stallTimer);
-        stallTimer = null;
-      }
-    };
+    /**
+     * The read races the stall budget; see `raceStall` for why cancelling the
+     * reader cannot unblock it over the Tauri transport.
+     */
+    const raceStallRead = <T,>(promise: Promise<T>) => raceStall(promise, STALL_TIMEOUT_MS);
 
     while (true) {
       // Check if aborted
       if (signal?.aborted) {
-        clearStallGuard();
         reader.cancel();
         return;
       }
 
       let readResult;
       try {
-        readResult = await reader.read();
+        readResult = await raceStallRead(reader.read());
       } catch (readError) {
+        if (readError instanceof Error && readError.message === "STALL") {
+          try {
+            await reader.cancel();
+          } catch {
+            // the transport may already be gone
+          }
+          if (!receivedAnyContent) {
+            yield `Провайдер не ответил за ${Math.round(STALL_TIMEOUT_MS / 1000)}с. Проверьте подключение или смените модель в настройках.`;
+          }
+          return;
+        }
         // Check if aborted
         if (
           signal?.aborted ||
@@ -751,23 +750,13 @@ async function* streamAIResponse(params: {
         }`;
         return;
       }
-      // A cancelled reader resolves with `done`; report the stall as a failure
-      // rather than letting the caller treat it as a completed answer.
-      if (stalled && !receivedAnyContent) {
-        clearStallGuard();
-        yield `Провайдер не ответил за ${Math.round(STALL_TIMEOUT_MS / 1000)}с. Проверьте подключение или смените модель в настройках.`;
-        return;
-      }
       const { done, value } = readResult;
       if (done) {
-        clearStallGuard();
         break;
       }
-      armStallGuard();
 
       // Check if aborted before processing
       if (signal?.aborted) {
-        clearStallGuard();
         reader.cancel();
         return;
       }
@@ -796,7 +785,6 @@ async function* streamAIResponse(params: {
         }
       }
     }
-    clearStallGuard();
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error";
     throw new Error(msg);
