@@ -502,8 +502,6 @@ export function useSystemAudio() {
     ]
   );
   const answerLastInterviewerUtterance = useCallback(async () => {
-    if (isAIProcessing) return;
-
     // Last finalized interviewer line, without copying and reversing the feed
     // array on every ask.
     const segments = liveSegmentsRef.current || [];
@@ -527,6 +525,14 @@ export function useSystemAudio() {
       (freshest || assembled?.text || lastThemSegment?.text || theirLastTranscription || "").trim();
     if (!textToAnswer || !textToAnswer.trim()) return;
     autoAskManagerRef.current?.cancel();
+
+    // Busy: park the text instead of returning. This is the other entry point of
+    // the "Ответить" control, and an early return here meant a press during an
+    // answer was silently ignored even though `askAIForTranscript` now holds.
+    if (isAIProcessing) {
+      autoAskManagerRef.current?.hold(textToAnswer);
+      return;
+    }
 
     if (lastThemSegment?.id) {
       await askAIForTranscript(lastThemSegment.id, textToAnswer, "them");
