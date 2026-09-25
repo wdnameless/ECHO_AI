@@ -197,6 +197,19 @@ export class AutoAskManager {
   }
 
   /**
+   * Holds a question the user asked while an answer was streaming.
+   *
+   * Separate from `dispatchNow` because the caller has already established that
+   * the text is worth asking (the manual "Ответить" path checks its own
+   * eligibility); this only parks it.
+   */
+  public hold(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    this.heldText = trimmed;
+  }
+
+  /**
    * Called when a finalized segment or partial speech event arrives.
    * Debounces the dispatch until silence duration completes.
    */

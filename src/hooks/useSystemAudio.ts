@@ -470,7 +470,16 @@ export function useSystemAudio() {
         return;
       }
 
-      if (isAIProcessing || activeAskUtteranceIdRef.current === utteranceId) {
+      if (activeAskUtteranceIdRef.current === utteranceId) {
+        // The same utterance is already being answered: a true duplicate.
+        return;
+      }
+
+      if (isAIProcessing) {
+        // The user asked while an answer was streaming. Hold it rather than
+        // discarding it: the button looks like it did nothing at all, and the
+        // question the user picked is lost. It goes out when the answer ends.
+        autoAskManagerRef.current?.hold(text);
         return;
       }
 
