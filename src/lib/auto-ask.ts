@@ -136,6 +136,22 @@ export class AutoAskManager {
   }
 
   /**
+   * Dispatches a question whose silence has already been confirmed.
+   *
+   * The assembler emits only after the speaker has been silent for its own gap
+   * (450ms in fast mode), so re-holding the text for the manager's window added
+   * a second full wait to every answer: measured 450ms + 1000ms = 1450ms before
+   * the request even started. The eligibility checks still apply — a reaction
+   * or a filler is dropped here exactly as it was in the timer path.
+   */
+  public dispatchNow(text: string): void {
+    this.cancelTimer();
+    this.pendingText = null;
+    if (!this.isEligible(text)) return;
+    void this.options.onDispatch(text);
+  }
+
+  /**
    * Called when a finalized segment or partial speech event arrives.
    * Debounces the dispatch until silence duration completes.
    */

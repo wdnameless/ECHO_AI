@@ -697,9 +697,40 @@ async function* streamAIResponse(params: {
     const decoder = new TextDecoder();
     let buffer = "";
 
+    /**
+     * How long the stream may stay silent before the request is abandoned.
+     *
+     * A gateway can accept the request and then stop sending without closing the
+     * socket; the read below waits forever and the UI shows a spinner with no
+     * error (observed: 34s with no answer and no failure). The budget is
+     * generous because a slow model legitimately pauses between tokens, and it
+     * restarts on every chunk, so it only fires on a genuine stall.
+     */
+    const STALL_TIMEOUT_MS = 25_000;
+    let receivedAnyContent = false;
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    let stalled = false;
+
+    const armStallGuard = () => {
+      if (stallTimer !== null) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        stalled = true;
+        // Unblock the pending read: cancelling the reader makes it resolve.
+        void reader.cancel().catch(() => {});
+      }, STALL_TIMEOUT_MS);
+    };
+    armStallGuard();
+    const clearStallGuard = () => {
+      if (stallTimer !== null) {
+        clearTimeout(stallTimer);
+        stallTimer = null;
+      }
+    };
+
     while (true) {
       // Check if aborted
       if (signal?.aborted) {
+        clearStallGuard();
         reader.cancel();
         return;
       }
@@ -720,11 +751,23 @@ async function* streamAIResponse(params: {
         }`;
         return;
       }
+      // A cancelled reader resolves with `done`; report the stall as a failure
+      // rather than letting the caller treat it as a completed answer.
+      if (stalled && !receivedAnyContent) {
+        clearStallGuard();
+        yield `Провайдер не ответил за ${Math.round(STALL_TIMEOUT_MS / 1000)}с. Проверьте подключение или смените модель в настройках.`;
+        return;
+      }
       const { done, value } = readResult;
-      if (done) break;
+      if (done) {
+        clearStallGuard();
+        break;
+      }
+      armStallGuard();
 
       // Check if aborted before processing
       if (signal?.aborted) {
+        clearStallGuard();
         reader.cancel();
         return;
       }
@@ -744,6 +787,7 @@ async function* streamAIResponse(params: {
               provider?.responseContentPath || ""
             );
             if (delta) {
+              receivedAnyContent = true;
               yield delta;
             }
           } catch {
@@ -752,6 +796,7 @@ async function* streamAIResponse(params: {
         }
       }
     }
+    clearStallGuard();
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error";
     throw new Error(msg);

@@ -136,11 +136,13 @@ export function useSystemAudio() {
         await handleTriggerAIRef.current(question, source);
         return;
       }
-      // The manual button answers this question; in auto mode the manager holds
-      // it for the silence window and drops it when the mode changes or speech
-      // resumes.
+      // The assembler reaches this point only after its own silence gap has
+      // elapsed (450ms in fast mode), so the question is already "finished by
+      // pause". Holding it for the manager's window again added a second full
+      // wait — measured 1450ms before the request started — for no extra
+      // certainty. The manager still filters reactions and fillers here.
       lastInterviewerQuestionRef.current = { text: question, at: Date.now() };
-      autoAskManagerRef.current?.onFinalizedTranscript(question);
+      autoAskManagerRef.current?.dispatchNow(question);
     },
     []
   );
