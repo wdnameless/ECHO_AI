@@ -854,6 +854,11 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
      * path is fed by the webview VAD and must ask before connecting.
      */
     canStream: useCallback(() => streamingModelRef.current, []),
+    /** True while the interviewer's own stream is open and owns the model. */
+    themIsStreaming: useCallback(
+      () => themWsRef.current.isStreaming(),
+      []
+    ),
     /** Hands the single-model stream to the microphone channel. */
     yieldThemToMic: useCallback(() => {
       micStreamOwnsModelRef.current = true;

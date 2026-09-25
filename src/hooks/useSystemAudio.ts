@@ -227,6 +227,7 @@ export function useSystemAudio() {
     micStreamRef,
     transcribeSegment,
     canStream,
+    themIsStreaming,
     yieldThemToMic,
     releaseMicModelOwnership,
     startContinuousRecording,
@@ -349,9 +350,28 @@ export function useSystemAudio() {
       // segment (onMicSegment) is the only path, and opening a socket would
       // collect "not implemented by this model" for every answer.
       if (!canStream()) return;
+      // Reset the per-utterance flags first. `micBeginUtterance` clears
+      // `micProducedTextRef`, which `onMicSegment` consults to skip a
+      // transcription the stream already produced — leaving it set from a
+      // previous answer would silently drop this one.
+      micBeginUtterance();
+      // The microphone must NOT take the model from an interviewer stream that
+      // is live right now.
+      //
+      // In meeting mode the microphone is started with the capture, so the
+      // interviewer's own voice — coming from the speakers — is picked up by the
+      // mic VAD. `yieldThemToMic` then closed the interviewer's socket in the
+      // middle of its utterance, so its live text was lost and the only
+      // transcription left was the end-of-speech batch pass: measured `⚡ 6312ms`
+      // for a single 2.6s clip, with `🔄 10 rec` from the churn. The candidate's
+      // answer still gets transcribed — the webview VAD's own segment goes to
+      // `onMicSegment` — so yielding here costs nothing and keeps the
+      // interviewer's stream alive.
+      if (themIsStreaming()) {
+        return;
+      }
       // Single-model sidecar: the microphone takes the stream from the
       // interviewer channel for the duration of this answer.
-      micBeginUtterance();
       yieldThemToMic();
       micWsWantRef.current = true;
       micWsConnect();
