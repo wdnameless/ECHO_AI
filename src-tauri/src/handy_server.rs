@@ -15,11 +15,27 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
 
 #[cfg(target_os = "windows")]
-struct SendHandle(#[allow(dead_code)] HANDLE);
+struct SendHandle(HANDLE);
+
 #[cfg(target_os = "windows")]
 unsafe impl Send for SendHandle {}
 #[cfg(target_os = "windows")]
 unsafe impl Sync for SendHandle {}
+
+/// Closes the job-object handle when it is replaced or the process exits.
+///
+/// Every other handle in this module is released explicitly (`CloseHandle` on
+/// each failure path and on `child_handle`), but this one was only ever stored:
+/// `*guard = Some(…)` overwrote the previous job handle without closing it, so a
+/// sidecar restart leaked one kernel handle per restart.
+#[cfg(target_os = "windows")]
+impl Drop for SendHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            let _ = unsafe { CloseHandle(self.0) };
+        }
+    }
+}
 
 #[cfg(target_os = "windows")]
 static JOB_OBJECT: Mutex<Option<SendHandle>> = Mutex::new(None);

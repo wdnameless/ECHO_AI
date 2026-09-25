@@ -263,6 +263,21 @@ impl SpeakerStream {
 
                     if h_event.wait_for_event(3000).is_err() {
                         error!("Echo AI timeout error, stopping capture");
+                        // Mark the stream finished AND wake the consumer.
+                        //
+                        // A bare `break` left `shutdown` false and never woke the
+                        // waker, and `poll_next` returns `Pending` whenever the
+                        // queue is empty — so the task looping on
+                        // `stream.next().await` (commands.rs) waited forever on a
+                        // thread that had already exited. Three seconds of silence
+                        // on a loopback device (which pumps no buffers while
+                        // nothing plays) was enough to trigger it.
+                        let mut state = waker_state.lock().unwrap();
+                        state.shutdown = true;
+                        if let Some(waker) = state.waker.take() {
+                            drop(state);
+                            waker.wake();
+                        }
                         break;
                     }
 
