@@ -260,3 +260,56 @@ describe("a repeated interviewer line is shown once", () => {
     expect(text).toContain("Совершенно другой вопрос про архитектуру");
   });
 });
+
+/**
+ * The report showed rows stuck on the translation spinner with nothing arriving.
+ *
+ * A failed translation removed the row's key from `translatedKeysRef` and left
+ * `translations[key]` unset, so the effect re-selected the same row the next time
+ * it ran — and it runs on every change to `entries`, which is every new word on
+ * screen. With a provider out of quota (MyMemory answers 429 to everything) that
+ * was an unthrottled retry storm, and the row never resolved.
+ */
+describe("a row whose translation fails", () => {
+  it("is not retried on every render", async () => {
+    const { fastTranslate } = await import("@/lib/fast-translator");
+    const mock = fastTranslate as unknown as ReturnType<typeof vi.fn>;
+    mock.mockReset();
+    mock.mockResolvedValue(""); // provider down or out of quota
+
+    const conversation: ChatConversation = {
+      id: "conv-tr",
+      title: "",
+      createdAt: 0,
+      updatedAt: 0,
+      messages: [
+        { id: "m1", role: "user", content: "Пошли, бля!", timestamp: 1000, source: "them" },
+      ],
+    };
+    const props = {
+      conversation,
+      liveSegments: [],
+      lastAIResponse: "",
+      isAIProcessing: false,
+      theirLastTranscription: "",
+      micSpeaking: false,
+      handyOnline: true,
+      handyModel: "parakeet",
+      feedPaused: false,
+      onTogglePause: vi.fn(),
+    };
+
+    const { rerender } = render(<SubtitleFeed {...props} />);
+    await new Promise((r) => setTimeout(r, 40));
+    const afterFirst = mock.mock.calls.length;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    // Rows change constantly while speech arrives; each change used to retry.
+    for (let i = 0; i < 5; i++) {
+      rerender(<SubtitleFeed {...props} conversation={{ ...conversation, updatedAt: i }} />);
+      await new Promise((r) => setTimeout(r, 20));
+    }
+
+    expect(mock.mock.calls.length).toBe(afterFirst);
+  });
+});

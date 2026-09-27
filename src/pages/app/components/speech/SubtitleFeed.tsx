@@ -686,7 +686,25 @@ export const SubtitleFeed = ({
     });
   }, []);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const translatedKeysRef = useRef<Set<string>>(new Set());
+  /**
+ * How long a failed translation waits before being retried.
+ *
+ * Long enough that a provider outage does not turn into a retry storm (the
+ * effect re-runs on every new word), short enough that a transient failure is
+ * recovered within a session.
+ */
+const TRANSLATE_RETRY_BACKOFF_MS = 5 * 60_000;
+
+const translatedKeysRef = useRef<Set<string>>(new Set());
+  /**
+   * Rows whose translation failed, with the time of the failure.
+   *
+   * Without this a failed row is re-selected by the next run of the translation
+   * effect — which fires on every change to `entries`, i.e. on every new word on
+   * screen — so a provider that is down or out of quota is hit in a tight loop
+   * and the row keeps its spinner indefinitely.
+   */
+  const translateFailedAtRef = useRef<Map<string, number>>(new Map());
   const [translationsOn, setTranslationsOn] = useState(true);
   const appVersion = useAppVersion();
   // Recognition timings live in a store, not in props: every measured pass
@@ -1030,18 +1048,27 @@ export const SubtitleFeed = ({
     if (!translationsOn) return;
     let cancelled = false;
 
+    const now = Date.now();
     const pending = entries
       .filter((e) => {
         const key = e.text.trim();
         // Переводим все строки, включая собственную речь: при ответе на
         // английском нужно видеть, как звучит фраза, а не прочерк. Строки
         // в процессе распознавания пропускаем — текст ещё меняется.
-        return (
-          key &&
-          !e.streaming &&
-          !translatedKeysRef.current.has(key) &&
-          translations[key] === undefined
-        );
+        if (!key || e.streaming) return false;
+        // A row that failed is not retried until its backoff expires.
+        //
+        // The old code deleted the key from `translatedKeysRef` on failure and
+        // left `translations[key]` unset, so the effect re-selected the same row
+        // on its next run — and the effect runs on every `entries` change, which
+        // is every new word on screen. With MyMemory out of quota (it answers
+        // 429 to every request) that was an unthrottled retry storm against two
+        // providers, and the row showed a spinner forever instead of a result.
+        const failedAt = translateFailedAtRef.current.get(key);
+        if (failedAt !== undefined && now - failedAt < TRANSLATE_RETRY_BACKOFF_MS) {
+          return false;
+        }
+        return !translatedKeysRef.current.has(key) && translations[key] === undefined;
       })
       // Вопросы собеседника и ответы ИИ — в первую очередь.
       .sort((a, b) => b.ts - a.ts);
@@ -1055,17 +1082,21 @@ export const SubtitleFeed = ({
         const key = e.text.trim();
         translatedKeysRef.current.add(key);
         const translated = await fastTranslate(key);
-        if (cancelled) return;
+        if (cancelled) {
+          translatedKeysRef.current.delete(key);
+          return;
+        }
         // Never store the source as its own translation.
         //
         // A provider failure returns the input unchanged, and storing it made
-        // the row read «русский переводит русский» while `translatedKeysRef`
-        // marked it done — the row was never retried, so the mistake was
-        // permanent. Leaving the key unmarked lets a later pass try again.
+        // the row read «русский переводит русский». Now the failure is
+        // remembered with a timestamp instead of being retried on every render.
         if (!translated || translated.trim() === key) {
           translatedKeysRef.current.delete(key);
+          translateFailedAtRef.current.set(key, Date.now());
           continue;
         }
+        translateFailedAtRef.current.delete(key);
         setTranslations((p) => ({ ...p, [key]: translated }));
       }
     };
