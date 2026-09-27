@@ -201,6 +201,19 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
    * italics and the AI never answered because the question was never emitted.
    */
   const flushUtteranceRef = useRef<() => void>(() => {});
+  /**
+   * Latest `runLiveBatch`, so the "speech-frame" listener can call it without
+   * capturing a first-render copy.
+   *
+   * The listener effect depends only on `[capturingRef]` (a stable ref), so it
+   * subscribes ONCE and its closure keeps whatever `runLiveBatch` existed on the
+   * first render — with the `vadConfig`, `selectedSttProvider` and
+   * `appendLiveSegment` of that moment, forever. Measured consequence: the VAD /
+   * Noise Gate sliders in the settings panel could not affect live transcription
+   * until a full remount. Assigning through a ref keeps the callback current
+   * without resubscribing the Tauri listener on every settings change.
+   */
+  const runLiveBatchRef = useRef<() => Promise<void>>(async () => {});
   /** Fires if the end-of-speech final never reaches us. */
   const flushSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
@@ -569,6 +582,8 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       liveBusyRef.current = false;
     }
   }, [appendLiveSegment, selectedSttProvider, vadConfig]);
+  // Keep the listener's view of the batch current (see the ref's comment).
+  runLiveBatchRef.current = runLiveBatch;
 
   useEffect(() => {
     let frameUnlisten: (() => void) | undefined;
@@ -594,7 +609,9 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       if (liveTimerRef.current === null) {
         liveTimerRef.current = setTimeout(() => {
           liveTimerRef.current = null;
-          void runLiveBatch();
+          // Through the ref, not the closure: this listener subscribes once and
+          // would otherwise run the first render's callback forever.
+          void runLiveBatchRef.current();
         }, LIVE_BATCH_MS);
       }
     })

@@ -536,12 +536,32 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       STORAGE_KEYS.SELECTED_STT_PROVIDER
     );
     if (savedSelectedStt) {
+      // The stored value wins. The `catch` below is the ONLY path that falls
+      // back to the local engine.
+      //
+      // This block used to write `defaultStt` unconditionally right after the
+      // `setSelectedSttProvider(JSON.parse(savedSelectedStt))` call — there was
+      // no `else`, so every launch parsed the saved provider and then
+      // immediately overwrote it (in state AND in localStorage) with the local
+      // engine. A user who chose Groq or OpenAI STT lost the choice on the next
+      // start, and the branch could never take effect at all.
       try {
         setSelectedSttProvider(JSON.parse(savedSelectedStt));
       } catch {
-        console.warn("Failed to parse selected STT provider");
+        console.warn("Failed to parse selected STT provider, using the local engine");
+        const defaultStt = {
+          provider: "handy-local-whisper",
+          variables: {},
+        };
+        setSelectedSttProvider(defaultStt);
+        safeLocalStorage.setItem(
+          STORAGE_KEYS.SELECTED_STT_PROVIDER,
+          JSON.stringify(defaultStt)
+        );
       }
-      // Default to the local speech engine
+    } else {
+      // Nothing stored yet (first launch): persist the default so the choice is
+      // stable from the very first run.
       const defaultStt = {
         provider: "handy-local-whisper",
         variables: {},
