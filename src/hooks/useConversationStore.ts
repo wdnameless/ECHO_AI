@@ -289,20 +289,25 @@ export function useConversationStore() {
         // single sentence arrived as a column of fragments.
         if (idx !== -1) {
           const last = prev[idx];
-          // A final pass can arrive well after the last live partial: the VAD
-          // closes the utterance on silence, and on a long monologue the gap
-          // between the last partial and the authoritative transcription
-          // exceeded the 8s window. The final then became its own row while
-          // *containing* the previous row's text, so the feed visibly repeated
-          // itself (seen on a ~600-character interviewer turn).
+          // A row that is still a live draft absorbs everything: its own
+          // partials and the final that supersedes them.
           //
-          // Time alone is the wrong test here: the two readings of one
-          // utterance overlap in CONTENT, which is exactly what distinguishes
-          // them from two separate utterances. Either signal is enough.
+          // A FINALISED row absorbs only another FINAL. It must never absorb a
+          // partial: the recogniser opens the next utterance with a partial, and
+          // letting it into the closed row re-marked that row `partial`, after
+          // which the `last.partial` arm below kept it open forever — the draft
+          // then grew across the whole conversation and repeated every committed
+          // line inside itself (the reported «текст повторяется»). Measured: one
+          // row reached 748 characters spanning 16 separate messages.
+          //
+          // A final still continues a closed row when it arrives soon after it
+          // or re-reads the same audio, which is how a fragment split off by the
+          // recogniser stays on one line.
           const continuesSameUtterance =
             last.partial ||
-            timestamp - last.timestamp <= LIVE_SEGMENT_CONTINUATION_MS ||
-            readingsOverlap(last.text, processedText);
+            (!partial &&
+              (timestamp - last.timestamp <= LIVE_SEGMENT_CONTINUATION_MS ||
+                readingsOverlap(last.text, processedText)));
           if (continuesSameUtterance) {
             const updated = [...prev];
             updated[idx] = {

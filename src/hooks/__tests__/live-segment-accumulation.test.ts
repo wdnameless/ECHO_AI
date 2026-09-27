@@ -143,6 +143,32 @@ describe("a late final does not repeat the previous line", () => {
       vi.useRealTimers();
     }
   });
+
+  it("does not let a finalised line absorb the next utterance's partial", () => {
+    const { result } = renderHook(() => useConversationStore());
+
+    // Utterance A ends: the recogniser commits its final.
+    act(() => result.current.appendLiveSegment("them", "Yeah. Book! Вы кто?", true));
+    act(() =>
+      result.current.appendLiveSegment(
+        "them",
+        "Yeah. Book! Вы кто? Oh. Začím přišli, jo. А я хочу записаться к вам на занятия."
+      )
+    );
+    expect(result.current.liveSegments).toHaveLength(1);
+    expect(result.current.liveSegments[0].partial).toBe(false);
+    const firstLine = result.current.liveSegments[0].text;
+
+    // Utterance B opens with a partial. It used to land in A's row and re-mark
+    // it `partial`, after which that flag kept the row open forever and the
+    // draft grew across the whole conversation, repeating every committed line.
+    act(() => result.current.appendLiveSegment("them", "Какая школа?", true));
+
+    expect(result.current.liveSegments).toHaveLength(2);
+    expect(result.current.liveSegments[0].text).toBe(firstLine);
+    expect(result.current.liveSegments[1].text).toBe("Какая школа?");
+    expect(result.current.liveSegments[1].partial).toBe(true);
+  });
 });
 
 describe("a re-worded result is not appended twice", () => {
