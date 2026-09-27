@@ -1018,6 +1018,16 @@ export const SubtitleFeed = ({
         translatedKeysRef.current.add(key);
         const translated = await fastTranslate(key);
         if (cancelled) return;
+        // Never store the source as its own translation.
+        //
+        // A provider failure returns the input unchanged, and storing it made
+        // the row read «русский переводит русский» while `translatedKeysRef`
+        // marked it done — the row was never retried, so the mistake was
+        // permanent. Leaving the key unmarked lets a later pass try again.
+        if (!translated || translated.trim() === key) {
+          translatedKeysRef.current.delete(key);
+          continue;
+        }
         setTranslations((p) => ({ ...p, [key]: translated }));
       }
     };

@@ -81,6 +81,51 @@ function overlapRatio(a: string[], b: string[]): number {
 }
 
 /**
+ * Whether two readings describe the same audio.
+ *
+ * The recogniser returns one utterance more than once — a live partial, then the
+ * authoritative pass — and the second reading usually contains the first. The
+ * time window cannot be the only test: on a long monologue the final arrives
+ * more than eight seconds after the last partial (the VAD waits for silence
+ * first), and the row was then appended again with its predecessor's text
+ * inside it, which read as the feed repeating itself.
+ *
+ * Deliberately stricter than {@link mergeUtteranceText}: calling two different
+ * utterances "the same" makes the merge keep only the longer text, so a false
+ * positive here loses on-screen words. A re-read of a growing buffer is almost
+ * total overlap (measured 1.0 on the reported case), so 0.8 separates it from
+ * speech that merely repeats a few words.
+ */
+const SAME_READING_OVERLAP = 0.8;
+
+/** Words a row must hold before its content may decide continuation. */
+const SAME_READING_MIN_WORDS = 3;
+
+function readingsOverlap(previous: string, incoming: string): boolean {
+  const a = previous.trim().toLowerCase();
+  const b = incoming.trim().toLowerCase();
+  if (!a || !b) return false;
+
+  const aWords = words(previous);
+  // A one-word row is an interjection ("Да.", "Угу."), and two of them a long
+  // pause apart are two events, not two readings of one. This must be checked
+  // before containment: "Да." is inside "Да.", and treating that as one
+  // utterance would silently swallow the second.
+  if (aWords.length < SAME_READING_MIN_WORDS) return false;
+
+  // One reading is literally inside the other: the same utterance, grown or
+  // truncated. Strong enough to decide on its own — and merging is the safe
+  // answer here, because NOT merging is what repeats the words on screen.
+  if (b.includes(a) || a.includes(b)) return true;
+
+  const bWords = words(incoming);
+  return (
+    overlapRatio(aWords, bWords) >= SAME_READING_OVERLAP ||
+    overlapRatio(bWords, aWords) >= SAME_READING_OVERLAP
+  );
+}
+
+/**
  * Decides what a line becomes when another result arrives for it.
  *
  * Three cases, and only the last one is a continuation:
@@ -244,9 +289,25 @@ export function useConversationStore() {
         // single sentence arrived as a column of fragments.
         if (idx !== -1) {
           const last = prev[idx];
+          // A row that is still a live draft absorbs everything: its own
+          // partials and the final that supersedes them.
+          //
+          // A FINALISED row absorbs only another FINAL. It must never absorb a
+          // partial: the recogniser opens the next utterance with a partial, and
+          // letting it into the closed row re-marked that row `partial`, after
+          // which the `last.partial` arm below kept it open forever — the draft
+          // then grew across the whole conversation and repeated every committed
+          // line inside itself (the reported «текст повторяется»). Measured: one
+          // row reached 748 characters spanning 16 separate messages.
+          //
+          // A final still continues a closed row when it arrives soon after it
+          // or re-reads the same audio, which is how a fragment split off by the
+          // recogniser stays on one line.
           const continuesSameUtterance =
             last.partial ||
-            timestamp - last.timestamp <= LIVE_SEGMENT_CONTINUATION_MS;
+            (!partial &&
+              (timestamp - last.timestamp <= LIVE_SEGMENT_CONTINUATION_MS ||
+                readingsOverlap(last.text, processedText)));
           if (continuesSameUtterance) {
             const updated = [...prev];
             updated[idx] = {

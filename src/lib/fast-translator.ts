@@ -13,9 +13,14 @@ const translationCache = new Map<string, { text: string; ts: number }>();
 const CACHE_TTL_MS = 60_000; // 1 minute
 const MAX_CACHE_SIZE = 200;
 
-// Last request timestamp per source text (debounce identical bursts)
-const lastSent = new Map<string, number>();
-const MIN_INTERVAL_MS = 250;
+/**
+ * Requests in flight, keyed like the cache.
+ *
+ * Concurrent callers for the same text share one request. This replaced a
+ * debounce that returned the source text to the second caller inside a 250ms
+ * window — see the note in `fastTranslate` for what that did on screen.
+ */
+const inFlightTranslations = new Map<string, Promise<string>>();
 
 export async function fastTranslate(
   text: string,
@@ -38,54 +43,62 @@ export async function fastTranslate(
     return cached.text;
   }
 
-  // Debounce identical rapid bursts (live transcript updates)
-  const now = Date.now();
-  const prevSent = lastSent.get(cacheKey) || 0;
-  if (now - prevSent < MIN_INTERVAL_MS) {
-    const existing = translationCache.get(cacheKey);
-    if (existing) return existing.text;
-    return trimmed;
-  }
-  lastSent.set(cacheKey, now);
-  if (lastSent.size > MAX_CACHE_SIZE) {
-    lastSent.clear();
-  }
-
-  let url = "";
-  try {
-    const gtxUrl = new URL("https://translate.googleapis.com/translate_a/single");
-    gtxUrl.searchParams.set("client", "gtx");
-    gtxUrl.searchParams.set("sl", "auto");
-    gtxUrl.searchParams.set("tl", tl);
-    gtxUrl.searchParams.set("dt", "t");
-    gtxUrl.searchParams.set("q", trimmed);
-    url = gtxUrl.toString();
-  } catch {
-    return trimmed;
-  }
-
-  // 1) Google GTX — основной провайдер.
+  // Share one request between concurrent callers instead of skipping the second.
   //
-  // MyMemory was primary until it ran out of its free daily quota and started
-  // answering 429 with a warning *sentence* in the body. That body passed the
-  // echo guard (it is not equal to the input) and would have been rendered as
-  // the translation; the caller now also rejects provider error text outright.
-  // GTX has no such quota and answered in ~90ms measured from this machine.
-  const gtx = await gtxTranslate(url, trimmed);
-  if (gtx) {
-    cacheSet(cacheKey, gtx);
-    return gtx;
-  }
+  // This replaces a 250ms debounce that returned the SOURCE text when a repeat
+  // arrived inside the window: `SubtitleFeed` runs two workers over the same
+  // queue and re-runs the effect on every entry change, so the same key was
+  // requested twice, the second call got the original Russian back, and the feed
+  // stored that as the "translation" and marked the row done — it was never
+  // retried. On screen every row read «русский переводит русский».
+  const inFlight = inFlightTranslations.get(cacheKey);
+  if (inFlight) return inFlight;
 
-  // 2) MyMemory — резерв, когда GTX недоступен.
-  const memory = await myMemoryTranslate(trimmed, tl);
-  if (memory) {
-    cacheSet(cacheKey, memory);
-    return memory;
-  }
+  const request = (async (): Promise<string> => {
+    let url = "";
+    try {
+      const gtxUrl = new URL("https://translate.googleapis.com/translate_a/single");
+      gtxUrl.searchParams.set("client", "gtx");
+      gtxUrl.searchParams.set("sl", "auto");
+      gtxUrl.searchParams.set("tl", tl);
+      gtxUrl.searchParams.set("dt", "t");
+      gtxUrl.searchParams.set("q", trimmed);
+      url = gtxUrl.toString();
+    } catch {
+      return trimmed;
+    }
 
-  return trimmed;
+    // 1) Google GTX — основной провайдер.
+    //
+    // MyMemory was primary until it ran out of its free daily quota and started
+    // answering 429 with a warning *sentence* in the body. That body passed the
+    // echo guard (it is not equal to the input) and would have been rendered as
+    // the translation; the caller now also rejects provider error text outright.
+    // GTX has no such quota and answered in ~90ms measured from this machine.
+    const gtx = await gtxTranslate(url, trimmed);
+    if (gtx) {
+      cacheSet(cacheKey, gtx);
+      return gtx;
+    }
+
+    // 2) MyMemory — резерв, когда GTX недоступен.
+    const memory = await myMemoryTranslate(trimmed, tl);
+    if (memory) {
+      cacheSet(cacheKey, memory);
+      return memory;
+    }
+
+    return trimmed;
+  })();
+
+  inFlightTranslations.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    inFlightTranslations.delete(cacheKey);
+  }
 }
+
 
 /** Rejects provider error bodies that are not translations at all. */
 function looksLikeProviderError(text: string): boolean {
