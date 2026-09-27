@@ -98,15 +98,26 @@ function overlapRatio(a: string[], b: string[]): number {
  */
 const SAME_READING_OVERLAP = 0.8;
 
+/** Words a row must hold before its content may decide continuation. */
+const SAME_READING_MIN_WORDS = 3;
+
 function readingsOverlap(previous: string, incoming: string): boolean {
   const a = previous.trim().toLowerCase();
   const b = incoming.trim().toLowerCase();
   if (!a || !b) return false;
-  // One reading is a superset of the other: the same utterance, longer or
-  // re-worded. This is the common case and needs no word analysis.
-  if (b.includes(a) || a.includes(b)) return true;
 
   const aWords = words(previous);
+  // A one-word row is an interjection ("Да.", "Угу."), and two of them a long
+  // pause apart are two events, not two readings of one. This must be checked
+  // before containment: "Да." is inside "Да.", and treating that as one
+  // utterance would silently swallow the second.
+  if (aWords.length < SAME_READING_MIN_WORDS) return false;
+
+  // One reading is literally inside the other: the same utterance, grown or
+  // truncated. Strong enough to decide on its own — and merging is the safe
+  // answer here, because NOT merging is what repeats the words on screen.
+  if (b.includes(a) || a.includes(b)) return true;
+
   const bWords = words(incoming);
   return (
     overlapRatio(aWords, bWords) >= SAME_READING_OVERLAP ||

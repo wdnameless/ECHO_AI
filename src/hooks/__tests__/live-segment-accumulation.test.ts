@@ -125,6 +125,24 @@ describe("a late final does not repeat the previous line", () => {
       vi.useRealTimers();
     }
   });
+
+  it("keeps two identical interjections apart after a long pause", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useConversationStore());
+
+      // The same word twice is two events, not two readings of one utterance.
+      act(() => result.current.appendLiveSegment("them", "Да."));
+      act(() => {
+        vi.advanceTimersByTime(20_000);
+      });
+      act(() => result.current.appendLiveSegment("them", "Да."));
+
+      expect(result.current.liveSegments).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("a re-worded result is not appended twice", () => {
