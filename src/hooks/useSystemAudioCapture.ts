@@ -36,10 +36,20 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
 
 /**
  * Cadence of the live re-transcription used when the loaded model cannot
- * stream. Measured on Parakeet: one HTTP call costs 44-58ms regardless of clip
- * length, so ~600ms keeps the feed visibly live without saturating the engine.
+ * stream.
+ *
+ * Was 600ms. Measured on this engine, a live pass costs 55ms for a 0.6s clip,
+ * 70ms at 1s, 104ms at 2s and ~220ms at 8s — so at 600ms the engine sat idle
+ * for most of every interval while the user waited for text. At 300ms the
+ * cadence still leaves 2-5x headroom over the measured cost (and ~1.4x on a
+ * pathological 8s utterance), and the first words reach the screen ~300ms
+ * sooner, which is the delay that is actually perceived.
+ *
+ * Not lowered further: 250ms would leave ~1.15x headroom on a long utterance,
+ * where a pass approaching the interval makes the passes queue instead of
+ * arriving on time.
  */
-const LIVE_BATCH_MS = 600;
+const LIVE_BATCH_MS = 300;
 
 /**
  * Hard limit on how long ONE utterance may grow before the live pass keeps only
