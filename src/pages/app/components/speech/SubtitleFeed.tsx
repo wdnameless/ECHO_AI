@@ -224,6 +224,7 @@ const AiFeedRow = memo(function AiFeedRow({
   feedback,
   translation,
   translationsOn,
+  translationFailed,
   copied,
   isDislikeOpen,
   customReason,
@@ -239,6 +240,8 @@ const AiFeedRow = memo(function AiFeedRow({
   feedback?: "like" | "dislike";
   translation?: string;
   translationsOn: boolean;
+  /** True when this row's translation already failed (show a dash, not a spinner). */
+  translationFailed: boolean;
   copied: boolean;
   isDislikeOpen: boolean;
   customReason: string;
@@ -383,8 +386,16 @@ const AiFeedRow = memo(function AiFeedRow({
         </div>
         {translationsOn && !streaming && (
           <div className="min-w-0 flex items-start border-l border-border/30 pl-2">
-            {translation === undefined ? (
+            {translation === undefined && !translationFailed ? (
+              // Only a row still waiting on a provider spins. A row whose
+              // translation failed used to spin forever, because a failure
+              // leaves `translations[key]` unset and the spinner keyed on
+              // exactly that.
               <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/50 mt-1" />
+            ) : translation === undefined ? (
+              <span className="text-muted-foreground/50" title="Перевод недоступен">
+                —
+              </span>
             ) : (
               <p
                 className="text-[0.8em] leading-relaxed text-violet-700/90 dark:text-violet-300/90"
@@ -411,6 +422,7 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
   streaming,
   translation,
   translationsOn,
+  translationFailed,
   isEditing,
   editWrongWord,
   editRightWord,
@@ -434,6 +446,8 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
   streaming?: boolean;
   translation?: string;
   translationsOn: boolean;
+  /** True when this row's translation already failed (show a dash, not a spinner). */
+  translationFailed: boolean;
   isEditing: boolean;
   editWrongWord: string;
   editRightWord: string;
@@ -611,8 +625,12 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
         </div>
         {translationsOn && (
           <div className="min-w-0 flex items-start">
-            {translation === undefined ? (
+            {translation === undefined && !translationFailed ? (
               <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
+            ) : translation === undefined ? (
+              <span className="text-muted-foreground/40" title="Перевод недоступен">
+                —
+              </span>
             ) : (
               <p
                 className="flex-1 min-w-0 text-[0.72em] leading-snug text-primary/75 break-words"
@@ -705,6 +723,17 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
    * and the row keeps its spinner indefinitely.
    */
   const translateFailedAtRef = useRef<Map<string, number>>(new Map());
+  /**
+   * Whether this row's translation already failed.
+   *
+   * Drives the difference between "still waiting" (a spinner) and "no
+   * translation available" (a dash). The row is not retried until its backoff
+   * expires, so without this distinction it would spin for the whole window.
+   */
+  const translationFailed = useCallback(
+    (key: string) => translateFailedAtRef.current.has(key.trim()),
+    []
+  );
   const [translationsOn, setTranslationsOn] = useState(true);
   const appVersion = useAppVersion();
   // Recognition timings live in a store, not in props: every measured pass
@@ -1440,6 +1469,7 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
                 feedback={feedbackGiven[rowId]}
                 translation={translation}
                 translationsOn={translationsOn}
+                translationFailed={translationFailed(key)}
                 copied={copiedId === rowId}
                 isDislikeOpen={dislikeMenuFor === rowId}
                 customReason={customReason}
@@ -1472,6 +1502,7 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
               streaming={e.streaming}
               translation={translation}
               translationsOn={translationsOn}
+              translationFailed={translationFailed(key)}
               isEditing={isEditing}
               editWrongWord={editWrongWord}
               editRightWord={editRightWord}
