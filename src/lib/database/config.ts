@@ -1,34 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
 
-/**
- * Serialises the transaction-scoped writers.
- *
- * Every writer here shares ONE plugin connection, and `BEGIN TRANSACTION` is
- * connection-wide. Two overlapping saves therefore interleave: the second BEGIN
- * fails ("cannot start a transaction within a transaction"), the first COMMIT
- * closes the shared transaction, and the second one then fails with
- *
- *   cannot commit - no transaction is active
- *
- * which is what the meeting screen logged while recording — the turn was shown
- * on screen and never reached the database. Reproduced on a single node:sqlite
- * connection: BEGIN, BEGIN, COMMIT, COMMIT produces exactly that message.
- *
- * A promise chain is enough here: the work is short, and a queue is the whole
- * requirement. Anything that opens a transaction must go through `withWriteLock`.
- */
-let writeLock: Promise<unknown> = Promise.resolve();
-
-export function withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = writeLock.then(fn, fn);
-  // Keep the chain alive even when a writer rejects, so one failure cannot
-  // deadlock every later write.
-  writeLock = run.then(
-    () => undefined,
-    () => undefined
-  );
-  return run;
-}
 
 /**
  * Database configuration
