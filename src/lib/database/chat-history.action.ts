@@ -1,4 +1,4 @@
-import { getDatabase } from "./config";
+import { getDatabase, withWriteLock } from "./config";
 import { ChatConversation } from "@/types";
 import { safeLocalStorage } from "@/lib";
 
@@ -88,7 +88,14 @@ function validateMessage(message: any): boolean {
 /**
  * Create a new conversation with transaction safety
  */
-export async function createConversation(
+export function createConversation(
+  conversation: ChatConversation
+): Promise<ChatConversation> {
+  // BEGIN/COMMIT is connection-wide; overlapping writers must not interleave.
+  return withWriteLock(() => createConversationUnlocked(conversation));
+}
+
+async function createConversationUnlocked(
   conversation: ChatConversation
 ): Promise<ChatConversation> {
   if (!validateConversation(conversation)) {
@@ -266,7 +273,13 @@ export async function getConversationById(
 /**
  * Update a conversation with transaction safety
  */
-export async function updateConversation(
+export function updateConversation(
+  conversation: ChatConversation
+): Promise<ChatConversation> {
+  return withWriteLock(() => updateConversationUnlocked(conversation));
+}
+
+async function updateConversationUnlocked(
   conversation: ChatConversation
 ): Promise<ChatConversation> {
   if (!validateConversation(conversation)) {

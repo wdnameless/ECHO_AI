@@ -13,6 +13,8 @@ let memoryDb: DatabaseSync;
 let selectQueries: string[] = [];
 
 vi.mock("../config", () => ({
+  // Passthrough: these tests assert BEGIN/COMMIT ordering, so the lock must run.
+  withWriteLock: (fn: () => unknown) => fn(),
   getDatabase: vi.fn().mockImplementation(() => {
     return Promise.resolve({
       execute: async (query: string, params: unknown[] = []) => {
