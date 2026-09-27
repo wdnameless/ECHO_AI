@@ -48,6 +48,48 @@ export function isSttErrorMessage(text: string | null | undefined): boolean {
   return !!text && text.trim().toLowerCase().startsWith(STT_ERROR_PREFIX.toLowerCase());
 }
 
+/**
+ * Отличает разметку от расшифровки.
+ *
+ * Запрос, потерявший origin (`null/v1/asr/transcribe`), уходит не на движок, а
+ * на origin самого WebView — SPA отвечает своей страницей с HTTP 200, тело не
+ * парсится как JSON, и дальше оно уезжало в ленту репликой собеседника:
+ * на экране это выглядело как `<!DOCTYPE html>…<title>Tauri + React</title>`,
+ * а ИИ отвечал на разметку. Проверено: относительный URL из WebView отдаёт
+ * ровно эту страницу.
+ */
+export function isHtmlResponse(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const head = text.trim().slice(0, 200).toLowerCase();
+  return (
+    head.startsWith("<!doctype html") ||
+    head.startsWith("<html") ||
+    head.startsWith("<?xml") ||
+    head.startsWith("<head") ||
+    head.startsWith("<body")
+  );
+}
+
+/**
+ * Проверяет, что URL абсолютный и с http(s)-схемой.
+ *
+ * Относительный URL — не ошибка движка, а сломанный запрос: WebView разрешает
+ * его от своего origin и возвращает 200 с HTML страницы приложения. Такую
+ * ошибку нельзя показывать как «движок не отвечает», и тем более нельзя
+ * отправлять такой запрос.
+ */
+export function isAbsoluteHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      Boolean(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function parseCurlCached(curl: string): ParsedSttCurl {
   const cached = curlParseCache.get(curl);
   if (cached !== undefined) return cached;
@@ -255,6 +297,18 @@ export async function fetchSTT(params: STTParams): Promise<string> {
       }
     }
 
+    // A request URL that lost its origin resolves against the WebView's own
+    // origin, and the SPA answers it with `HTTP 200 text/html` — its own page.
+    // The body then failed to parse as JSON, and the markup was returned as the
+    // transcription: the feed showed `<!DOCTYPE html>…<title>Tauri + React`,
+    // and the AI answered that markup. Refuse it at the source instead; the
+    // prefixed message keeps callers treating it as a failure, not as speech.
+    if (!isAbsoluteHttpUrl(url)) {
+      throw new Error(
+        `${STT_ERROR_PREFIX}: transcription URL is not absolute: ${url.slice(0, 120)}`
+      );
+    }
+
     const isForm =
       provider.curl.includes("-F ") || provider.curl.includes("--form");
     if (isForm) {
@@ -416,6 +470,12 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     try {
       data = JSON.parse(responseText);
     } catch {
+      // A non-JSON body was returned as the transcription, so the app's own page
+      // (served for a scheme-less request URL) landed in the feed as the
+      // interviewer's speech and was answered by the AI. Markup is a failure.
+      if (isHtmlResponse(responseText)) {
+        return `${STT_ERROR_PREFIX}: the endpoint answered with a web page, not a transcription (URL: ${url.slice(0, 120)})`;
+      }
       return [...warnings, responseText.trim()].filter(Boolean).join("; ");
     }
 

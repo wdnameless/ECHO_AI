@@ -1,4 +1,4 @@
-import { getHostOfCurlTemplate, isTrustedHost, trustHost, normalizeHost } from "./trusted-hosts";
+import { isTrustedHost, trustHost, normalizeHost } from "./trusted-hosts";
 
 /**
  * S2: шлюз подтверждения для исходящих запросов на недоверенный хост.
@@ -60,11 +60,30 @@ export async function resolveOutboundHeaders(
   url: string,
   headers: Record<string, string>
 ): Promise<{ allowed: boolean; headers: Record<string, string>; maxRedirections: number }> {
+  // A URL that is not absolute http(s) has no host we could trust, and asking
+  // about it is how a garbage entry got into the trust list: a request URL that
+  // had lost its origin (`null/v1/asr/transcribe`) fell through to the `?? url`
+  // fallback below, so the dialog offered the whole URL as the "host", the user
+  // pressed "trust", and `normalizeHost` stored the literal `null` in
+  // `trusted_hosts`.
+  //
+  // This check MUST come before `isTrustedHost`: that stored `null` entry made
+  // `isTrustedHost("null/v1/asr/transcribe")` true, so the broken request passed
+  // the gate silently and its response was shown as speech. A scheme-less URL is
+  // a broken request, not an untrusted host — fail closed.
+  if (!/^https?:\/\//i.test(url.trim())) {
+    return { allowed: false, headers: {}, maxRedirections: 0 };
+  }
+
   if (isTrustedHost(url)) {
     return { allowed: true, headers, maxRedirections: 0 };
   }
 
-  const host = getHostOfCurlTemplate(`curl ${url}`) ?? url;
+  const host = normalizeHost(url);
+  if (!host) {
+    return { allowed: false, headers: {}, maxRedirections: 0 };
+  }
+
   const secrets = listSecretHeaders(headers);
 
   if (!promptHandler) {

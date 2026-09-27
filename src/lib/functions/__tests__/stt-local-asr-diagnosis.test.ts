@@ -117,4 +117,39 @@ describe("local ASR failure diagnosis", () => {
     await expect(transcribe()).rejects.toThrow("HTTP 500: boom");
     expect(invokeMock).not.toHaveBeenCalledWith("stt_readiness");
   });
+
+  /**
+   * A request URL that lost its origin resolves against the WebView's own
+   * origin, and the SPA answers it with `HTTP 200 text/html`. That page used to
+   * be returned as the transcription: the feed showed
+   * `<!DOCTYPE html>…<title>Tauri + React</title>` as the interviewer's speech
+   * and the AI answered the markup. Verified live: the relative URL really does
+   * return the app's page with status 200.
+   */
+  it("refuses the app's own page instead of returning it as speech", async () => {
+    windowFetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      // The first bytes of the real page, as served for `null/v1/asr/transcribe`.
+      text: async () =>
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Tauri + React + Typescript</title>',
+    });
+
+    const result = await transcribe();
+    expect(result).toContain("STT Error");
+    expect(result).not.toContain("<!DOCTYPE");
+    expect(result).toContain("web page");
+  });
+
+  it("still returns a real transcription", async () => {
+    windowFetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ text: "Пошли, бля!" }),
+    });
+
+    expect(await transcribe()).toBe("Пошли, бля!");
+  });
 });

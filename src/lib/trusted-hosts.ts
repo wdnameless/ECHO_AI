@@ -82,13 +82,29 @@ export function getHostOfCurlTemplate(curl: string): string | null {
   return rawHost.toLowerCase();
 }
 
+/**
+ * Hostnames that can only ever be a bug in this app: they are what a missing
+ * value stringifies to. One got in when a request URL lost its origin — the
+ * trust dialog quoted the whole URL, the user pressed "trust", and `null` was
+ * stored. Refused on read as well as on write, so an already-saved entry stops
+ * counting immediately instead of waiting for the user to clear it.
+ */
+const HOSTNAME_ARTIFACTS: readonly string[] = ["null", "undefined", "nan"];
+
 export function getTrustedHosts(): string[] {
   const stored = safeLocalStorage.getItem(STORAGE_KEYS.TRUSTED_HOSTS);
   if (!stored) return [];
   try {
     const parsed = JSON.parse(stored);
     if (Array.isArray(parsed)) {
-      return parsed.filter((item): item is string => typeof item === "string");
+      return parsed.filter(
+        (item): item is string =>
+          typeof item === "string" &&
+          // A stored entry must look like a host: no path, query or space.
+          !/[/?#\s]/.test(item) &&
+          item.trim().length > 0 &&
+          !HOSTNAME_ARTIFACTS.includes(item.trim().toLowerCase())
+      );
     }
   } catch {
     // Invalid JSON in localStorage, fall back to empty list.
