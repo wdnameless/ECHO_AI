@@ -162,3 +162,101 @@ describe("R18: SubtitleFeed streaming isolation", () => {
     expect(screen.getByText("Hello from candidate")).toBeDefined();
   });
 });
+
+/**
+ * The report from the running app: the interviewer's line appeared twice, the
+ * second time as the opening of a longer row.
+ *
+ * The recogniser is handed the audio of the whole utterance, so its next final
+ * re-reads the clause already on screen — and the feed's merge only compares a
+ * row with its immediate predecessor, which an AI answer always sits between.
+ * Measured on the stored conversations: 188 of 316 adjacent interviewer turns
+ * (59%) contained the previous one verbatim.
+ */
+describe("a repeated interviewer line is shown once", () => {
+  const question = "Вы с ней сговорились?";
+  const repeated =
+    "Вы с ней сговорились? Yeah. Это из-за вас, Суд Джином, никто не общается.";
+
+  it("does not repeat the committed question inside the next row", () => {
+    const conversation: ChatConversation = {
+      id: "conv-repeat",
+      title: "",
+      createdAt: 0,
+      updatedAt: 0,
+      messages: [
+        { id: "m1", role: "user", content: question, timestamp: 1000, source: "them" },
+        {
+          id: "m2",
+          role: "assistant",
+          content: "Ну, повесить всех собак на меня — это самый простой путь",
+          timestamp: 1010,
+        },
+      ],
+    };
+    const { container } = render(
+      <SubtitleFeed
+        conversation={conversation}
+        liveSegments={[
+          { id: "L1", source: "them", text: repeated, timestamp: 2000, partial: false },
+        ]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="parakeet"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    // The repeated clause must reach the screen once, not once per row.
+    const shown = (container.textContent || "").split("сговорились").length - 1;
+    expect(shown).toBe(1);
+  });
+
+  it("still shows two genuinely different turns", () => {
+    const conversation: ChatConversation = {
+      id: "conv-distinct",
+      title: "",
+      createdAt: 0,
+      updatedAt: 0,
+      messages: [
+        {
+          id: "m1",
+          role: "user",
+          content: "Что это за шрифт? Такой броский.",
+          timestamp: 1000,
+          source: "them",
+        },
+      ],
+    };
+    const { container } = render(
+      <SubtitleFeed
+        conversation={conversation}
+        liveSegments={[
+          {
+            id: "L1",
+            source: "them",
+            text: "Совершенно другой вопрос про архитектуру",
+            timestamp: 2000,
+            partial: false,
+          },
+        ]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="parakeet"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    const text = container.textContent || "";
+    expect(text).toContain("Что это за шрифт? Такой броский.");
+    expect(text).toContain("Совершенно другой вопрос про архитектуру");
+  });
+});

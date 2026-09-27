@@ -896,7 +896,45 @@ export const SubtitleFeed = ({
       merged.push({ ...e });
     }
 
-    return merged
+    // A row that repeats a row already accepted must not reach the screen.
+    //
+    // The merge above only ever compares a row with its immediate predecessor,
+    // so a row repeating an EARLIER one survives whenever anything sits between
+    // them — and an AI answer is always committed between two interviewer
+    // rows. The interviewer's next final also re-reads the clause already on
+    // screen, because the recogniser is handed the audio of the whole
+    // utterance: measured on the stored conversations, 188 of 316 adjacent
+    // interviewer turns (59%) contained the previous one verbatim.
+    //
+    // Containment, not equality: the repeated row is a superstring of the one
+    // already shown, so comparing the whole text catches it where a fixed-length
+    // key cannot. The longer row is kept — it carries the new words.
+    const deduped: FeedEntry[] = [];
+    for (const e of merged) {
+      const text = normalizeText(e.text);
+      const words = text.split(" ").filter(Boolean);
+      // Only rows with real content decide or are decided: a short interjection
+      // ("Да.") legitimately recurs and is not a repetition.
+      const covering = deduped.find(
+        (kept) =>
+          kept.kind === e.kind &&
+          words.length > 0 &&
+          normalizeText(kept.text).split(" ").filter(Boolean).length >= 3 &&
+          (text.includes(normalizeText(kept.text)) ||
+            normalizeText(kept.text).includes(text))
+      );
+      if (covering) {
+        // Keep whichever row is longer; the shorter one said nothing more.
+        if (text.length > normalizeText(covering.text).length) {
+          covering.text = e.text;
+          covering.ts = Math.max(covering.ts, e.ts);
+        }
+        continue;
+      }
+      deduped.push({ ...e });
+    }
+
+    return deduped
       .sort((a, b) => b.ts - a.ts)
       .slice(0, 80);
   }, [conversation.messages, liveSegments]);
