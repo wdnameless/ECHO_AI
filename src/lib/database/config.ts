@@ -1,5 +1,6 @@
 import Database from "@tauri-apps/plugin-sql";
 
+
 /**
  * Database configuration
  *
@@ -22,7 +23,22 @@ export function getDatabase(): Promise<Database> {
   if (dbInstance) return Promise.resolve(dbInstance);
   if (!dbLoading) {
     dbLoading = Database.load("sqlite:pluely.db")
-      .then((db) => {
+      .then(async (db) => {
+        // Wait for a competing writer instead of failing instantly.
+        //
+        // Several modules write this file (chat history, system prompts,
+        // retention, self-evolution) and each conversation save wraps its work
+        // in BEGIN/COMMIT. Without a busy timeout SQLite returns
+        // "database is locked" (code 5) the moment two of them overlap, and the
+        // save is lost — observed live as repeated
+        // "Failed to save system audio conversation: ... database is locked"
+        // while the meeting screen was recording.
+        try {
+          await db.execute("PRAGMA busy_timeout = 5000");
+        } catch (error) {
+          // A read-only or already-configured connection must not stop startup.
+          console.warn("[db] could not set busy_timeout:", error);
+        }
         dbInstance = db;
         return db;
       })

@@ -43,6 +43,42 @@ import { cn } from "@/lib/utils";
 type SortOption = "name" | "accuracy" | "speed" | "size";
 
 /**
+ * Orders two catalogue entries by the active sort option.
+ *
+ * Shared by both lists on this page. The downloaded list used to render in
+ * whatever order the backend returned, so pressing the speed or accuracy button
+ * — which sits in the *Downloaded Models* header — reordered only the catalogue
+ * below it. The toolbar therefore looked broken exactly for the models a user
+ * has: the ones they were looking at.
+ */
+export function compareModels(
+  a: ModelEntry,
+  b: ModelEntry,
+  sortBy: SortOption,
+  sortDirection: "asc" | "desc"
+): number {
+  let comparison = 0;
+  switch (sortBy) {
+    case "accuracy":
+      comparison = (a.accuracy_score ?? 0) - (b.accuracy_score ?? 0);
+      break;
+    case "speed":
+      comparison = (a.speed_score ?? 0) - (b.speed_score ?? 0);
+      break;
+    case "size": {
+      const aSize = a.files[0]?.size_bytes ?? 0;
+      const bSize = b.files[0]?.size_bytes ?? 0;
+      comparison = aSize - bSize;
+      break;
+    }
+    case "name":
+      comparison = a.name.localeCompare(b.name);
+      break;
+  }
+  return sortDirection === "asc" ? comparison : -comparison;
+}
+
+/**
  * Human label for a model's language support.
  *
  * The catalogue stores recognition codes, so a one-language model must be named
@@ -125,6 +161,85 @@ function ModelLanguages({
       )}
     </span>
   );
+}
+
+/**
+ * Whether a catalogue entry survives the page's search box and language filter.
+ *
+ * Shared by the catalogue and the downloaded list: both toolbars are the same
+ * controls, and two copies of this predicate drift — the downloaded copy had
+ * already lost the sort and skipped the language test for uncatalogued files.
+ */
+export function matchesFilters(
+  model: ModelEntry,
+  searchQuery: string,
+  selectedLanguage: string
+): boolean {
+  const matchesSearch =
+    searchQuery === "" ||
+    model.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    model.description.toLowerCase().includes(searchQuery.toLowerCase());
+
+  const matchesLanguage =
+    selectedLanguage === "all" ||
+    supportsLanguageCode(model.languages, selectedLanguage);
+
+  return matchesSearch && matchesLanguage;
+}
+
+/**
+ * Applies the toolbar to the downloaded list: search, language, then sort.
+ *
+ * Extracted from the component so the ordering can be tested without a DOM. The
+ * list previously had no sort at all, and nothing verified it — the bug survived
+ * because the sort buttons simply had no effect on this list, which is invisible
+ * until you have two downloaded models with different scores.
+ */
+export function selectDownloadedModels(
+  downloaded: InstalledModel[],
+  catalog: ModelEntry[],
+  filters: {
+    searchQuery: string;
+    selectedLanguage: string;
+    sortBy: SortOption;
+    sortDirection: "asc" | "desc";
+  }
+): InstalledModel[] {
+  const { searchQuery, selectedLanguage, sortBy, sortDirection } = filters;
+  return downloaded
+    .filter((file) => {
+      const model = catalog.find((m) => m.id === file.model_id);
+      if (!model) {
+        // A model installed by hand has no catalogue entry, so there is no
+        // language list to test. It used to skip the language filter entirely,
+        // which meant picking "Russian" left unrelated files visible while
+        // hiding nothing — the filter appeared not to work for these rows.
+        //
+        // The only signal such a file carries is its name, and the test must be
+        // token-exact: a substring match would let the code `en` match
+        // "nemotron" and `it` match "quantized", so a filter would silently keep
+        // files unrelated to the chosen language.
+        const name = file.file_name.toLowerCase();
+        const tokens = name.split(/[^a-z0-9]+/).filter(Boolean);
+        const matchesSearch = searchQuery === "" || name.includes(searchQuery.toLowerCase());
+        const matchesLanguage =
+          selectedLanguage === "all" || tokens.includes(selectedLanguage.toLowerCase());
+        return matchesSearch && matchesLanguage;
+      }
+      return matchesFilters(model, searchQuery, selectedLanguage);
+    })
+    .sort((a, b) => {
+      const modelA = catalog.find((m) => m.id === a.model_id);
+      const modelB = catalog.find((m) => m.id === b.model_id);
+      // Entries without a catalogue row have no scores or catalogue name; order
+      // them by file name so they still move with the sort.
+      if (!modelA || !modelB) {
+        return sortDirection === "asc"
+          ? a.file_name.localeCompare(b.file_name)
+          : b.file_name.localeCompare(a.file_name);
+      }
+      return compareModels(modelA, modelB, sortBy, sortDirection);
+    });
 }
 
 export const Models = () => {
@@ -252,62 +367,27 @@ export const Models = () => {
         const isDownloaded = model.files.some((f) => downloadedFilesSet.has(f.filename));
         if (isDownloaded) return false;
 
-        // Search filter
-        const matchesSearch =
-          searchQuery === "" ||
-          model.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          model.description.toLowerCase().includes(searchQuery.toLowerCase());
-
-        // Language filter (Handy's exact logic)
-        const matchesLanguage =
-          selectedLanguage === "all" ||
-          supportsLanguageCode(model.languages, selectedLanguage);
-
-        return matchesSearch && matchesLanguage;
+        return matchesFilters(model, searchQuery, selectedLanguage);
       })
-      .sort((a, b) => {
-        let comparison = 0;
-        switch (sortBy) {
-          case "accuracy":
-            comparison = (a.accuracy_score ?? 0) - (b.accuracy_score ?? 0);
-            break;
-          case "speed":
-            comparison = (a.speed_score ?? 0) - (b.speed_score ?? 0);
-            break;
-          case "size": {
-            const aSize = a.files[0]?.size_bytes ?? 0;
-            const bSize = b.files[0]?.size_bytes ?? 0;
-            comparison = aSize - bSize;
-            break;
-          }
-          case "name":
-            comparison = a.name.localeCompare(b.name);
-            break;
-        }
-        return sortDirection === "asc" ? comparison : -comparison;
-      });
+      .sort((a, b) => compareModels(a, b, sortBy, sortDirection));
   }, [models, downloadedFilesSet, searchQuery, selectedLanguage, sortBy, sortDirection]);
 
-  // Filter downloaded models
-  const filteredDownloadedModels = useMemo(() => {
-    return downloadedModels.filter((file) => {
-      const model = models.find((m) => m.id === file.model_id);
-      if (!model) {
-        return searchQuery === "" || file.file_name.toLowerCase().includes(searchQuery.toLowerCase());
-      }
-
-      const matchesSearch =
-        searchQuery === "" ||
-        model.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        model.description.toLowerCase().includes(searchQuery.toLowerCase());
-
-      const matchesLanguage =
-        selectedLanguage === "all" ||
-        supportsLanguageCode(model.languages, selectedLanguage);
-
-      return matchesSearch && matchesLanguage;
-    });
-  }, [downloadedModels, models, searchQuery, selectedLanguage]);
+  // Filter and sort downloaded models.
+  //
+  // The sort applies here too: the speed/accuracy buttons live in this section's
+  // header, so a user pressing them is ordering the list right below the button,
+  // not the catalogue further down. Leaving this list unsorted made the toolbar
+  // look inert for exactly the models the user already has.
+  const filteredDownloadedModels = useMemo(
+    () =>
+      selectDownloadedModels(downloadedModels, models, {
+        searchQuery,
+        selectedLanguage,
+        sortBy,
+        sortDirection,
+      }),
+    [downloadedModels, models, searchQuery, selectedLanguage, sortBy, sortDirection]
+  );
 
   // Toggle sort direction
   const handleSortToggle = (newSortBy: SortOption) => {

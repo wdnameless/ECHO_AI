@@ -10,6 +10,8 @@ const mockExecute = vi.fn();
 const mockSelect = vi.fn();
 
 vi.mock("../config", () => ({
+  // Passthrough: these tests assert BEGIN/COMMIT ordering, so the lock must run.
+  withWriteLock: (fn: () => unknown) => fn(),
   getDatabase: vi.fn().mockImplementation(() =>
     Promise.resolve({
       execute: mockExecute,
@@ -25,7 +27,17 @@ describe("chat-history.action transactions and batch inserts", () => {
     mockSelect.mockResolvedValue([]);
   });
 
-  it("createConversation wraps conversation and messages in BEGIN/COMMIT transaction with batch insert", async () => {
+  /**
+   * These writers used to open BEGIN/COMMIT, which cannot work here: the SQL
+   * plugin's pool does not pin one connection to a sequence of execute() calls
+   * (measured live — a CREATE TABLE and the following INSERT landed on
+   * different connections, so the second said "no such table"). A manual
+   * transaction therefore ran across arbitrary connections, and two overlapping
+   * saves destroyed each other with "cannot commit - no transaction is active".
+   * The assertions below pin the replacement contract: batched statements, no
+   * transaction control, and an error that still propagates.
+   */
+  it("batches conversation and messages without transaction control", async () => {
     const conv: ChatConversation = {
       id: "conv-1",
       title: "Test Conversation",
@@ -40,22 +52,16 @@ describe("chat-history.action transactions and batch inserts", () => {
     const result = await createConversation(conv);
     expect(result).toEqual(conv);
 
-    expect(mockExecute).toHaveBeenCalledTimes(4);
-    // 1. BEGIN TRANSACTION
-    expect(mockExecute.mock.calls[0][0]).toBe("BEGIN TRANSACTION");
-    // 2. INSERT conversation
-    expect(mockExecute.mock.calls[1][0]).toContain("INSERT INTO conversations");
-    // 3. Batch INSERT messages (single query with 2 placeholders)
-    expect(mockExecute.mock.calls[2][0]).toContain("INSERT INTO messages");
-    expect(mockExecute.mock.calls[2][0]).toContain("(?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)");
-    // 4. COMMIT
-    expect(mockExecute.mock.calls[3][0]).toBe("COMMIT");
+    const queries = mockExecute.mock.calls.map((c) => String(c[0]));
+    expect(queries.some((q) => /BEGIN|COMMIT|ROLLBACK/i.test(q))).toBe(false);
+    expect(queries[0]).toContain("INSERT INTO conversations");
+    const batch = queries.find((q) => q.includes("INSERT INTO messages"));
+    // one statement carrying both rows
+    expect(batch).toContain("(?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)");
   });
 
-  it("createConversation rolls back on error", async () => {
-    mockExecute
-      .mockResolvedValueOnce({ rowsAffected: 1 }) // BEGIN
-      .mockRejectedValueOnce(new Error("Disk full")); // INSERT fails
+  it("propagates a write error to the caller", async () => {
+    mockExecute.mockRejectedValueOnce(new Error("Disk full"));
 
     const conv: ChatConversation = {
       id: "conv-fail",
@@ -66,10 +72,9 @@ describe("chat-history.action transactions and batch inserts", () => {
     };
 
     await expect(createConversation(conv)).rejects.toThrow("Disk full");
-    expect(mockExecute).toHaveBeenCalledWith("ROLLBACK");
   });
 
-  it("updateConversation batches message replacements in a transaction and cleans up removed messages", async () => {
+  it("updateConversation replaces messages and prunes the ones removed", async () => {
     const conv: ChatConversation = {
       id: "conv-up",
       title: "Updated Title",
@@ -83,11 +88,15 @@ describe("chat-history.action transactions and batch inserts", () => {
 
     await updateConversation(conv);
 
-    expect(mockExecute.mock.calls[0][0]).toBe("BEGIN TRANSACTION");
-    expect(mockExecute.mock.calls[1][0]).toContain("UPDATE conversations");
-    expect(mockExecute.mock.calls[2][0]).toContain("INSERT OR REPLACE INTO messages");
-    expect(mockExecute.mock.calls[3][0]).toContain("DELETE FROM messages WHERE conversation_id = ? AND id NOT IN (?, ?)");
-    expect(mockExecute.mock.calls[4][0]).toBe("COMMIT");
+    const queries = mockExecute.mock.calls.map((c) => String(c[0]));
+    expect(queries.some((q) => /BEGIN|COMMIT|ROLLBACK/i.test(q))).toBe(false);
+    expect(queries[0]).toContain("UPDATE conversations");
+    expect(queries.some((q) => q.includes("INSERT OR REPLACE INTO messages"))).toBe(true);
+    expect(
+      queries.some((q) =>
+        q.includes("DELETE FROM messages WHERE conversation_id = ? AND id NOT IN (?, ?)")
+      )
+    ).toBe(true);
   });
 
   it("generateConversationTitle trims input", () => {

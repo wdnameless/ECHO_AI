@@ -98,7 +98,15 @@ export async function createConversation(
   const db = await getDatabase();
 
   try {
-    await db.execute("BEGIN TRANSACTION");
+    // No BEGIN/COMMIT here: the plugin's pool does not pin one connection to a
+    // sequence of execute() calls (measured live — a CREATE TABLE and the next
+    // INSERT landed on different connections, so the second said "no such
+    // table"). A manual transaction therefore runs on whichever connection each
+    // statement happens to get, and two overlapping saves destroy each other
+    // with "cannot commit - no transaction is active" or "database is locked".
+    // Every statement below is independently safe: the insert is an upsert and
+    // the deletes are scoped by id, so a partial failure leaves a consistent
+    // row set that the next save repairs.
 
     // Insert conversation
     await db.execute(
@@ -139,10 +147,8 @@ export async function createConversation(
       }
     }
 
-    await db.execute("COMMIT");
     return conversation;
   } catch (error) {
-    await db.execute("ROLLBACK").catch(() => {});
     console.error("Failed to create conversation:", error);
     // No rollback delete here: the same id can be created concurrently from
     // another window, and this catch also fires on a UNIQUE violation — which
@@ -276,7 +282,8 @@ export async function updateConversation(
   const db = await getDatabase();
 
   try {
-    await db.execute("BEGIN TRANSACTION");
+    // See the note in createConversation: a manual transaction cannot span the
+    // plugin's pool, so none is opened here.
 
     // Update conversation
     const updateResult = await db.execute(
@@ -285,7 +292,6 @@ export async function updateConversation(
     );
 
     if (updateResult.rowsAffected === 0) {
-      await db.execute("ROLLBACK").catch(() => {});
       throw new Error("Conversation not found");
     }
 
@@ -357,10 +363,8 @@ export async function updateConversation(
       }
     }
 
-    await db.execute("COMMIT");
     return conversation;
   } catch (error) {
-    await db.execute("ROLLBACK").catch(() => {});
     console.error("Failed to update conversation:", error);
     throw error;
   }
