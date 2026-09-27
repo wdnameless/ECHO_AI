@@ -64,41 +64,63 @@ export async function fastTranslate(
     return trimmed;
   }
 
-  // 1) MyMemory — основной провайдер (быстрый и без 429).
+  // 1) Google GTX — основной провайдер.
+  //
+  // MyMemory was primary until it ran out of its free daily quota and started
+  // answering 429 with a warning *sentence* in the body. That body passed the
+  // echo guard (it is not equal to the input) and would have been rendered as
+  // the translation; the caller now also rejects provider error text outright.
+  // GTX has no such quota and answered in ~90ms measured from this machine.
+  const gtx = await gtxTranslate(url, trimmed);
+  if (gtx) {
+    cacheSet(cacheKey, gtx);
+    return gtx;
+  }
+
+  // 2) MyMemory — резерв, когда GTX недоступен.
   const memory = await myMemoryTranslate(trimmed, tl);
   if (memory) {
     cacheSet(cacheKey, memory);
     return memory;
   }
 
-  // 2) Google GTX — резерв.
+  return trimmed;
+}
+
+/** Rejects provider error bodies that are not translations at all. */
+function looksLikeProviderError(text: string): boolean {
+  return /mymemory warning|available free translations|usage ?limit|quota|rate ?limit/i.test(text);
+}
+
+/**
+ * Google's public `translate_a/single` endpoint.
+ *
+ * Returns null on any failure so the caller can try the next provider instead of
+ * showing the untouched input as a translation.
+ */
+async function gtxTranslate(url: string, source: string): Promise<string | null> {
+  if (!url) return null;
   try {
-    let response: Response;
-    try {
-      response = await tauriFetch(url, {
-        method: "GET",
-        headers: { "User-Agent": "Mozilla/5.0" },
-        signal: AbortSignal.timeout(2500),
-      });
-    } catch {
-      return trimmed;
-    }
-    if (!response.ok) {
-      return trimmed;
-    }
+    const response = await tauriFetch(url, {
+      method: "GET",
+      headers: { "User-Agent": "Mozilla/5.0" },
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!response.ok) return null;
 
     const data = await response.json();
-    if (Array.isArray(data) && Array.isArray(data[0])) {
-      const translatedParts = data[0]
-        .map((part: unknown) => (Array.isArray(part) && typeof part[0] === "string" ? part[0] : ""))
-        .filter(Boolean);
-      const result = translatedParts.join("").trim() || trimmed;
-      cacheSet(cacheKey, result);
-      return result;
-    }
-    return trimmed;
+    if (!Array.isArray(data) || !Array.isArray(data[0])) return null;
+
+    const translatedParts = data[0]
+      .map((part: unknown) => (Array.isArray(part) && typeof part[0] === "string" ? part[0] : ""))
+      .filter(Boolean);
+    const result = translatedParts.join("").trim();
+    if (!result || looksLikeProviderError(result)) return null;
+    // An identical string is not a translation.
+    if (result.toLowerCase() === source.trim().toLowerCase()) return null;
+    return result;
   } catch {
-    return trimmed;
+    return null;
   }
 }
 
@@ -136,6 +158,7 @@ async function myMemoryTranslate(
     // Отдаём null, чтобы вызывающий код попробовал следующий провайдер
     // вместо показа непреобразованного текста как «перевода».
     if (t.trim().toLowerCase() === text.trim().toLowerCase()) return null;
+    if (looksLikeProviderError(t)) return null;
 
     return t.trim();
   } catch {
