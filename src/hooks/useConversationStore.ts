@@ -81,6 +81,40 @@ function overlapRatio(a: string[], b: string[]): number {
 }
 
 /**
+ * Whether two readings describe the same audio.
+ *
+ * The recogniser returns one utterance more than once — a live partial, then the
+ * authoritative pass — and the second reading usually contains the first. The
+ * time window cannot be the only test: on a long monologue the final arrives
+ * more than eight seconds after the last partial (the VAD waits for silence
+ * first), and the row was then appended again with its predecessor's text
+ * inside it, which read as the feed repeating itself.
+ *
+ * Deliberately stricter than {@link mergeUtteranceText}: calling two different
+ * utterances "the same" makes the merge keep only the longer text, so a false
+ * positive here loses on-screen words. A re-read of a growing buffer is almost
+ * total overlap (measured 1.0 on the reported case), so 0.8 separates it from
+ * speech that merely repeats a few words.
+ */
+const SAME_READING_OVERLAP = 0.8;
+
+function readingsOverlap(previous: string, incoming: string): boolean {
+  const a = previous.trim().toLowerCase();
+  const b = incoming.trim().toLowerCase();
+  if (!a || !b) return false;
+  // One reading is a superset of the other: the same utterance, longer or
+  // re-worded. This is the common case and needs no word analysis.
+  if (b.includes(a) || a.includes(b)) return true;
+
+  const aWords = words(previous);
+  const bWords = words(incoming);
+  return (
+    overlapRatio(aWords, bWords) >= SAME_READING_OVERLAP ||
+    overlapRatio(bWords, aWords) >= SAME_READING_OVERLAP
+  );
+}
+
+/**
  * Decides what a line becomes when another result arrives for it.
  *
  * Three cases, and only the last one is a continuation:
@@ -244,9 +278,20 @@ export function useConversationStore() {
         // single sentence arrived as a column of fragments.
         if (idx !== -1) {
           const last = prev[idx];
+          // A final pass can arrive well after the last live partial: the VAD
+          // closes the utterance on silence, and on a long monologue the gap
+          // between the last partial and the authoritative transcription
+          // exceeded the 8s window. The final then became its own row while
+          // *containing* the previous row's text, so the feed visibly repeated
+          // itself (seen on a ~600-character interviewer turn).
+          //
+          // Time alone is the wrong test here: the two readings of one
+          // utterance overlap in CONTENT, which is exactly what distinguishes
+          // them from two separate utterances. Either signal is enough.
           const continuesSameUtterance =
             last.partial ||
-            timestamp - last.timestamp <= LIVE_SEGMENT_CONTINUATION_MS;
+            timestamp - last.timestamp <= LIVE_SEGMENT_CONTINUATION_MS ||
+            readingsOverlap(last.text, processedText);
           if (continuesSameUtterance) {
             const updated = [...prev];
             updated[idx] = {
