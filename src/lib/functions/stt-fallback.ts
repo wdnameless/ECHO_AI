@@ -83,8 +83,14 @@ export async function transcribeWithFallback({
 
   // Error paths keep their contract: callers tell failure from speech by the
   // prefix, so an error must still be thrown, never returned as a transcription.
+  //
+  // An EMPTY result is not one of these: it is what the engine answers for a
+  // segment that held no speech (verified: 1s of silence returns `{"text": ""}`
+  // with HTTP 200). Throwing on it lit the «Локальный движок распознавания не
+  // отвечает» banner while the engine was healthy and answering every request.
   if (
-    !result ||
+    result === null ||
+    result === undefined ||
     isSttErrorMessage(result) ||
     result.startsWith("Network error")
   ) {

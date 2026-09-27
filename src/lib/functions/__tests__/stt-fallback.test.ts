@@ -42,4 +42,23 @@ describe("transcribeWithFallback", () => {
       })
     ).rejects.toThrow("Локальный движок распознавания не отвечает");
   });
+
+  /**
+   * Silence is not an engine failure.
+   *
+   * Live report: the red «Локальный движок распознавания не отвечает» banner
+   * appeared while the engine was healthy — `/health` said ok, `stt_readiness`
+   * returned `reason: null`, and the same audio transcribed fine over HTTP. The
+   * cause was this path: the engine answers `{"text": ""}` for a segment with no
+   * speech (verified — 1s of silence returns exactly that with HTTP 200), that
+   * became an STT-error string, and this guard threw on it.
+   */
+  it("returns empty, not an error, when the engine heard nothing", async () => {
+    fetchSTTMock.mockResolvedValue("");
+    const result = await transcribeWithFallback({
+      selectedProvider: { provider: "handy", variables: {} },
+      audio: new Blob([]),
+    });
+    expect(result).toBe("");
+  });
 });

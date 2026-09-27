@@ -485,10 +485,16 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     const transcription = (getByPath(data, path) || "").trim();
 
     if (!transcription) {
-      // Empty audio is a failed recognition, not speech: returning it as plain
-      // text put the phrase "No transcription found" into the transcript feed as
-      // if the interviewer had said it.
-      return `${STT_ERROR_PREFIX}: No transcription found in the audio`;
+      // An empty reading is what the engine answers for a segment that held no
+      // speech — verified: 100ms and 1s of silence both return `{"text": ""}`
+      // with HTTP 200, and 300ms of silence returns `"Yeah."`.
+      //
+      // This used to carry STT_ERROR_PREFIX, which every caller reads as a
+      // transport failure. So silence was reported as «Локальный движок
+      // распознавания не отвечает» while the engine was healthy and answering
+      // every request, and `transcribeWithFallback` threw on it. Silence is not
+      // a fault: an empty string is how callers already read "nothing said".
+      return "";
     }
 
     // Return transcription with any warnings

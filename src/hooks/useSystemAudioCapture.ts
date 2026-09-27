@@ -64,6 +64,46 @@ const LIVE_BATCH_MS = 300;
 const LIVE_MAX_UTTERANCE_MS = 20 * 16000;
 
 /**
+ * Whether a PCM buffer holds enough energy to be worth transcribing.
+ *
+ * Measured against the engine with the app's own settings: 300ms of pure
+ * silence does not come back empty — it comes back as the single word "Yeah."
+ * (12 runs, identical every time), and the live feed showed that word as the
+ * interviewer's line. The Rust VAD normally supplies these frames, but the live
+ * pass also carries the trailing silence before the end-of-speech threshold, so
+ * a segment can reach the model with no voice in it. Below this floor there is
+ * nothing to read and asking anyway invents a word.
+ *
+ * The measure is the LOUDEST ~100ms window, not the average of the buffer. An
+ * average is diluted by the trailing silence that prompted this check: 0.16s of
+ * quiet speech followed by 3s of silence averages below any sensible floor and
+ * would drop the words, while one window still holds them clearly.
+ *
+ * The floor is the configured `noise_gate_threshold`, not a constant: that knob
+ * already means "below this is room noise" and the settings panel exposes it, so
+ * tuning the noise gate tunes this too.
+ */
+export function hasSpeechEnergy(pcm: Int16Array, config: VadConfig): boolean {
+  if (pcm.length === 0) return false;
+  // ~100ms at 16 kHz, and never longer than the buffer itself, so a short
+  // segment is measured whole in a single pass.
+  const windowSize = Math.min(1600, pcm.length);
+  for (let start = 0; start < pcm.length; start += windowSize) {
+    const end = Math.min(start + windowSize, pcm.length);
+    let sumsq = 0;
+    for (let i = start; i < end; i++) {
+      // Normalise back to the -1..1 scale the threshold is expressed in.
+      const v = pcm[i] / 32768;
+      sumsq += v * v;
+    }
+    if (Math.sqrt(sumsq / (end - start)) >= config.noise_gate_threshold) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Wraps 16-bit mono PCM at 16 kHz in a WAV container.
  *
  * The engine rejects a header whose `data` size does not match the payload
@@ -488,6 +528,20 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       }
       consumed += f.byteLength;
     }
+
+    // Speech floor. The frames start at detected speech, but the pass also
+    // carries the trailing silence that has not yet hit the end-of-speech
+    // threshold, so a segment can hold almost no voice. Measured against the
+    // engine with the app's own settings, 300ms of pure silence does not come
+    // back empty — it comes back as the word "Yeah." (12 runs, the same answer
+    // every time), and the live feed showed exactly that word as the
+    // interviewer's line. Below this floor the model has nothing to read, and
+    // asking it anyway invents a word.
+    if (!hasSpeechEnergy(pcm.subarray(0, written), vadConfig)) {
+      liveBusyRef.current = false;
+      return;
+    }
+
     const wav = encodeWav16kMono(pcm.subarray(0, written));
     const started = Date.now();
     try {

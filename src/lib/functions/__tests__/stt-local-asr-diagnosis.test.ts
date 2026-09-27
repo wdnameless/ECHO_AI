@@ -152,4 +152,32 @@ describe("local ASR failure diagnosis", () => {
 
     expect(await transcribe()).toBe("Пошли, бля!");
   });
+
+  /**
+   * Silence is an empty reading, not a failure.
+   *
+   * Verified against the engine: a segment holding no speech returns
+   * `{"text": ""}` with HTTP 200 (1s of silence), and 300ms of silence returns
+   * the single word "Yeah." — which the live feed then showed as the
+   * interviewer's own line.
+   *
+   * This used to carry STT_ERROR_PREFIX, so `transcribeWithFallback` — which
+   * reads that prefix as a transport failure — threw the red «Локальный движок
+   * распознавания не отвечает» banner while the engine was healthy. The banner
+   * must not come from silence.
+   */
+  it("returns empty for a segment with no speech, not an error string", async () => {
+    windowFetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({ elapsed_ms: 28, language: null, text: "" }),
+    });
+
+    const result = await transcribe();
+    expect(result).toBe("");
+    // An error string here would be thrown by the fallback layer as an engine
+    // failure, which is the banner the user saw.
+    expect(result).not.toContain("STT Error");
+  });
 });
