@@ -725,8 +725,25 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
    * and the row keeps its spinner indefinitely.
    */
   const translateFailedAtRef = useRef<Map<string, number>>(new Map());
-  /** Bumped when expired failure marks are cleared, to re-run the queue. */
-  const [translationTick, setTranslationTick] = useState(0);
+  /**
+   * Render tick: the setter alone is used. A failure is recorded in a ref, and
+   * a ref change does not re-render, so the dash would never replace the
+   * spinner. Bumping this state repaints the rows WITHOUT restarting the queue
+   * (see `queueRunId` for why those must be separate).
+   */
+  const [, setTranslationTick] = useState(0);
+  /**
+   * Bumped ONLY by the retry interval, to re-run the queue.
+   *
+   * It must not be `translationTick`: a failure inside the queue used to bump
+   * that state, which was also a dependency of the queue effect, so React tore
+   * the effect down (setting `cancelled`) and both workers died mid-loop —
+   * every remaining row in the queue was dropped after the first provider
+   * failure. The render bump and the re-run trigger are now separate: a failure
+   * repaints the dash without cancelling work, and only the interval restarts
+   * the queue (after clearing the marks it just expired).
+   */
+  const [queueRunId, setQueueRunId] = useState(0);
   /**
    * Whether this row's translation already failed.
    *
@@ -1115,16 +1132,31 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
         const key = e.text.trim();
         translatedKeysRef.current.add(key);
         const translated = await fastTranslate(key);
+        // A provider failure returns the input unchanged; check that BEFORE the
+        // cancellation test so a torn-down effect cannot record a good result as
+        // a failure.
+        const usable = Boolean(translated) && translated.trim() !== key;
         if (cancelled) {
+          // The effect was torn down while this request was in flight. Dropping
+          // the result and deleting the key made the row stall forever: the next
+          // effect run skipped the key (this worker still held it when that run
+          // built its `pending` list) and the retry interval did not know about
+          // it either. Finish the bookkeeping instead — a good result is stored,
+          // a failure is handed to the retry path, which now owns the row.
           translatedKeysRef.current.delete(key);
-          return;
+          if (usable) {
+            setTranslations((p) => ({ ...p, [key]: translated }));
+          } else {
+            translateFailedAtRef.current.set(key, Date.now());
+          }
+          continue;
         }
         // Never store the source as its own translation.
         //
         // A provider failure returns the input unchanged, and storing it made
         // the row read «русский переводит русский». Now the failure is
         // remembered with a timestamp instead of being retried on every render.
-        if (!translated || translated.trim() === key) {
+        if (!usable) {
           translatedKeysRef.current.delete(key);
           translateFailedAtRef.current.set(key, Date.now());
           // The failure lives in a ref, so React would not re-render and the row
@@ -1143,7 +1175,7 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
     return () => {
       cancelled = true;
     };
-  }, [entries, translationsOn, translationTick]);
+  }, [entries, translationsOn, queueRunId]);
 
   // Keep the queue moving on its own.
   //
@@ -1163,7 +1195,7 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
           changed = true;
         }
       }
-      if (changed) setTranslationTick((n) => n + 1);
+      if (changed) setQueueRunId((n) => n + 1);
     }, TRANSLATE_RETRY_TICK_MS);
     return () => clearInterval(id);
   }, [translationsOn]);

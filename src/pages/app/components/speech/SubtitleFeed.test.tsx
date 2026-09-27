@@ -359,4 +359,5 @@ describe("a row whose translation fails", () => {
     await new Promise((r) => setTimeout(r, 200));
     expect(mock.mock.calls.length).toBe(afterFailure);
   });
+
 });

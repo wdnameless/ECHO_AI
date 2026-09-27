@@ -568,7 +568,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     } finally {
       liveBusyRef.current = false;
     }
-  }, [appendLiveSegment, selectedSttProvider]);
+  }, [appendLiveSegment, selectedSttProvider, vadConfig]);
 
   useEffect(() => {
     let frameUnlisten: (() => void) | undefined;
