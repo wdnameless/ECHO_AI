@@ -208,4 +208,94 @@ describe("auto-ask", () => {
       expect(onDispatch).not.toHaveBeenCalled();
     });
   });
+
+  /**
+   * The stored conversation showed one thought answered three times as it grew:
+   *
+   *   "Ты не виноват."                                             -> answer 1
+   *   "Ты не виноват. Просто не повезло. ..."                      -> answer 2
+   *   "Ты не виноват. Просто не повезло. ... вс<unk>."             -> answer 3
+   *
+   * The assembler flushes on a pause, the interviewer keeps talking, and the
+   * next flush carries the earlier text plus the new tail. The manual
+   * "Ответить" path refuses a repeat by utterance id; the automatic path had
+   * no such check, and every emission was dispatched.
+   */
+  describe("a question heard again as it grows is asked once", () => {
+    const manager = (onDispatch: (t: string) => void) =>
+      new AutoAskManager({
+        getConfig: () => ({ enabled: true, silenceDurationMs: 1000, mode: "auto" }),
+        onDispatch,
+        isAIProcessing: () => false,
+      });
+
+    it("drops the repeats and keeps the first dispatch", () => {
+      const asked: string[] = [];
+      const m = manager((t) => asked.push(t));
+
+      m.dispatchNow("Ты не виноват.");
+      m.dispatchNow(
+        "Ты не виноват. Просто не повезло. Пусть не сейчас, но будет еще экзамен. У тебя все шансы попасть в мед."
+      );
+      m.dispatchNow(
+        "Ты не виноват. Просто не повезло. Пусть не сейчас, но будет еще экзамен. У тебя все шансы попасть в мед. Нужно просто взять себя в руки и вс<unk>."
+      );
+
+      expect(asked).toEqual(["Ты не виноват."]);
+    });
+
+    it("still asks a question that shares no words with the previous one", () => {
+      const asked: string[] = [];
+      const m = manager((t) => asked.push(t));
+
+      m.dispatchNow("Ты не виноват. Просто не повезло.");
+      m.dispatchNow("В школу ходить не будешь. Я им скажу, что ты на практике. Ясно?");
+
+      expect(asked).toHaveLength(2);
+    });
+
+    it("guards the silence-timer path as well as dispatchNow", () => {
+      const asked: string[] = [];
+      const m = manager((t) => asked.push(t));
+
+      m.dispatchNow("Ты не виноват. Просто не повезло.");
+      // The timer path calls onDispatch directly, bypassing dispatchNow.
+      vi.advanceTimersByTime(1000);
+      m.onFinalizedTranscript(
+        "Ты не виноват. Просто не повезло. Пусть не сейчас, но будет еще экзамен."
+      );
+      vi.advanceTimersByTime(1000);
+
+      expect(asked).toHaveLength(1);
+    });
+
+    it("does not let a short interjection block the next question", () => {
+      const asked: string[] = [];
+      const m = manager((t) => asked.push(t));
+
+      // "Да." is a filler and is filtered; the point is that a genuinely new
+      // question after a short line still goes out.
+      m.dispatchNow("Расскажи про индексы в Postgres и B-Tree пожалуйста");
+      m.dispatchNow("А как работает репликация в Postgres при отказе мастера?");
+
+      expect(asked).toHaveLength(2);
+    });
+
+    it("lets the same words be a new question once the window has passed", () => {
+      const asked: string[] = [];
+      const m = manager((t) => asked.push(t));
+
+      const q = "Что такое репликация в Postgres и как она работает?";
+      m.dispatchNow(q);
+      // Seconds later it is the same utterance heard twice — suppression.
+      vi.advanceTimersByTime(5_000);
+      m.dispatchNow(q);
+      expect(asked).toHaveLength(1);
+
+      // A minute later the interviewer has genuinely repeated themselves.
+      vi.advanceTimersByTime(60_000);
+      m.dispatchNow(q);
+      expect(asked).toHaveLength(2);
+    });
+  });
 });

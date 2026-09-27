@@ -299,7 +299,13 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
             );
           }
         } else {
-          setError("Received empty transcription");
+          // A 200 with no text is what the engine answers for a segment that
+          // turned out to be silence (verified: 100ms of near-silence returns
+          // `text: ""` with HTTP 200). That is not a fault, and reporting it as
+          // one lit the red «Локальный движок распознавания не отвечает»
+          // banner — the same message used for a genuinely unreachable engine —
+          // while the engine was healthy and answering every request.
+          setError("");
         }
       } catch (sttError: unknown) {
         console.error("STT Error:", sttError);

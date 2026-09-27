@@ -27,6 +27,17 @@ export const DEFAULT_AUTO_ASK_CONFIG: AutoAskConfig = {
 export const AUTO_ASK_MIN_SILENCE_MS = 500;
 export const AUTO_ASK_MAX_SILENCE_MS = 5000;
 
+/**
+ * How long a dispatched question stays eligible for repeat suppression.
+ *
+ * A long utterance is emitted more than once (the assembler flushes on a pause
+ * and the next flush carries the earlier text plus the new tail), and those
+ * emissions arrive within seconds of each other. The same words much later are
+ * a genuinely new question — an interviewer repeating themselves on purpose —
+ * so the guard must not be permanent.
+ */
+const REPEAT_GUARD_MS = 30_000;
+
 export function clampSilenceDuration(ms: number): number {
   if (Number.isNaN(ms) || !Number.isFinite(ms)) {
     return DEFAULT_AUTO_ASK_CONFIG.silenceDurationMs;
@@ -131,6 +142,16 @@ export class AutoAskManager {
    * One is kept here and dispatched when the answer finishes.
    */
   private heldText: string | null = null;
+  /**
+   * The last question actually dispatched.
+   *
+   * Used to recognise the same utterance arriving again as it grows (see
+   * `isRepeatOfAsked`) — the automatic path had no equivalent of the manual
+   * path's utterance-id guard, so one thought could be answered several times.
+   */
+  private lastAskedText: string | null = null;
+  /** When `lastAskedText` was dispatched, for the guard's time window. */
+  private lastAskedAt = 0;
   private options: AutoAskManagerOptions;
 
   constructor(options: AutoAskManagerOptions) {
@@ -165,12 +186,63 @@ export class AutoAskManager {
     if (config.enabled === false || config.mode === "manual") return;
     if (isFillerOrBackchannel(text)) return;
 
+    // The same question, heard again as it grows, must not be answered twice.
+    //
+    // A long utterance is emitted more than once: the assembler flushes on a
+    // pause, the interviewer keeps talking, and the next flush carries the
+    // earlier text plus the new tail. Each emission was dispatched, so one
+    // thought produced several answers in the stored conversation — measured
+    // three answers to «Ты не виноват.» as the sentence grew, each with its own
+    // AI response. The manual "Ответить" path already refuses a repeat by
+    // utterance id; the automatic path had no such check.
+    //
+    // Containment, not equality: the repeat is a superstring of what was asked,
+    // so it adds the tail only. The longer text is what gets asked, and the
+    // shorter one is dropped as already covered.
+    if (this.isRepeatOfAsked(text)) return;
+
     // A real question that arrives mid-answer is held, not discarded.
     if (this.options.isAIProcessing()) {
       this.heldText = text.trim();
       return;
     }
+    this.noteAsked(text);
     void this.options.onDispatch(text);
+  }
+
+  /** True when `text` repeats a question already dispatched. */
+  private isRepeatOfAsked(text: string): boolean {
+    const asked = this.lastAskedText;
+    if (!asked) return false;
+    // Bounded, like every other continuation check in the app: only a repeat
+    // that arrives while the speaker is still on the same thought is the same
+    // utterance heard twice. The same words a minute later are a new question.
+    if (Date.now() - this.lastAskedAt > REPEAT_GUARD_MS) return false;
+    const norm = (s: string) =>
+      s
+        .toLowerCase()
+        .replace(/ё/g, "е")
+        .replace(/[^\p{L}\p{N}]+/gu, " ")
+        .trim();
+    const a = norm(asked);
+    const b = norm(text);
+    if (!a || !b) return false;
+    // Short lines ("Да.", "Угу.") legitimately recur and are filtered as
+    // fillers anyway; only substantial text decides.
+    if (a.split(" ").filter(Boolean).length < 3) return false;
+    if (b.includes(a) || a.includes(b)) return true;
+    // A re-read with different wording still shares most of its words.
+    const as = new Set(a.split(" ").filter(Boolean));
+    const bs = new Set(b.split(" ").filter(Boolean));
+    let inter = 0;
+    for (const w of as) if (bs.has(w)) inter++;
+    return inter / new Set([...as, ...bs]).size >= 0.8;
+  }
+
+  /** Record a dispatch so the next emission can recognise a repeat of it. */
+  private noteAsked(text: string): void {
+    this.lastAskedText = text.trim();
+    this.lastAskedAt = Date.now();
   }
 
   /**
@@ -235,6 +307,11 @@ export class AutoAskManager {
 
     if (!textToDispatch || !this.isEligible(textToDispatch)) return;
 
+    // The timer path reaches `onDispatch` directly, so it needs the same
+    // repeat guard as `dispatchNow` — otherwise a grown question re-asked by
+    // the timer would still produce a second answer.
+    if (this.isRepeatOfAsked(textToDispatch)) return;
+    this.noteAsked(textToDispatch);
     void this.options.onDispatch(textToDispatch);
   }
 
