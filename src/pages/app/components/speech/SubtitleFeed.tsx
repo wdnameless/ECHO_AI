@@ -708,10 +708,12 @@ export const SubtitleFeed = ({
  * How long a failed translation waits before being retried.
  *
  * Long enough that a provider outage does not turn into a retry storm (the
- * effect re-runs on every new word), short enough that a transient failure is
- * recovered within a session.
+ * effect re-runs on every new word), short enough that a row recovers on its
+ * own rather than sitting on a dash until the user says something new.
  */
-const TRANSLATE_RETRY_BACKOFF_MS = 5 * 60_000;
+const TRANSLATE_RETRY_BACKOFF_MS = 45_000;
+/** How often to re-run the queue so failed rows are retried on their own. */
+const TRANSLATE_RETRY_TICK_MS = 15_000;
 
 const translatedKeysRef = useRef<Set<string>>(new Set());
   /**
@@ -723,6 +725,8 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
    * and the row keeps its spinner indefinitely.
    */
   const translateFailedAtRef = useRef<Map<string, number>>(new Map());
+  /** Bumped when expired failure marks are cleared, to re-run the queue. */
+  const [translationTick, setTranslationTick] = useState(0);
   /**
    * Whether this row's translation already failed.
    *
@@ -1123,6 +1127,9 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
         if (!translated || translated.trim() === key) {
           translatedKeysRef.current.delete(key);
           translateFailedAtRef.current.set(key, Date.now());
+          // The failure lives in a ref, so React would not re-render and the row
+          // would keep its spinner instead of showing the dash. Bump to render.
+          setTranslationTick((n) => n + 1);
           continue;
         }
         translateFailedAtRef.current.delete(key);
@@ -1136,7 +1143,30 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
     return () => {
       cancelled = true;
     };
-  }, [entries, translationsOn]);
+  }, [entries, translationsOn, translationTick]);
+
+  // Keep the queue moving on its own.
+  //
+  // The effect above only re-runs when `entries` changes, which means a row
+  // whose translation failed stayed on a dash until the next thing was said —
+  // and on a quiet call, indefinitely. This tick re-runs it so a recovered
+  // provider is picked up within the backoff window without user action.
+  useEffect(() => {
+    if (!translationsOn) return;
+    const id = setInterval(() => {
+      // Nudge the effect by clearing expired failure marks, then re-render.
+      const now = Date.now();
+      let changed = false;
+      for (const [key, at] of translateFailedAtRef.current) {
+        if (now - at >= TRANSLATE_RETRY_BACKOFF_MS) {
+          translateFailedAtRef.current.delete(key);
+          changed = true;
+        }
+      }
+      if (changed) setTranslationTick((n) => n + 1);
+    }, TRANSLATE_RETRY_TICK_MS);
+    return () => clearInterval(id);
+  }, [translationsOn]);
 
   const handleCopy = useCallback(async (id: string, text: string) => {
     try {

@@ -312,4 +312,51 @@ describe("a row whose translation fails", () => {
 
     expect(mock.mock.calls.length).toBe(afterFirst);
   });
+
+  it("recovers on its own once the backoff expires", async () => {
+    // The queue effect only re-runs when `entries` change, so a failed row used
+    // to sit on a dash until the next thing was said — indefinitely on a quiet
+    // call. A tick clears expired failure marks and re-runs the queue.
+    const { fastTranslate } = await import("@/lib/fast-translator");
+    const mock = fastTranslate as unknown as ReturnType<typeof vi.fn>;
+    mock.mockReset();
+
+    const conversation: ChatConversation = {
+      id: "conv-retry",
+      title: "",
+      createdAt: 0,
+      updatedAt: 0,
+      messages: [
+        { id: "m1", role: "user", content: "Пошли, бля!", timestamp: 1000, source: "them" },
+      ],
+    };
+    const props = {
+      conversation,
+      liveSegments: [],
+      lastAIResponse: "",
+      isAIProcessing: false,
+      theirLastTranscription: "",
+      micSpeaking: false,
+      handyOnline: true,
+      handyModel: "parakeet",
+      feedPaused: false,
+      onTogglePause: vi.fn(),
+    };
+
+    // The provider fails on the first call and works afterwards.
+    mock.mockResolvedValueOnce("");
+    mock.mockResolvedValue("Let's go, fuck!");
+
+    const { container } = render(<SubtitleFeed {...props} />);
+    // Let the worker run — it awaits the (mocked) provider.
+    await vi.waitFor(() => expect(mock.mock.calls.length).toBeGreaterThan(0));
+
+    // Once it has failed, the row shows a dash and no spinner, and it does not
+    // hammer the provider while the backoff holds.
+    await vi.waitFor(() => expect(container.textContent).toContain("—"));
+    expect(container.querySelectorAll("svg.animate-spin").length).toBe(0);
+    const afterFailure = mock.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 200));
+    expect(mock.mock.calls.length).toBe(afterFailure);
+  });
 });

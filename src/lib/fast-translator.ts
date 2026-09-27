@@ -68,28 +68,21 @@ export async function fastTranslate(
       return trimmed;
     }
 
-    // 1) Google GTX — основной провайдер.
+    // 1) Google GTX — tried first because it is free and fast WHEN it answers.
     //
-    // MyMemory was primary until it ran out of its free daily quota and started
-    // answering 429 with a warning *sentence* in the body. That body passed the
-    // echo guard (it is not equal to the input) and would have been rendered as
-    // the translation; the caller now also rejects provider error text outright.
-    // GTX has no such quota and answered in ~90ms measured from this machine.
+    // Measured from inside this app, it does not: the call returns 429 while the
+    // identical URL returns 200 from Node (checked twice through the app's own
+    // HTTP plugin). It is kept as the first attempt only because that refusal is
+    // server-side and may lift; the chain no longer depends on it.
     const gtx = await gtxTranslate(url, trimmed);
     if (gtx) {
       cacheSet(cacheKey, gtx);
       return gtx;
     }
 
-    // 2) MyMemory — резерв, когда GTX недоступен.
-    const memory = await myMemoryTranslate(trimmed, tl);
-    if (memory) {
-      cacheSet(cacheKey, memory);
-      return memory;
-    }
-
-    // 3) The project gateway — the only endpoint proven reachable from inside
-    //    this app (see `gatewayTranslate`). Last, because it is slower.
+    // 2) The project gateway — the path that actually answers from here
+    //    (see `gatewayTranslate`). Slower, and it costs tokens, which is why it
+    //    is not simply the only provider.
     const viaGateway = await gatewayTranslate(trimmed, tl);
     if (viaGateway) {
       cacheSet(cacheKey, viaGateway);
@@ -265,36 +258,3 @@ async function getGatewayKey(): Promise<string | null> {
   }
 }
 
-async function myMemoryTranslate(
-  text: string,
-  tl: "ru" | "en"
-): Promise<string | null> {
-  try {
-    const pair = tl === "ru" ? "en|ru" : "ru|en";
-    const memUrl = new URL("https://api.mymemory.translated.net/get");
-    memUrl.searchParams.set("q", text.slice(0, 500));
-    memUrl.searchParams.set("langpair", pair);
-    const target = memUrl.toString();
-    let resp: Response;
-    try {
-      resp = await tauriFetch(target, { signal: AbortSignal.timeout(2000) });
-    } catch {
-      return null;
-    }
-
-    if (!resp.ok) return null;
-    const data = (await resp.json()) as { responseData?: { translatedText?: string } } | null;
-    const t = data?.responseData?.translatedText;
-    if (typeof t !== "string" || !t.trim()) return null;
-
-    // MyMemory возвращает исходный текст, когда перевести не удалось.
-    // Отдаём null, чтобы вызывающий код попробовал следующий провайдер
-    // вместо показа непреобразованного текста как «перевода».
-    if (t.trim().toLowerCase() === text.trim().toLowerCase()) return null;
-    if (looksLikeProviderError(t)) return null;
-
-    return t.trim();
-  } catch {
-    return null;
-  }
-}
