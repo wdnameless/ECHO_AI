@@ -8,6 +8,16 @@ import { resetAsrGateForTests } from "@/lib/asr-gate";
 
 vi.mock("@/lib/asr-discovery", () => ({
   getAsrBaseUrl: vi.fn(),
+  resetAsrBaseUrlCache: vi.fn(),
+}));
+
+// The mic path now consults the engine's capabilities before opening a socket
+// (a non-streamable model accepts the socket and then kills it on the first
+// audio frame). These tests are about the socket lifecycle, so streaming is
+// granted by default; the non-streamable case has its own test below.
+vi.mock("@/lib/asr-capabilities", () => ({
+  getAsrCapabilities: vi.fn(async () => ({ streaming: true, variant: "test" })),
+  noteStreamingUnsupported: vi.fn(),
 }));
 
 vi.mock("@/lib/asr-language", () => ({
@@ -642,6 +652,39 @@ describe("useMicWsStreaming", () => {
     // No WebSocket should have been created
     expect(MockWebSocket.instances).toHaveLength(0);
     // Stream should have been released
+    expect(asrGate.tryAcquireStream("them")).toBe(true);
+  });
+
+  /**
+   * A batch-only model accepts `/v1/asr/stream` and then kills the socket on
+   * the first audio frame. Opening it anyway cost every utterance a doomed
+   * connection, a counted reconnect and a false "engine is not responding"
+   * banner, while the batch endpoint transcribed the same audio in ~76ms.
+   */
+  it("does not open a socket when the loaded model cannot stream", async () => {
+    const caps = await import("@/lib/asr-capabilities");
+    vi.mocked(caps.getAsrCapabilities).mockResolvedValue({
+      streaming: false,
+      variant: "tdt-0.6b-v3",
+    });
+
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useMicWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    act(() => {
+      result.current.micWsWantRef.current = true;
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(MockWebSocket.instances).toHaveLength(0);
+    // The slot must be handed back so the batch path can run.
     expect(asrGate.tryAcquireStream("them")).toBe(true);
   });
 });

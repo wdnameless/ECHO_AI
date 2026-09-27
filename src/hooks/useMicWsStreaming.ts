@@ -10,6 +10,10 @@
 
 import { useCallback, useRef } from "react";
 import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
+import {
+  getAsrCapabilities,
+  noteStreamingUnsupported,
+} from "@/lib/asr-capabilities";
 import { getAsrLanguage } from "@/lib/asr-language";
 import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
@@ -45,6 +49,14 @@ export function useMicWsStreaming({
   const micWsConnectRef = useRef<() => void>(() => {});
   /** True once the open stream answered this utterance with any text. */
   const micProducedTextRef = useRef(false);
+  /**
+   * Audio frames that actually left over the socket this utterance.
+   *
+   * Used to tell an engine refusal (audio sent, no text back) from a socket
+   * that died before carrying any audio — only the former means the model
+   * cannot stream, and only the former may mark streaming unsupported.
+   */
+  const micFramesSentRef = useRef(0);
   const micUtteranceActiveRef = useRef(false);
 
   const micWsFinalizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -83,6 +95,7 @@ export function useMicWsStreaming({
     const ws = micWsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(pcm);
+      micFramesSentRef.current += 1;
     } else if (capturingRef.current && micWsWantRef.current) {
       if (micFrameBufferRef.current.length >= MAX_MIC_BUFFERED_FRAMES) {
         micFrameBufferRef.current.shift();
@@ -135,6 +148,26 @@ export function useMicWsStreaming({
         } catch (err) {
           console.warn("[mic-ws]", err);
           base = "";
+        }
+        if (!capturingRef.current) {
+          releaseStream("me");
+          return;
+        }
+        // A model that does not implement `/v1/asr/stream` accepts the socket
+        // and then kills it on the first audio frame ("Connection reset without
+        // closing handshake" on the engine side, WinError 10053 here). This
+        // path used to open that socket unconditionally, so on Parakeet every
+        // utterance burned a doomed connection, counted a reconnect and left
+        // `micProducedTextRef` false — which surfaced as "the local engine is
+        // not responding" while the batch endpoint answered the same audio in
+        // ~76ms. The interviewer channel has consulted this flag all along; the
+        // microphone never did.
+        const caps = await getAsrCapabilities();
+        if (!caps.streaming) {
+          // Nothing to stream to: hand the slot back and let the caller use the
+          // batch path, which is the fast one for these models anyway.
+          releaseStream("me");
+          return;
         }
         if (!capturingRef.current) {
           releaseStream("me");
@@ -206,6 +239,18 @@ export function useMicWsStreaming({
           // system-audio stream was then refused as "model busy" while the
           // microphone itself had nothing open.
           releaseStream("me");
+          // A non-streamable model is refused the moment real audio reaches it:
+          // measured against parakeet-tdt-0.6b-v3, the engine accepts the
+          // handshake, answers a `status` frame, and then aborts the connection
+          // on the first audio frame WITHOUT sending any error text — so the
+          // textual marker the interviewer channel looks for never arrives.
+          // The observable signature of that refusal is therefore: audio was
+          // actually sent, and not one partial came back. Recording it stops the
+          // next utterance from paying for the same doomed socket and lets the
+          // batch path (76ms for this model) handle the audio instead.
+          if (micFramesSentRef.current > 0 && !micProducedTextRef.current) {
+            noteStreamingUnsupported();
+          }
           scheduleMicWsReconnect();
         };
         ws.onerror = () => {
@@ -258,6 +303,7 @@ export function useMicWsStreaming({
   /** Called at the start of an utterance by the caller's VAD. */
   const micBeginUtterance = useCallback(() => {
     micProducedTextRef.current = false;
+    micFramesSentRef.current = 0;
     micUtteranceActiveRef.current = true;
   }, []);
 
