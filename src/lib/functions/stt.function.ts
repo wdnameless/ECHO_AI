@@ -244,6 +244,15 @@ export async function fetchSTT(params: STTParams): Promise<string> {
         const sep = url.includes("?") ? "&" : "?";
         url += `${sep}prompt=${encodeURIComponent(trimmedPrompt)}`;
       }
+      // The batch path sent no language, so the recognition-language setting
+      // only reached the streaming socket — and a model that cannot stream
+      // (Parakeet TDT) never opened one, which is why the setting appeared to
+      // do nothing. `auto` stays absent so the engine keeps auto-detecting.
+      const asrLanguage = getAsrLanguage();
+      if (asrLanguage !== "auto") {
+        const sep = url.includes("?") ? "&" : "?";
+        url += `${sep}language=${encodeURIComponent(asrLanguage)}`;
+      }
     }
 
     const isForm =
