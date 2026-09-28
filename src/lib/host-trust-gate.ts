@@ -1,5 +1,4 @@
-import { getHostOfCurlTemplate, isTrustedHost, trustHost, normalizeHost } from "./trusted-hosts";
-
+import { isTrustedHost, trustHost, normalizeHost } from "./trusted-hosts";
 /**
  * S2: шлюз подтверждения для исходящих запросов на недоверенный хост.
  *
@@ -60,11 +59,30 @@ export async function resolveOutboundHeaders(
   url: string,
   headers: Record<string, string>
 ): Promise<{ allowed: boolean; headers: Record<string, string>; maxRedirections: number }> {
+  // A URL that is not absolute http(s) has no host we could trust, and asking
+  // about it is how a garbage entry got into the trust list: a request URL that
+  // had lost its origin (`null/v1/asr/transcribe`) fell through to the `?? url`
+  // fallback below, so the dialog offered the whole URL as the "host", the user
+  // pressed "trust", and `normalizeHost` stored the literal `null` in
+  // `trusted_hosts`.
+  //
+  // This check MUST come before `isTrustedHost`: that stored `null` entry made
+  // `isTrustedHost("null/v1/asr/transcribe")` true, so the broken request passed
+  // the gate silently and its response was shown as speech. A scheme-less URL is
+  // a broken request, not an untrusted host — fail closed.
+  if (!/^https?:\/\//i.test(url.trim())) {
+    return { allowed: false, headers: {}, maxRedirections: 0 };
+  }
+
   if (isTrustedHost(url)) {
     return { allowed: true, headers, maxRedirections: 0 };
   }
 
-  const host = getHostOfCurlTemplate(`curl ${url}`) ?? url;
+  const host = normalizeHost(url);
+  if (!host) {
+    return { allowed: false, headers: {}, maxRedirections: 0 };
+  }
+
   const secrets = listSecretHeaders(headers);
 
   if (!promptHandler) {
@@ -134,4 +152,53 @@ export async function resolveRedirect(
 /** Только для тестов: сброс зарегистрированного обработчика. */
 export function resetHostTrustPromptForTests(): void {
   promptHandler = null;
+}
+
+/**
+ * Единственный путь наружу: гейт доверия, затем запрос.
+ *
+ * ЗАЧЕМ ЭТО ЗДЕСЬ. Гейт был «глубоким модулем», который вызывали три раза из
+ * шести: `ai-response`, `models` и `stt` его спрашивали, а веб-поиск, переводчик
+ * и кнопка Test в настройках уходили в сеть напрямую через `tauriFetch`. При
+ * этом `capabilities` разрешают `http://**` и `https://**`, то есть гейт —
+ * единственный контроль исходящего трафика, и он не применялся. Хуже: Tavily
+ * кладёт ключ в ТЕЛО запроса, а гейт умеет вырезать только заголовки.
+ *
+ * Обёртка переносит решение в одну точку. Забыть её можно так же, как забыть
+ * вызов гейта, но теперь у модуля, которому нужна сеть, есть ровно один
+ * очевидный способ её получить, и он безопасен по умолчанию: без зарегистрированного
+ * обработчика подтверждения запрос не уйдёт (fail closed).
+ *
+ * `maxRedirections: 0` — часть контракта: иначе плагин следует за 30x и уводит
+ * запрос с ключом на хост, который никто не подтверждал.
+ */
+export async function gatedFetch(
+  url: string,
+  init: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    signal?: AbortSignal;
+  } = {},
+  fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>
+): Promise<Response> {
+  const headers = init.headers ?? {};
+  const trust = await resolveOutboundHeaders(url, headers);
+  if (!trust.allowed) {
+    throw new Error("Запрос отменён: хост не входит в список доверенных.");
+  }
+
+  // Ленивый импорт: модуль тянет Tauri-плагин, а гейт используется и в тестах,
+  // и в чистой логике доверия, где плагина нет.
+  const doFetch =
+    fetchImpl ??
+    (await import("@tauri-apps/plugin-http")).fetch;
+  return doFetch(url, {
+    method: init.method ?? "GET",
+    headers: trust.headers,
+    body: init.body,
+    signal: init.signal,
+    // Плагин читает эту опцию; браузерный fetch её игнорирует.
+    maxRedirections: trust.maxRedirections,
+  } as RequestInit);
 }

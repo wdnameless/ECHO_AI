@@ -1,4 +1,4 @@
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { gatedFetch } from "./host-trust-gate";
 import { safeLocalStorage } from "./storage/helper";
 import { getSecret, saveSecret, removeSecret, secretKey } from "./storage/secret-store";
 import { STORAGE_KEYS } from "@/config/constants";
@@ -149,12 +149,10 @@ export interface SearchResultItem {
 async function searchDuckDuckGo(query: string, maxResults: number = 3): Promise<SearchResultItem[]> {
   const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
   try {
-    let res: Response;
-    try {
-      res = await tauriFetch(url);
-    } catch {
-      res = await fetch(url);
-    }
+    // No key here, but the gate must still approve the host: it is the only
+    // egress control, and an unapproved host would also mean an unapproved
+    // redirect target if this URL ever changed.
+    const res = await gatedFetch(url, { signal: AbortSignal.timeout(8000) });
     const data = await res.json();
     const results: SearchResultItem[] = [];
 
@@ -197,11 +195,9 @@ async function searchBrave(query: string, apiKey: string, maxResults: number = 3
       Accept: "application/json",
       "X-Subscription-Token": apiKey,
     };
-    try {
-      res = await tauriFetch(url, { headers });
-    } catch {
-      res = await fetch(url, { headers });
-    }
+    // Через гейт: этот модуль уходил в сеть напрямую, с ключом и без
+    // maxRedirections, хотя capabilities разрешают любой хост.
+    res = await gatedFetch(url, { headers, signal: AbortSignal.timeout(8000) });
     const data = await res.json();
     if (data.web?.results && Array.isArray(data.web.results)) {
       return data.web.results.slice(0, maxResults).map((r: any) => ({
@@ -232,12 +228,12 @@ async function searchExa(query: string, apiKey: string, maxResults: number = 3):
       "Content-Type": "application/json",
       "x-api-key": apiKey,
     };
-    let res: Response;
-    try {
-      res = await tauriFetch(url, { method: "POST", headers, body });
-    } catch {
-      res = await fetch(url, { method: "POST", headers, body });
-    }
+    const res = await gatedFetch(url, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(8000),
+    });
     const data = await res.json();
     if (Array.isArray(data.results)) {
       return data.results.slice(0, maxResults).map((r: any) => ({
@@ -264,23 +260,21 @@ async function searchTavily(query: string, apiKey: string, maxResults: number = 
       max_results: maxResults,
       search_depth: "basic",
     });
+    // The key goes in the Authorization header, NOT the body. Tavily accepts
+    // both, but the trust gate can only strip credentials it can see as
+    // headers — a key in the body would sail past `without-secrets` and reach
+    // whatever host the URL names. Verified against Tavily's own OpenAPI spec:
+    // `securitySchemes.bearerAuth` = "Bearer <your API key>".
     const headers = {
       "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
     };
-    let res: Response;
-    try {
-      res = await tauriFetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ ...JSON.parse(body), api_key: apiKey }),
-      });
-    } catch {
-      res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ ...JSON.parse(body), api_key: apiKey }),
-      });
-    }
+    const res = await gatedFetch(url, {
+      method: "POST",
+      headers,
+      body,
+      signal: AbortSignal.timeout(8000),
+    });
     const data = await res.json();
     if (Array.isArray(data.results)) {
       return data.results.slice(0, maxResults).map((r: any) => ({

@@ -185,7 +185,12 @@ fn handle_toggle_window<R: Runtime>(app: &AppHandle<R>) {
     #[cfg(target_os = "windows")]
     {
         let state = app.state::<WindowVisibility>();
-        let mut is_hidden = state.is_hidden.lock().unwrap();
+        // Recover a poisoned lock, like every other handler in this file: a
+        // panic elsewhere must not permanently break the window-toggle shortcut.
+        let mut is_hidden = match state.is_hidden.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         *is_hidden = !*is_hidden;
 
         if let Err(e) = window.emit("toggle-window-visibility", *is_hidden) {

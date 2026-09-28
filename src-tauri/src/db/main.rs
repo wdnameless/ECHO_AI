@@ -21,6 +21,7 @@ struct NormalizedSqlStrings {
     m4: String,
     m5: String,
     m6: String,
+    m7: String,
 }
 
 static NORMALIZED_SQL: LazyLock<NormalizedSqlStrings> = LazyLock::new(|| NormalizedSqlStrings {
@@ -30,6 +31,7 @@ static NORMALIZED_SQL: LazyLock<NormalizedSqlStrings> = LazyLock::new(|| Normali
     m4: normalize_eol(include_str!("migrations/self-evolution.sql")),
     m5: normalize_eol(include_str!("migrations/asr-corrections.sql")),
     m6: normalize_eol(include_str!("migrations/retention.sql")),
+    m7: normalize_eol(include_str!("migrations/message-source.sql")),
 });
 
 /// Returns all database migrations with guaranteed LF-normalized SQL content.
@@ -43,6 +45,7 @@ pub fn migrations() -> Vec<Migration> {
     let s4: &'static str = unsafe { &*(sql_store.m4.as_str() as *const str) };
     let s5: &'static str = unsafe { &*(sql_store.m5.as_str() as *const str) };
     let s6: &'static str = unsafe { &*(sql_store.m6.as_str() as *const str) };
+    let s7: &'static str = unsafe { &*(sql_store.m7.as_str() as *const str) };
     vec![
         // Migration 1: Create system_prompts table with indexes and triggers
         Migration {
@@ -84,6 +87,13 @@ pub fn migrations() -> Vec<Migration> {
             version: 6,
             description: "create_retention_settings_table",
             sql: s6,
+            kind: MigrationKind::Up,
+        },
+        // Migration 7: Remember which side said each message
+        Migration {
+            version: 7,
+            description: "add_message_source",
+            sql: s7,
             kind: MigrationKind::Up,
         },
     ]

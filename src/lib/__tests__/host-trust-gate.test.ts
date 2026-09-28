@@ -8,6 +8,7 @@ import {
   type HostTrustDecision,
 } from "../host-trust-gate";
 import { STORAGE_KEYS } from "@/config/constants";
+import { isTrustedHost, getTrustedHosts } from "../trusted-hosts";
 
 describe("host-trust-gate", () => {
   beforeEach(() => {
@@ -60,7 +61,6 @@ describe("host-trust-gate", () => {
         "https://api.openai.com/v1/chat/completions",
         headers
       );
-
       expect(result.allowed).toBe(true);
       expect(result.headers).toEqual(headers);
       expect(prompted).toBe(false);
@@ -166,6 +166,74 @@ describe("host-trust-gate", () => {
         expect(res.headers).not.toHaveProperty("Authorization");
         expect(res.headers["Content-Type"]).toBe("application/json");
       });
+    });
+  });
+
+  /**
+   * A scheme-less request URL is a broken request, not an untrusted host.
+   *
+   * Live report: the dialog quoted `null/v1/asr/transcribe?language=ru` as the
+   * "host" and the user pressed "trust", so the literal `null` was written into
+   * `trusted_hosts` — and from then on every request whose hostname coercion
+   * produced `null` passed the trusted check silently. These tests fail if the
+   * absolute-URL check is removed or moved back below `isTrustedHost`.
+   */
+  describe("non-absolute request URLs", () => {
+    it("denies a scheme-less URL without prompting", async () => {
+      let prompted = false;
+      setHostTrustPrompt(async () => {
+        prompted = true;
+        return "trust" as HostTrustDecision;
+      });
+
+      const res = await resolveOutboundHeaders("null/v1/asr/transcribe?language=ru", {
+        Authorization: "Bearer key",
+      });
+
+      expect(res.allowed).toBe(false);
+      expect(res.headers).toEqual({});
+      // The dialog must never see it: that is how `null` got trusted.
+      expect(prompted).toBe(false);
+    });
+
+    it("denies a relative path even when 'null' is already a trusted host", async () => {
+      // The exact bad state left behind by the live session.
+      localStorage.setItem(STORAGE_KEYS.TRUSTED_HOSTS, JSON.stringify(["null"]));
+      const res = await resolveOutboundHeaders("null/v1/asr/transcribe", {
+        Authorization: "Bearer key",
+      });
+      expect(res.allowed).toBe(false);
+      expect(res.headers).toEqual({});
+    });
+
+    it("stops counting a already-saved 'null' entry as a trusted host", () => {
+      // Two independent guards, and this asserts the storage one: even if a bad
+      // entry reaches `trusted_hosts`, a request whose host normalises to it must
+      // not be trusted. Without the read filter, `isTrustedHost("http://null/x")`
+      // returned true and the broken request sailed through the gate.
+      localStorage.setItem(
+        STORAGE_KEYS.TRUSTED_HOSTS,
+        JSON.stringify(["null", "my-llm.internal"])
+      );
+      expect(isTrustedHost("http://null/v1/asr/transcribe")).toBe(false);
+      // The legitimate entry alongside it keeps working.
+      expect(isTrustedHost("https://my-llm.internal/v1")).toBe(true);
+    });
+
+    it("ignores stored entries that are not shaped like a host", () => {
+      localStorage.setItem(
+        STORAGE_KEYS.TRUSTED_HOSTS,
+        JSON.stringify(["null/v1/asr/transcribe?language=ru", "", "  ", "ok.example"])
+      );
+      expect(getTrustedHosts()).toEqual(["ok.example"]);
+    });
+
+    it("still allows the absolute local engine URL", async () => {
+      const res = await resolveOutboundHeaders(
+        "http://127.0.0.1:9877/v1/asr/transcribe",
+        {}
+      );
+      expect(res.allowed).toBe(true);
     });
   });
 });

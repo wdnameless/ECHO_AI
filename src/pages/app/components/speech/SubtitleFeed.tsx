@@ -15,7 +15,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { fastTranslate } from "@/lib/fast-translator";
+import { useTranslationQueue } from "@/hooks/useTranslationQueue";
 import { useAppVersion } from "@/lib/version";
 import { getMetrics, onMetrics, resetMetrics } from "@/lib/metrics";
 import {
@@ -224,6 +224,7 @@ const AiFeedRow = memo(function AiFeedRow({
   feedback,
   translation,
   translationsOn,
+  translationFailed,
   copied,
   isDislikeOpen,
   customReason,
@@ -239,6 +240,8 @@ const AiFeedRow = memo(function AiFeedRow({
   feedback?: "like" | "dislike";
   translation?: string;
   translationsOn: boolean;
+  /** True when this row's translation already failed (show a dash, not a spinner). */
+  translationFailed: boolean;
   copied: boolean;
   isDislikeOpen: boolean;
   customReason: string;
@@ -383,8 +386,16 @@ const AiFeedRow = memo(function AiFeedRow({
         </div>
         {translationsOn && !streaming && (
           <div className="min-w-0 flex items-start border-l border-border/30 pl-2">
-            {translation === undefined ? (
+            {translation === undefined && !translationFailed ? (
+              // Only a row still waiting on a provider spins. A row whose
+              // translation failed used to spin forever, because a failure
+              // leaves `translations[key]` unset and the spinner keyed on
+              // exactly that.
               <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/50 mt-1" />
+            ) : translation === undefined ? (
+              <span className="text-muted-foreground/50" title="Перевод недоступен">
+                —
+              </span>
             ) : (
               <p
                 className="text-[0.8em] leading-relaxed text-violet-700/90 dark:text-violet-300/90"
@@ -411,6 +422,7 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
   streaming,
   translation,
   translationsOn,
+  translationFailed,
   isEditing,
   editWrongWord,
   editRightWord,
@@ -434,6 +446,8 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
   streaming?: boolean;
   translation?: string;
   translationsOn: boolean;
+  /** True when this row's translation already failed (show a dash, not a spinner). */
+  translationFailed: boolean;
   isEditing: boolean;
   editWrongWord: string;
   editRightWord: string;
@@ -611,8 +625,12 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
         </div>
         {translationsOn && (
           <div className="min-w-0 flex items-start">
-            {translation === undefined ? (
+            {translation === undefined && !translationFailed ? (
               <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
+            ) : translation === undefined ? (
+              <span className="text-muted-foreground/40" title="Перевод недоступен">
+                —
+              </span>
             ) : (
               <p
                 className="flex-1 min-w-0 text-[0.72em] leading-snug text-primary/75 break-words"
@@ -686,7 +704,7 @@ export const SubtitleFeed = ({
     });
   }, []);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const translatedKeysRef = useRef<Set<string>>(new Set());
+  
   const [translationsOn, setTranslationsOn] = useState(true);
   const appVersion = useAppVersion();
   // Recognition timings live in a store, not in props: every measured pass
@@ -694,7 +712,6 @@ export const SubtitleFeed = ({
   // would re-render the whole tree on each tick.
   const [metrics, setMetrics] = useState(() => getMetrics());
   useEffect(() => onMetrics((m) => setMetrics(m)), []);
-  const [translations, setTranslations] = useState<Record<string, string>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [feedbackGiven, setFeedbackGiven] = useState<
     Record<string, "like" | "dislike">
@@ -896,7 +913,45 @@ export const SubtitleFeed = ({
       merged.push({ ...e });
     }
 
-    return merged
+    // A row that repeats a row already accepted must not reach the screen.
+    //
+    // The merge above only ever compares a row with its immediate predecessor,
+    // so a row repeating an EARLIER one survives whenever anything sits between
+    // them — and an AI answer is always committed between two interviewer
+    // rows. The interviewer's next final also re-reads the clause already on
+    // screen, because the recogniser is handed the audio of the whole
+    // utterance: measured on the stored conversations, 188 of 316 adjacent
+    // interviewer turns (59%) contained the previous one verbatim.
+    //
+    // Containment, not equality: the repeated row is a superstring of the one
+    // already shown, so comparing the whole text catches it where a fixed-length
+    // key cannot. The longer row is kept — it carries the new words.
+    const deduped: FeedEntry[] = [];
+    for (const e of merged) {
+      const text = normalizeText(e.text);
+      const words = text.split(" ").filter(Boolean);
+      // Only rows with real content decide or are decided: a short interjection
+      // ("Да.") legitimately recurs and is not a repetition.
+      const covering = deduped.find(
+        (kept) =>
+          kept.kind === e.kind &&
+          words.length > 0 &&
+          normalizeText(kept.text).split(" ").filter(Boolean).length >= 3 &&
+          (text.includes(normalizeText(kept.text)) ||
+            normalizeText(kept.text).includes(text))
+      );
+      if (covering) {
+        // Keep whichever row is longer; the shorter one said nothing more.
+        if (text.length > normalizeText(covering.text).length) {
+          covering.text = e.text;
+          covering.ts = Math.max(covering.ts, e.ts);
+        }
+        continue;
+      }
+      deduped.push({ ...e });
+    }
+
+    return deduped
       .sort((a, b) => b.ts - a.ts)
       .slice(0, 80);
   }, [conversation.messages, liveSegments]);
@@ -982,63 +1037,15 @@ export const SubtitleFeed = ({
     onDeepen?.();
   }, [paused, onTogglePause, onDeepen]);
 
-  // Translation queue: newest entries first (they are on screen), two
-  // parallel workers keep latency low without hammering the endpoint.
-  //
-  // Only finished rows are translated: a live row renders full width (no
-  // translation column), so translating partial text would burn the endpoint
-  // for something nobody can see.
-  useEffect(() => {
-    if (!translationsOn) return;
-    let cancelled = false;
+  // The queue itself lives in a hook: its state was a ref plus a state tick
+  // whose relationship was expressed nowhere, and both defects that reached
+  // users came from that coupling (a failure cancelling its own workers, and a
+  // result discarded during teardown). See `useTranslationQueue`.
+  const { translations, hasFailed: translationFailed } = useTranslationQueue(
+    entries,
+    translationsOn
+  );
 
-    const pending = entries
-      .filter((e) => {
-        const key = e.text.trim();
-        // Переводим все строки, включая собственную речь: при ответе на
-        // английском нужно видеть, как звучит фраза, а не прочерк. Строки
-        // в процессе распознавания пропускаем — текст ещё меняется.
-        return (
-          key &&
-          !e.streaming &&
-          !translatedKeysRef.current.has(key) &&
-          translations[key] === undefined
-        );
-      })
-      // Вопросы собеседника и ответы ИИ — в первую очередь.
-      .sort((a, b) => b.ts - a.ts);
-
-    if (pending.length === 0) return;
-
-    const worker = async (queue: typeof pending, offset: number) => {
-      for (let i = offset; i < queue.length; i += 2) {
-        if (cancelled) return;
-        const e = queue[i];
-        const key = e.text.trim();
-        translatedKeysRef.current.add(key);
-        const translated = await fastTranslate(key);
-        if (cancelled) return;
-        // Never store the source as its own translation.
-        //
-        // A provider failure returns the input unchanged, and storing it made
-        // the row read «русский переводит русский» while `translatedKeysRef`
-        // marked it done — the row was never retried, so the mistake was
-        // permanent. Leaving the key unmarked lets a later pass try again.
-        if (!translated || translated.trim() === key) {
-          translatedKeysRef.current.delete(key);
-          continue;
-        }
-        setTranslations((p) => ({ ...p, [key]: translated }));
-      }
-    };
-
-    void worker(pending, 0);
-    void worker(pending, 1);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [entries, translationsOn]);
 
   const handleCopy = useCallback(async (id: string, text: string) => {
     try {
@@ -1371,6 +1378,7 @@ export const SubtitleFeed = ({
                 feedback={feedbackGiven[rowId]}
                 translation={translation}
                 translationsOn={translationsOn}
+                translationFailed={translationFailed(key)}
                 copied={copiedId === rowId}
                 isDislikeOpen={dislikeMenuFor === rowId}
                 customReason={customReason}
@@ -1403,6 +1411,7 @@ export const SubtitleFeed = ({
               streaming={e.streaming}
               translation={translation}
               translationsOn={translationsOn}
+              translationFailed={translationFailed(key)}
               isEditing={isEditing}
               editWrongWord={editWrongWord}
               editRightWord={editRightWord}

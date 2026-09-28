@@ -36,10 +36,20 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
 
 /**
  * Cadence of the live re-transcription used when the loaded model cannot
- * stream. Measured on Parakeet: one HTTP call costs 44-58ms regardless of clip
- * length, so ~600ms keeps the feed visibly live without saturating the engine.
+ * stream.
+ *
+ * Was 600ms. Measured on this engine, a live pass costs 55ms for a 0.6s clip,
+ * 70ms at 1s, 104ms at 2s and ~220ms at 8s — so at 600ms the engine sat idle
+ * for most of every interval while the user waited for text. At 300ms the
+ * cadence still leaves 2-5x headroom over the measured cost (and ~1.4x on a
+ * pathological 8s utterance), and the first words reach the screen ~300ms
+ * sooner, which is the delay that is actually perceived.
+ *
+ * Not lowered further: 250ms would leave ~1.15x headroom on a long utterance,
+ * where a pass approaching the interval makes the passes queue instead of
+ * arriving on time.
  */
-const LIVE_BATCH_MS = 600;
+const LIVE_BATCH_MS = 300;
 
 /**
  * Hard limit on how long ONE utterance may grow before the live pass keeps only
@@ -52,6 +62,46 @@ const LIVE_BATCH_MS = 600;
  * trimming the live preview there is safe.
  */
 const LIVE_MAX_UTTERANCE_MS = 20 * 16000;
+
+/**
+ * Whether a PCM buffer holds enough energy to be worth transcribing.
+ *
+ * Measured against the engine with the app's own settings: 300ms of pure
+ * silence does not come back empty — it comes back as the single word "Yeah."
+ * (12 runs, identical every time), and the live feed showed that word as the
+ * interviewer's line. The Rust VAD normally supplies these frames, but the live
+ * pass also carries the trailing silence before the end-of-speech threshold, so
+ * a segment can reach the model with no voice in it. Below this floor there is
+ * nothing to read and asking anyway invents a word.
+ *
+ * The measure is the LOUDEST ~100ms window, not the average of the buffer. An
+ * average is diluted by the trailing silence that prompted this check: 0.16s of
+ * quiet speech followed by 3s of silence averages below any sensible floor and
+ * would drop the words, while one window still holds them clearly.
+ *
+ * The floor is the configured `noise_gate_threshold`, not a constant: that knob
+ * already means "below this is room noise" and the settings panel exposes it, so
+ * tuning the noise gate tunes this too.
+ */
+export function hasSpeechEnergy(pcm: Int16Array, config: VadConfig): boolean {
+  if (pcm.length === 0) return false;
+  // ~100ms at 16 kHz, and never longer than the buffer itself, so a short
+  // segment is measured whole in a single pass.
+  const windowSize = Math.min(1600, pcm.length);
+  for (let start = 0; start < pcm.length; start += windowSize) {
+    const end = Math.min(start + windowSize, pcm.length);
+    let sumsq = 0;
+    for (let i = start; i < end; i++) {
+      // Normalise back to the -1..1 scale the threshold is expressed in.
+      const v = pcm[i] / 32768;
+      sumsq += v * v;
+    }
+    if (Math.sqrt(sumsq / (end - start)) >= config.noise_gate_threshold) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Wraps 16-bit mono PCM at 16 kHz in a WAV container.
@@ -151,6 +201,19 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
    * italics and the AI never answered because the question was never emitted.
    */
   const flushUtteranceRef = useRef<() => void>(() => {});
+  /**
+   * Latest `runLiveBatch`, so the "speech-frame" listener can call it without
+   * capturing a first-render copy.
+   *
+   * The listener effect depends only on `[capturingRef]` (a stable ref), so it
+   * subscribes ONCE and its closure keeps whatever `runLiveBatch` existed on the
+   * first render — with the `vadConfig`, `selectedSttProvider` and
+   * `appendLiveSegment` of that moment, forever. Measured consequence: the VAD /
+   * Noise Gate sliders in the settings panel could not affect live transcription
+   * until a full remount. Assigning through a ref keeps the callback current
+   * without resubscribing the Tauri listener on every settings change.
+   */
+  const runLiveBatchRef = useRef<() => Promise<void>>(async () => {});
   /** Fires if the end-of-speech final never reaches us. */
   const flushSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
@@ -299,7 +362,13 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
             );
           }
         } else {
-          setError("Received empty transcription");
+          // A 200 with no text is what the engine answers for a segment that
+          // turned out to be silence (verified: 100ms of near-silence returns
+          // `text: ""` with HTTP 200). That is not a fault, and reporting it as
+          // one lit the red «Локальный движок распознавания не отвечает»
+          // banner — the same message used for a genuinely unreachable engine —
+          // while the engine was healthy and answering every request.
+          setError("");
         }
       } catch (sttError: unknown) {
         console.error("STT Error:", sttError);
@@ -472,6 +541,20 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       }
       consumed += f.byteLength;
     }
+
+    // Speech floor. The frames start at detected speech, but the pass also
+    // carries the trailing silence that has not yet hit the end-of-speech
+    // threshold, so a segment can hold almost no voice. Measured against the
+    // engine with the app's own settings, 300ms of pure silence does not come
+    // back empty — it comes back as the word "Yeah." (12 runs, the same answer
+    // every time), and the live feed showed exactly that word as the
+    // interviewer's line. Below this floor the model has nothing to read, and
+    // asking it anyway invents a word.
+    if (!hasSpeechEnergy(pcm.subarray(0, written), vadConfig)) {
+      liveBusyRef.current = false;
+      return;
+    }
+
     const wav = encodeWav16kMono(pcm.subarray(0, written));
     const started = Date.now();
     try {
@@ -498,7 +581,9 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     } finally {
       liveBusyRef.current = false;
     }
-  }, [appendLiveSegment, selectedSttProvider]);
+  }, [appendLiveSegment, selectedSttProvider, vadConfig]);
+  // Keep the listener's view of the batch current (see the ref's comment).
+  runLiveBatchRef.current = runLiveBatch;
 
   useEffect(() => {
     let frameUnlisten: (() => void) | undefined;
@@ -524,7 +609,9 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       if (liveTimerRef.current === null) {
         liveTimerRef.current = setTimeout(() => {
           liveTimerRef.current = null;
-          void runLiveBatch();
+          // Through the ref, not the closure: this listener subscribes once and
+          // would otherwise run the first render's callback forever.
+          void runLiveBatchRef.current();
         }, LIVE_BATCH_MS);
       }
     })
@@ -577,6 +664,26 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       }
       rolledTextRef.current = "";
       utteranceEndedRef.current = false;
+      // Cancel the previous utterance's flush-safety timer.
+      //
+      // The safety timer belonged to the utterance that is now over: dispatch it
+      // BEFORE cancelling, then start clean.
+      //
+      // It is armed for 1200ms when speech ends. If the person resumes inside
+      // that window it must not fire later against the NEXT utterance — that was
+      // the original bug, which truncated a live stream mid-sentence and asked
+      // the AI a half-formed question. But simply cancelling it is the opposite
+      // mistake: the text already recognised for the finished utterance was then
+      // never dispatched at all, because the socket's own final had not arrived
+      // yet (recognition lags ~1s) and this handler wipes the accumulator that
+      // held it. Flushing first, then clearing, keeps both properties.
+      if (flushSafetyTimerRef.current) {
+        clearTimeout(flushSafetyTimerRef.current);
+        flushSafetyTimerRef.current = null;
+        // Only if there is something to dispatch: `flushUtteranceRef` also clears
+        // the accumulator and re-arms nothing, so this is safe when empty.
+        flushUtteranceRef.current();
+      }
       livePcmRef.current = [];
       liveTextRef.current = "";
       utteranceStartedAtRef.current = Date.now();

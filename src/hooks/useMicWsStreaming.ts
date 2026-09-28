@@ -18,10 +18,13 @@ import { getAsrLanguage } from "@/lib/asr-language";
 import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
 import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
-const MIC_WS_RECONNECT_MS = 400;
-/** Cap on the retry delay once several attempts in a row have been refused. */
-const MIC_WS_RECONNECT_MAX_MS = 3000;
-
+import {
+  nextReconnectDelay,
+  closeSocketDetached,
+  looksLikeStreamRefusal,
+  type ReconnectBackoff,
+} from "@/lib/asr-ws-shared";
+const MIC_WS_BACKOFF: ReconnectBackoff = { baseMs: 400, maxMs: 3000 };
 /**
  * Maximum number of PCM frames buffered while WebSocket is connecting or waiting
  * for stream lock. At 250ms per frame, 24 frames = ~6 seconds of speech preserved.
@@ -74,16 +77,10 @@ export function useMicWsStreaming({
     }
     const ws = micWsRef.current;
     micWsRef.current = null;
-    if (
-      ws &&
-      (ws.readyState === WebSocket.OPEN ||
-        ws.readyState === WebSocket.CONNECTING)
-    ) {
-      ws.onclose = null;
-      ws.onerror = null;
-      ws.onmessage = null;
-      ws.close();
-    }
+    // Shared with the interviewer channel: detach handlers, then close whatever
+    // state the socket is in — a handshake finishing in the background would
+    // otherwise hold an engine session.
+    closeSocketDetached(ws);
   }, []);
 
   const micWsClose = useCallback(() => {
@@ -120,7 +117,10 @@ export function useMicWsStreaming({
     // that wait hammering the engine — eight refusals inside one utterance, each
     // counted in the UI and each re-paying the base-URL lookup. The delay grows
     // to a second and resets as soon as the socket opens.
-    const delay = Math.min(MIC_WS_RECONNECT_MS * 2 ** micWsReconnectAttemptsRef.current, MIC_WS_RECONNECT_MAX_MS);
+    const delay = nextReconnectDelay(
+      micWsReconnectAttemptsRef.current,
+      MIC_WS_BACKOFF
+    );
     micWsReconnectAttemptsRef.current += 1;
     micWsReconnectTimerRef.current = setTimeout(() => {
       micWsReconnectTimerRef.current = null;
@@ -193,6 +193,16 @@ export function useMicWsStreaming({
           return;
         }
         ws.binaryType = "arraybuffer";
+        // Track the socket from the moment it exists, not from `onopen`.
+        //
+        // The interviewer channel was fixed this way and this one was not, so a
+        // socket still in CONNECTING was invisible to `micWsCloseSocketOnly`,
+        // which walks `micWsRef.current`. Stopping capture during the handshake
+        // therefore left the socket alive: it finished connecting in the
+        // background, held an engine session, and the pool is three sessions
+        // shared with the interviewer channel — the next streams were refused as
+        // `model busy` while the app believed it had closed everything.
+        micWsRef.current = ws;
         ws.onopen = () => {
           // Recognition language comes from the ASR language setting, never
           // from the answer language: the answer setting defaults to English
@@ -200,7 +210,6 @@ export function useMicWsStreaming({
           ws.send(
             JSON.stringify({ type: "config", language: getAsrLanguage() })
           );
-          micWsRef.current = ws;
           micWsStoppedByUsRef.current = false;
           // A served connection means the retries were worth it; start the next
           // backoff from the base delay again.
@@ -228,9 +237,14 @@ export function useMicWsStreaming({
           handleAsrStreamFrame(ev.data, { onPartialTranscript, onFinalTranscript });
         };
         ws.onclose = () => {
-          if (micWsRef.current === ws) {
+          const isCurrent = micWsRef.current === ws;
+          if (isCurrent) {
             micWsRef.current = null;
           }
+          // A socket that is no longer current must not touch shared state: the
+          // slot belongs to its successor, and scheduling a reconnect here would
+          // race the socket that just replaced it.
+          if (!isCurrent) return;
           // Give the shared slot back. The interviewer channel does this in its
           // own `onclose`; this one did not, so a socket that dropped without a
           // deliberate `micWsClose()` (`micWsFinalizeAndClose` on a socket that
@@ -245,10 +259,21 @@ export function useMicWsStreaming({
           // on the first audio frame WITHOUT sending any error text — so the
           // textual marker the interviewer channel looks for never arrives.
           // The observable signature of that refusal is therefore: audio was
-          // actually sent, and not one partial came back. Recording it stops the
-          // next utterance from paying for the same doomed socket and lets the
-          // batch path (76ms for this model) handle the audio instead.
-          if (micFramesSentRef.current > 0 && !micProducedTextRef.current) {
+          // actually sent, and not one partial came back.
+          //
+          // It must ALSO be an unintentional close. A deliberate per-utterance
+          // close (`micWsFinalizeAndClose`) ends the utterance before the model
+          // has had time to answer — measured latency is ~1s — so "audio sent,
+          // no text yet" is the normal shape of a short utterance. Without this
+          // guard, saying one short sentence disabled streaming for the whole
+          // application session, for models that support it perfectly well.
+          if (
+            looksLikeStreamRefusal({
+              stoppedByUs: micWsStoppedByUsRef.current,
+              framesSent: micFramesSentRef.current,
+              producedText: micProducedTextRef.current,
+            })
+          ) {
             noteStreamingUnsupported();
           }
           scheduleMicWsReconnect();

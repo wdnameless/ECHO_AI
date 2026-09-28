@@ -1,4 +1,5 @@
 import { pushFrame } from "./asr-status";
+import { scrubAsrHallucinations } from "./asr-hallucinations";
 
 /**
  * Dispatching of one inbound frame from the pluely-asr streaming socket.
@@ -39,9 +40,17 @@ export function handleAsrStreamFrame(
     return;
   }
 
+  // Boilerplate the recogniser invents over non-speech audio is scrubbed at the
+  // boundary so it reaches neither the feed nor the AI — both channels dispatch
+  // through here, so one check covers them. The scrub is not a drop: the credits
+  // are spliced into real speech as often as they replace it, and the words
+  // around them are genuine.
+  const spoken = scrubAsrHallucinations(text);
+  if (!spoken) return;
+
   if (frame.type === "final") {
-    (handlers.onFinalTranscript ?? handlers.onPartialTranscript)(text);
+    (handlers.onFinalTranscript ?? handlers.onPartialTranscript)(spoken);
   } else if (frame.type === "text") {
-    handlers.onPartialTranscript(text);
+    handlers.onPartialTranscript(spoken);
   }
 }

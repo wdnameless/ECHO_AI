@@ -208,3 +208,51 @@ describe("a re-worded result is not appended twice", () => {
     );
   });
 });
+
+/**
+ * The report showed four consecutive grey italic rows, frozen mid-sentence.
+ *
+ * A row is `partial` while the recogniser is still working on it, and only its
+ * final clears the flag. When that final never arrives — a dropped live pass, a
+ * timed-out batch request — the row stayed a draft forever: rendered italic, and
+ * never joined or replaced by later text.
+ */
+describe("a draft whose final never arrives", () => {
+  it("stops being a draft on its own", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useConversationStore());
+
+      act(() => result.current.appendLiveSegment("them", "Пошли, бля", true));
+      expect(result.current.liveSegments[0].partial).toBe(true);
+
+      act(() => {
+        vi.advanceTimersByTime(25_000);
+      });
+
+      // The words are the best reading available; only the draft flag changes.
+      expect(result.current.liveSegments).toHaveLength(1);
+      expect(result.current.liveSegments[0].partial).toBe(false);
+      expect(result.current.liveSegments[0].text).toBe("Пошли, бля");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves a draft that is still recent alone", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useConversationStore());
+
+      act(() => result.current.appendLiveSegment("them", "Оку. Блин. Yeah.", true));
+      act(() => {
+        vi.advanceTimersByTime(5_000);
+      });
+
+      // A slow-but-working pass must not be cut short.
+      expect(result.current.liveSegments[0].partial).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

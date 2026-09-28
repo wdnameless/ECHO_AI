@@ -62,6 +62,15 @@ export function toChronologicalMessages<T extends { timestamp?: number }>(
  */
 const LIVE_SEGMENT_CONTINUATION_MS = 8_000;
 
+/**
+ * How long a live draft may stay unfinalised before it is treated as final.
+ *
+ * The recogniser's own cadence is ~600ms live and a final within a couple of
+ * seconds; this is deliberately well beyond both, so a slow-but-working pass is
+ * never cut short — only a row whose final never arrives at all.
+ */
+const STALE_PARTIAL_MS = 20_000;
+
 /** Words of a result, for comparing two readings of the same audio. */
 const words = (s: string): string[] =>
   s
@@ -188,6 +197,34 @@ export function useConversationStore() {
   const liveSegmentsRef = useRef<LiveSegment[]>([]);
   liveSegmentsRef.current = liveSegments;
 
+  /**
+   * Finalise a live draft that never received its final transcription.
+   *
+   * `appendLiveSegment` marks a row `partial` while the recogniser is still
+   * working on it, and only its final clears the flag. When that final never
+   * arrives — a dropped live pass, a timed-out batch request, a recognition
+   * failure after the draft was already on screen — the row stayed `partial`
+   * forever and rendered as a grey italic line that no later text joined or
+   * replaced. On screen that read as rows frozen mid-sentence (the report
+   * showed four consecutive italic fragments).
+   *
+   * The wording is already the best available reading of that audio, so the row
+   * is kept and merely stopped being a draft: it stops absorbing new text and
+   * becomes eligible for translation.
+   */
+  const finalizeStalePartials = useCallback((olderThanMs = STALE_PARTIAL_MS) => {
+    const cutoff = Date.now() - olderThanMs;
+    setLiveSegments((prev) => {
+      let changed = false;
+      const next = prev.map((seg) => {
+        if (!seg.partial || seg.timestamp > cutoff) return seg;
+        changed = true;
+        return { ...seg, partial: false };
+      });
+      return changed ? next : prev;
+    });
+  }, []);
+
   const [myLastTranscription, setMyLastTranscription] = useState<string>("");
   const [theirLastTranscription, setTheirLastTranscription] =
     useState<string>("");
@@ -201,6 +238,15 @@ export function useConversationStore() {
   useEffect(() => {
     void loadCorrections();
   }, []);
+
+  // Retire a live draft whose final never came. Cheap and self-limiting: the
+  // sweep only touches rows that are still `partial` and older than the window,
+  // and returns the same array when there is nothing to do, so there is no
+  // re-render in the normal case.
+  useEffect(() => {
+    const id = setInterval(() => finalizeStalePartials(), STALE_PARTIAL_MS / 2);
+    return () => clearInterval(id);
+  }, [finalizeStalePartials]);
 
   // Debounced save to prevent race conditions and improve performance
   useEffect(() => {
@@ -253,10 +299,17 @@ export function useConversationStore() {
     }, CONVERSATION_SAVE_DEBOUNCE_MS);
 
     return () => {
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-        saveTimeoutRef.current = null;
-      }
+      if (!saveTimeoutRef.current) return;
+      // Cancel the pending timer, but only FLUSH when this cleanup is a real
+      // unmount.
+      //
+      // This effect depends on the conversation, so its cleanup also runs before
+      // every re-execution — i.e. on every new message. Flushing there would save
+      // immediately on each update, destroying the debounce entirely: during a
+      // meeting that is one SQLite write per spoken line, which is what the
+      // debounce exists to prevent.
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
     };
   }, [
     conversation.messages.length,
@@ -264,6 +317,31 @@ export function useConversationStore() {
     conversation.id,
     conversation.updatedAt,
   ]);
+
+  /**
+   * Flush the pending save when the component actually goes away.
+   *
+   * A mount-only effect, so its cleanup runs exactly once — on unmount — and can
+   * safely write. That matters because the meeting panel is opened and closed as
+   * the conversation comes and goes, and a 500ms debounce was still pending on
+   * every close: the last thing said before closing was never written, with no
+   * retry, because nothing else knew the conversation had changed.
+   */
+  useEffect(() => {
+    return () => {
+      const conv = latestConversationRef.current;
+      if (!conv.id || conv.updatedAt === 0 || conv.messages.length === 0) return;
+      // A save may already be running; `performSave`'s own in-flight guard turns
+      // this into a trailing save instead of racing it.
+      if (isSavingRef.current) {
+        hasPendingSaveRef.current = true;
+        return;
+      }
+      void saveConversation(conv).catch((error) => {
+        console.error("Failed to save conversation on unmount:", error);
+      });
+    };
+  }, []);
 
   const appendLiveSegment = useCallback(
     (source: "me" | "them", text: string, partial = false) => {

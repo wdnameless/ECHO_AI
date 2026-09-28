@@ -277,4 +277,71 @@ describe("useAIStreaming", () => {
 
     expect(props.clearFiller).toHaveBeenCalled();
   });
+
+  /**
+   * `abortAI` is the SHUTDOWN signal, not "cancel one answer".
+   *
+   * The lifecycle hook calls it on `stopCapture` and on unmount, just before it
+   * tears the capture down and resets the question assembler — so releasing a
+   * held question here would dispatch it into a session that is closing, and the
+   * AI would answer text the user had just stopped listening for. This pins the
+   * contract so the tempting "release on abort" fix is not applied again: only
+   * a completed answer releases what it held.
+   */
+  it("does NOT release a held question when the session is aborted", () => {
+    const onProcessingComplete = vi.fn();
+    const props = { ...createHookProps(), onProcessingComplete };
+    const { result } = renderHook(() => useAIStreaming(props));
+
+    act(() => {
+      result.current.abortAI();
+    });
+
+    expect(onProcessingComplete).not.toHaveBeenCalled();
+  });
+
+  /**
+   * An aborted stream finishes *after* the stream that replaced it, so its
+   * `finally` must not settle shared state on the new stream's behalf: doing so
+   * cleared `isAIProcessing` mid-answer and released held questions into an
+   * answer that was still streaming.
+   */
+  it("lets only the newest stream settle processing state", async () => {
+    vi.mocked(fetchAIResponse).mockReturnValue(
+      (async function* () {
+        yield "первый";
+      })() as never
+    );
+    const onProcessingComplete = vi.fn();
+    const props = { ...createHookProps(), onProcessingComplete };
+    const { result } = renderHook(() => useAIStreaming(props));
+
+    await act(async () => {
+      await result.current.processWithAI("вопрос", "prompt", [], [], "them");
+    });
+    expect(onProcessingComplete).toHaveBeenCalledTimes(1);
+
+    // A second, slower stream: the first one's completion must not speak for it.
+    onProcessingComplete.mockClear();
+    let release: (v: string) => void = () => {};
+    const slow = new Promise<string>((r) => (release = r));
+    vi.mocked(fetchAIResponse).mockReturnValue(
+      (async function* () {
+        yield await slow;
+      })() as never
+    );
+
+    const pending = result.current.processWithAI("второй", "prompt", [], [], "them");
+    // Abort it the way a new question does, then let it unwind.
+    act(() => {
+      result.current.abortAI();
+    });
+    release("поздно");
+    await act(async () => {
+      await pending.catch(() => {});
+    });
+
+    // The stale stream settled; the generation guard decides what that means.
+    expect(onProcessingComplete).toHaveBeenCalled();
+  });
 });

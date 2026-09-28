@@ -1,0 +1,26 @@
+-- Remember who said each message.
+--
+-- The live feed distinguishes the interviewer from the candidate, but the
+-- column did not exist, so that fact was dropped on every reload: history came
+-- back with the speaker gone, which broke the LLM's `buildHistory` (it could no
+-- longer attribute a line) and hid speech rows in the feed after restarting.
+--
+-- Nullable on purpose: messages written before this migration have no source,
+-- and inventing one from `role` would be a guess — `user` covers both the
+-- candidate's own speech and the interviewer's transcription.
+ALTER TABLE messages ADD COLUMN source TEXT;
+
+-- Idempotency note.
+--
+-- SQLite has no `ADD COLUMN IF NOT EXISTS`, and SQLx replays a migration only
+-- when its version is absent from `_sqlx_migrations` — so this statement runs
+-- exactly once per database, and a database where the column exists but version
+-- 7 is unrecorded cannot arise from the app's own code:
+--   * SQLx records the version in the same transaction as the statement, so a
+--     failure rolls both back;
+--   * `patch_migration_checksums` only rewrites checksums of ALREADY recorded
+--     versions, so it cannot create a column without a version either.
+-- Verified against the two live databases: the main one has the column AND
+-- version 7, the portable one has neither — consistent in both directions.
+-- A manually edited database is therefore the only way to reach the duplicate
+-- case, and it is not worth making every startup pay for it.

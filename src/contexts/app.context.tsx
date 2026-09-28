@@ -536,12 +536,32 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       STORAGE_KEYS.SELECTED_STT_PROVIDER
     );
     if (savedSelectedStt) {
+      // The stored value wins. The `catch` below is the ONLY path that falls
+      // back to the local engine.
+      //
+      // This block used to write `defaultStt` unconditionally right after the
+      // `setSelectedSttProvider(JSON.parse(savedSelectedStt))` call — there was
+      // no `else`, so every launch parsed the saved provider and then
+      // immediately overwrote it (in state AND in localStorage) with the local
+      // engine. A user who chose Groq or OpenAI STT lost the choice on the next
+      // start, and the branch could never take effect at all.
       try {
         setSelectedSttProvider(JSON.parse(savedSelectedStt));
       } catch {
-        console.warn("Failed to parse selected STT provider");
+        console.warn("Failed to parse selected STT provider, using the local engine");
+        const defaultStt = {
+          provider: "handy-local-whisper",
+          variables: {},
+        };
+        setSelectedSttProvider(defaultStt);
+        safeLocalStorage.setItem(
+          STORAGE_KEYS.SELECTED_STT_PROVIDER,
+          JSON.stringify(defaultStt)
+        );
       }
-      // Default to the local speech engine
+    } else {
+      // Nothing stored yet (first launch): persist the default so the choice is
+      // stable from the very first run.
       const defaultStt = {
         provider: "handy-local-whisper",
         variables: {},
@@ -754,43 +774,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Check if the current AI provider/model supports images
-  useEffect(() => {
-    const checkImageSupport = async () => {
-      if (pluelyApiEnabled) {
-        // For Echo AI API, check the selected model's modality
-        try {
-          const storage = await invoke<{
-            selected_pluely_model?: string;
-          }>("secure_storage_get");
-
-          if (storage.selected_pluely_model) {
-            const model = JSON.parse(storage.selected_pluely_model);
-            const hasImageSupport = model.modality?.includes("image") ?? false;
-            setSupportsImages(hasImageSupport);
-          } else {
-            // No model selected, assume no image support
-            setSupportsImages(false);
-          }
-        } catch {
-          setSupportsImages(false);
-        }
-      } else {
-        // For custom AI providers, check if curl contains {{IMAGE}}
-        const provider = allAiProviders.find(
-          (p) => p.id === selectedAIProvider.provider
-        );
-        if (provider) {
-          const hasImageSupport = provider.curl?.includes("{{IMAGE}}") ?? false;
-          setSupportsImages(hasImageSupport);
-        } else {
-          setSupportsImages(true);
-        }
-      }
-    };
-
-    checkImageSupport();
-  }, [pluelyApiEnabled, selectedAIProvider.provider]);
 
   // Sync selected AI to localStorage — only for changes made here.
   //
@@ -832,6 +815,56 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     () => [...AI_PROVIDERS, ...customAiProviders],
     [customAiProviders]
   );
+
+  // Check if the current AI provider/model supports images
+  useEffect(() => {
+    const checkImageSupport = async () => {
+      if (pluelyApiEnabled) {
+        // For Echo AI API, check the selected model's modality
+        try {
+          const storage = await invoke<{
+            selected_pluely_model?: string;
+          }>("secure_storage_get");
+
+          if (storage.selected_pluely_model) {
+            const model = JSON.parse(storage.selected_pluely_model);
+            const hasImageSupport = model.modality?.includes("image") ?? false;
+            setSupportsImages(hasImageSupport);
+          } else {
+            // No model selected, assume no image support
+            setSupportsImages(false);
+          }
+        } catch {
+          setSupportsImages(false);
+        }
+      } else {
+        // For custom AI providers, check if curl contains {{IMAGE}}.
+        //
+        // `allAiProviders` is a dependency of this effect (see below). Reading it
+        // directly is what makes the check re-run when custom providers finish
+        // loading — a ref would never trigger that, and the effect would keep the
+        // verdict from its first run, when the list was still empty.
+        const provider = allAiProviders.find(
+          (p) => p.id === selectedAIProvider.provider
+        );
+        if (provider) {
+          const hasImageSupport = provider.curl?.includes("{{IMAGE}}") ?? false;
+          setSupportsImages(hasImageSupport);
+        } else {
+          setSupportsImages(true);
+        }
+      }
+    };
+
+    checkImageSupport();
+    // `allAiProviders` belongs in this array.
+    //
+    // It is `useMemo`'d on `customAiProviders` (see above), so it is stable
+    // between renders and changes only when the provider list genuinely does — no
+    // re-run loop. Without it the effect kept the verdict from its FIRST run,
+    // when the list was still empty, so a custom provider that loads after mount
+    // never had its `{{IMAGE}}` capability checked.
+  }, [pluelyApiEnabled, selectedAIProvider.provider, allAiProviders]);
 
   // Computed all STT providers
   const allSttProviders: TYPE_PROVIDER[] = useMemo(

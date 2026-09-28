@@ -21,9 +21,14 @@ import { pushStatus } from "@/lib/asr-status";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
 import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
 import { recordWsReconnect } from "@/lib/metrics";
+import {
+  nextReconnectDelay,
+  closeSocketDetached,
+  looksLikeStreamRefusal,
+  type ReconnectBackoff,
+} from "@/lib/asr-ws-shared";
 
-const WS_RECONNECT_MS = 400;
-
+const WS_BACKOFF: ReconnectBackoff = { baseMs: 400, maxMs: 3000 };
 export interface UseThemWsStreamingProps {
   capturingRef: React.MutableRefObject<boolean>;
   onPartialTranscript: (text: string) => void;
@@ -38,8 +43,18 @@ export function useThemWsStreaming({
   const wsRef = useRef<WebSocket | null>(null);
   const frameBufferRef = useRef<ArrayBuffer[]>([]);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Consecutive failed reconnect attempts, for the exponential backoff. */
+  const reconnectAttemptsRef = useRef(0);
   const stoppedByUsRef = useRef(false);
   const producedTextRef = useRef(false);
+  /**
+   * Frames actually handed to the engine on the current socket.
+   *
+   * The microphone channel uses the same counter to tell an engine refusal from
+   * a socket that died before carrying anything; this channel only had
+   * `producedTextRef`, so it could not make that distinction at all.
+   */
+  const framesSentRef = useRef(0);
   /**
    * A finalize-driven close asked for a reopen, but no speech has arrived yet.
    * The socket is opened on the next frame instead of immediately, so an idle
@@ -66,23 +81,23 @@ export function useThemWsStreaming({
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      try {
-        ws.close();
-      } catch {
-        // already closing
-      }
-    }
+    // Shared with the microphone channel: detach handlers, then close whatever
+    // state the socket is in.
+    closeSocketDetached(ws);
   }, []);
 
   const scheduleReconnect = useCallback(() => {
     if (!capturingRef.current || stoppedByUsRef.current) return;
     if (reconnectTimerRef.current) return;
+    // Back off while the retries keep failing (see WS_RECONNECT_MAX_MS). The
+    // delay resets on a served connection, below in `onopen`.
+    const delay = nextReconnectDelay(reconnectAttemptsRef.current, WS_BACKOFF);
+    reconnectAttemptsRef.current += 1;
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null;
       recordWsReconnect();
       void connectRef.current();
-    }, WS_RECONNECT_MS);
+    }, delay);
   }, [capturingRef]);
 
   /**
@@ -158,6 +173,9 @@ export function useThemWsStreaming({
         JSON.stringify({ type: "config", language: getAsrLanguage() })
       );
       stoppedByUsRef.current = false;
+      // A served connection means the retries were worth it: start the next
+      // backoff from the base delay again.
+      reconnectAttemptsRef.current = 0;
 
       while (frameBufferRef.current.length > 0) {
         const buffered = frameBufferRef.current.shift();
@@ -187,11 +205,44 @@ export function useThemWsStreaming({
       handleAsrStreamFrame(ev.data, { onPartialTranscript, onFinalTranscript });
     };
     ws.onclose = () => {
-      if (wsRef.current === ws) {
+      // Only the CURRENT socket may free the shared slot.
+      //
+      // `releaseStream("them")` used to run unconditionally, right next to a
+      // check that already established whether this socket is current. A stale
+      // socket closing later (the one replaced when audio arrived after a
+      // finalize) then freed the slot belonging to its successor: two streams
+      // raced on one model, the engine answered `500 model busy` for the batch
+      // pass, and utterances were lost — exactly what `asr-gate.ts` exists to
+      // prevent.
+      const isCurrent = wsRef.current === ws;
+      if (isCurrent) {
         wsRef.current = null;
         pushStatus({ online: false });
       }
+      if (!isCurrent) {
+        // The stale socket's own teardown ends here: it must not release the
+        // slot and must not schedule a competing reconnect.
+        return;
+      }
       releaseStream("them");
+      // A model that cannot stream is refused the moment real audio reaches it:
+      // the engine accepts the handshake, answers a status frame, and then drops
+      // the socket on the first audio frame WITHOUT sending error text — so the
+      // textual marker checked in `onmessage` never arrives. The observable
+      // signature is audio sent and not one partial returned. Recording it stops
+      // the next utterance from paying for the same doomed socket and lets the
+      // batch path handle the audio instead. The microphone channel has had this
+      // since its own fix; the interviewer channel never did, so on a
+      // batch-only model it reopened a socket per utterance forever.
+      if (
+        looksLikeStreamRefusal({
+          stoppedByUs: stoppedByUsRef.current,
+          framesSent: framesSentRef.current,
+          producedText: producedTextRef.current,
+        })
+      ) {
+        noteStreamingUnsupported();
+      }
       // A close we triggered with `finalize` is the protocol working: reopen
       // at once so the handshake never lands inside the next utterance.
       if (stoppedByUsRef.current) {
@@ -239,6 +290,10 @@ export function useThemWsStreaming({
     if (ws && ws.readyState === WebSocket.OPEN && !belongsToFinishedUtterance) {
       try {
         ws.send(pcm);
+        // Audio really reached the engine: this, not the socket state, is what
+        // distinguishes "the model refused the stream" from "the socket never
+        // carried anything". Paired with `producedTextRef` in `onclose`.
+        framesSentRef.current += 1;
       } catch {
         // socket died between the check and the send
       }
@@ -361,6 +416,9 @@ export function useThemWsStreaming({
   /** Called at the start of an utterance. */
   const beginUtterance = useCallback(() => {
     producedTextRef.current = false;
+    // Reset with the text flag: both describe the CURRENT utterance, and the
+    // refusal check compares them against each other on close.
+    framesSentRef.current = 0;
   }, []);
 
   return {

@@ -1,4 +1,5 @@
 import { fetchSTT, isSttErrorMessage } from "./stt.function";
+import { scrubAsrHallucinations } from "@/lib/asr-hallucinations";
 import { shouldUsePluelyAPI } from "./pluely.api";
 import { TYPE_PROVIDER } from "@/types";
 
@@ -80,18 +81,33 @@ export async function transcribeWithFallback({
     prompt,
   });
 
+  // Error paths keep their contract: callers tell failure from speech by the
+  // prefix, so an error must still be thrown, never returned as a transcription.
+  //
+  // An EMPTY result is not one of these: it is what the engine answers for a
+  // segment that held no speech (verified: 1s of silence returns `{"text": ""}`
+  // with HTTP 200). Throwing on it lit the «Локальный движок распознавания не
+  // отвечает» banner while the engine was healthy and answering every request.
   if (
-    result &&
-    !isSttErrorMessage(result) &&
-    !result.startsWith("Network error")
+    result === null ||
+    result === undefined ||
+    isSttErrorMessage(result) ||
+    result.startsWith("Network error")
   ) {
-    return result;
+    // Local server is offline or failed - clear error, NO cloud fallback.
+    throw new Error(
+      "Локальный движок распознавания не отвечает. Если модель не выбрана — " +
+        "выберите её в «SST Models»; если выбрана — запустите захват заново " +
+        "или перезапустите Echo AI."
+    );
   }
 
-  // Local server is offline or failed - clear error, NO cloud fallback.
-  throw new Error(
-    "Локальный движок распознавания не отвечает. Если модель не выбрана — " +
-      "выберите её в «SST Models»; если выбрана — запустите захват заново " +
-      "или перезапустите Echo AI."
-  );
+  // Boilerplate the recogniser invents over non-speech audio is not speech:
+  // returning it made the feed show «Субтитры сделал DimaTorzok» as the
+  // interviewer's own line, and the AI answered the credits. It is scrubbed
+  // rather than rejected, because the credits are spliced into real speech as
+  // often as they replace it and the words around them are genuine. An empty
+  // result means the engine heard nothing intelligible, which is how callers
+  // already read silence — not an engine fault.
+  return scrubAsrHallucinations(result);
 }

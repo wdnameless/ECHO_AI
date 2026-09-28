@@ -56,8 +56,12 @@ describe("chat-history.action transactions and batch inserts", () => {
     expect(queries.some((q) => /BEGIN|COMMIT|ROLLBACK/i.test(q))).toBe(false);
     expect(queries[0]).toContain("INSERT INTO conversations");
     const batch = queries.find((q) => q.includes("INSERT INTO messages"));
-    // one statement carrying both rows
-    expect(batch).toContain("(?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)");
+    // One statement carrying both rows. The tuple grew with migration 7, which
+    // added `source` — this asserts the batch SHAPE (one statement, two tuples
+    // of placeholders), not the column count, so adding a column never breaks it
+    // again while a genuine regression (splitting into two statements) still does.
+    expect(batch?.match(/VALUES/g)).toHaveLength(1);
+    expect(batch?.match(/\(\?,/g)).toHaveLength(2);
   });
 
   it("propagates a write error to the caller", async () => {
