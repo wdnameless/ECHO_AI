@@ -28,6 +28,15 @@ pub struct AudioState {
     stream_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     vad_config: Arc<Mutex<VadConfig>>,
     is_capturing: Arc<Mutex<bool>>,
+    /// Which capture owns the state, bumped on every start.
+    ///
+    /// A task that exits (naturally or by abort) used to clear `stream_task` and
+    /// `is_capturing` unconditionally. When it was the PREVIOUS capture finishing
+    /// after a new one had already started, that wiped the new capture's state —
+    /// `stop_system_audio_capture` then found `stream_task == None` and could not
+    /// abort it, leaving an unstoppable task holding the audio device. Each task
+    /// now records its generation and only clears the state if it still owns it.
+    capture_generation: Arc<Mutex<u64>>,
 }
 
 #[tauri::command]

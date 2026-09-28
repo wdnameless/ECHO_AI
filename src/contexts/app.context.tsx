@@ -350,6 +350,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   });
   /** True when the selection was changed locally and still needs persisting. */
   const aiSelectionDirtyRef = useRef(false);
+  /**
+   * Latest `allAiProviders`, for effects that run before it is declared.
+   *
+   * That memo is built lower in this component, so an effect above it cannot
+   * close over it. Reading through this ref (assigned on every render) keeps
+   * such an effect current WITHOUT depending on the array — which is rebuilt each
+   * render and would make the effect re-run forever.
+   */
+  const allAiProvidersRef = useRef<TYPE_PROVIDER[]>([]);
 
   // STT Providers
   const [customSttProviders, setCustomSttProviders] = useState<TYPE_PROVIDER[]>(
@@ -796,8 +805,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           setSupportsImages(false);
         }
       } else {
-        // For custom AI providers, check if curl contains {{IMAGE}}
-        const provider = allAiProviders.find(
+        // For custom AI providers, check if curl contains {{IMAGE}}.
+        //
+        // Read through the ref, not the closed-over value: custom providers load
+        // after this effect's first run, so a direct read found nothing, took the
+        // `else` branch below and reported image support for a provider that has
+        // none. The ref is updated every render, so it always holds the current
+        // list without making this effect depend on an array that is rebuilt
+        // every time (which would re-run it forever).
+        const provider = allAiProvidersRef.current.find(
           (p) => p.id === selectedAIProvider.provider
         );
         if (provider) {
@@ -810,6 +826,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     };
 
     checkImageSupport();
+    // Deliberately NOT `allAiProviders` as a dependency: that array is rebuilt
+    // on every render, so depending on it would re-run this effect forever. The
+    // stale-closure problem it has (custom providers load after the first run)
+    // is fixed by the ref read inside `checkImageSupport` instead.
   }, [pluelyApiEnabled, selectedAIProvider.provider]);
 
   // Sync selected AI to localStorage — only for changes made here.
@@ -852,6 +872,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     () => [...AI_PROVIDERS, ...customAiProviders],
     [customAiProviders]
   );
+  // Keep the ref above in step (see its comment): effects declared before this
+  // memo read it instead of depending on an array that changes every render.
+  allAiProvidersRef.current = allAiProviders;
 
   // Computed all STT providers
   const allSttProviders: TYPE_PROVIDER[] = useMemo(

@@ -664,6 +664,18 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       }
       rolledTextRef.current = "";
       utteranceEndedRef.current = false;
+      // Cancel the previous utterance's flush-safety timer.
+      //
+      // It is armed for 1200ms when speech ends, and if the person resumes
+      // inside that window it fired anyway — dispatching the NEW utterance's
+      // text through `flushUtteranceRef` and calling `finalizeAndClose()` on the
+      // socket that is mid-sentence, which truncated the stream and asked the AI
+      // a half-formed question. New speech is the proof the previous utterance
+      // is over AND that the flush it was waiting for is no longer needed.
+      if (flushSafetyTimerRef.current) {
+        clearTimeout(flushSafetyTimerRef.current);
+        flushSafetyTimerRef.current = null;
+      }
       livePcmRef.current = [];
       liveTextRef.current = "";
       utteranceStartedAtRef.current = Date.now();

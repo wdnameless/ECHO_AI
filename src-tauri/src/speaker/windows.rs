@@ -303,7 +303,14 @@ impl SpeakerStream {
                         }
                     }
 
-                    let wait_res = h_event.wait_for_event(1000);
+                    // Shorter than a second on purpose: shutdown is checked at
+                    // the top of this loop, so the poll interval is the worst
+                    // case between "asked to stop" and the thread noticing.
+                    // `Drop` joins this thread, and it runs on a Tokio worker —
+                    // a 1s block there is a stalled runtime, not just a slow
+                    // stop. 50ms keeps the stop responsive while the event still
+                    // does the real waiting when audio IS playing.
+                    let wait_res = h_event.wait_for_event(50);
                     match handle_event_wait_result(&wait_res) {
                         EventWaitAction::Continue => {
                             if wait_res.is_err() {
@@ -434,8 +441,26 @@ impl Drop for SpeakerStream {
         }
 
         if let Some(thread) = self.capture_thread.take() {
-            if let Err(e) = thread.join() {
-                error!("Failed to join capture thread: {:?}", e);
+            // Wait briefly, then let the thread finish on its own.
+            //
+            // `Drop` runs on a Tokio worker thread, and a bare `join()` blocked
+            // it for up to a full second (the capture loop's event wait). The
+            // shutdown flag is set above and the loop now polls every 50ms, so a
+            // short bounded wait is enough in practice; past that the thread has
+            // been asked to stop and owns nothing shared, so detaching it is
+            // strictly better than stalling the runtime.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
+            while !thread.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            if thread.is_finished() {
+                if let Err(e) = thread.join() {
+                    error!("Failed to join capture thread: {:?}", e);
+                }
+            } else {
+                // Detach: the thread still holds the stream, which is being torn
+                // down anyway, and the process exits with it if nothing else.
+                std::mem::forget(thread);
             }
         }
     }

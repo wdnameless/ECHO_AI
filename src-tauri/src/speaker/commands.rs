@@ -124,6 +124,17 @@ pub async fn start_system_audio_capture(
         .lock()
         .map_err(|e| format!("Failed to set capturing state: {}", e))? = true;
 
+    // Claim this capture's generation. The task below only clears shared state
+    // while it still owns it (see `AudioState::capture_generation`).
+    let my_generation = {
+        let mut gen_guard = state
+            .capture_generation
+            .lock()
+            .map_err(|e| format!("Failed to bump capture generation: {}", e))?;
+        *gen_guard = gen_guard.wrapping_add(1);
+        *gen_guard
+    };
+
     // Emit capture started event
     let _ = app_clone.emit("capture-started", sr);
 
@@ -136,15 +147,25 @@ pub async fn start_system_audio_capture(
         }
 
         let state = app_clone.state::<crate::AudioState>();
-        {
+        // Only the CURRENT capture may clear the state. A previous task that
+        // finishes after a new capture started would otherwise wipe the new
+        // capture's `stream_task` and `is_capturing`, leaving a task that
+        // `stop_system_audio_capture` can no longer find or abort.
+        let still_owner = match state.capture_generation.lock() {
+            Ok(guard) => *guard == my_generation,
+            // A poisoned lock must not strand the state: treat it as "not owner"
+            // so we never clobber a capture we cannot identify.
+            Err(_) => false,
+        };
+        if still_owner {
             if let Ok(mut guard) = state.stream_task.lock() {
                 *guard = None;
             };
+            if let Ok(mut cap) = state.is_capturing.lock() {
+                *cap = false;
+            }
+            let _ = app_clone.emit("capture-stopped", ());
         }
-        if let Ok(mut cap) = state.is_capturing.lock() {
-            *cap = false;
-        }
-        let _ = app_clone.emit("capture-stopped", ());
     });
 
     *state_clone

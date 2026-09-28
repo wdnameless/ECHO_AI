@@ -23,6 +23,16 @@ import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
 import { recordWsReconnect } from "@/lib/metrics";
 
 const WS_RECONNECT_MS = 400;
+/**
+ * Ceiling for the exponential reconnect backoff.
+ *
+ * A flat 400ms retry spent the wait for the single model hammering the engine:
+ * this channel's reconnect is refused for as long as the microphone holds the
+ * stream, so every utterance produced a burst of refusals, each counted in the
+ * UI and each re-paying the base-URL lookup. The microphone channel has backed
+ * off since it was fixed; this one never did.
+ */
+const WS_RECONNECT_MAX_MS = 3000;
 
 export interface UseThemWsStreamingProps {
   capturingRef: React.MutableRefObject<boolean>;
@@ -38,6 +48,8 @@ export function useThemWsStreaming({
   const wsRef = useRef<WebSocket | null>(null);
   const frameBufferRef = useRef<ArrayBuffer[]>([]);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Consecutive failed reconnect attempts, for the exponential backoff. */
+  const reconnectAttemptsRef = useRef(0);
   const stoppedByUsRef = useRef(false);
   const producedTextRef = useRef(false);
   /**
@@ -86,11 +98,18 @@ export function useThemWsStreaming({
   const scheduleReconnect = useCallback(() => {
     if (!capturingRef.current || stoppedByUsRef.current) return;
     if (reconnectTimerRef.current) return;
+    // Back off while the retries keep failing (see WS_RECONNECT_MAX_MS). The
+    // delay resets on a served connection, below in `onopen`.
+    const delay = Math.min(
+      WS_RECONNECT_MS * 2 ** reconnectAttemptsRef.current,
+      WS_RECONNECT_MAX_MS
+    );
+    reconnectAttemptsRef.current += 1;
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null;
       recordWsReconnect();
       void connectRef.current();
-    }, WS_RECONNECT_MS);
+    }, delay);
   }, [capturingRef]);
 
   /**
@@ -166,6 +185,9 @@ export function useThemWsStreaming({
         JSON.stringify({ type: "config", language: getAsrLanguage() })
       );
       stoppedByUsRef.current = false;
+      // A served connection means the retries were worth it: start the next
+      // backoff from the base delay again.
+      reconnectAttemptsRef.current = 0;
 
       while (frameBufferRef.current.length > 0) {
         const buffered = frameBufferRef.current.shift();
