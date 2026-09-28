@@ -4,6 +4,8 @@ import {
   RotateCcw,
   AudioLines,
   Languages,
+  Gauge,
+  Target,
   Trash2,
   Download,
   Loader2,
@@ -173,7 +175,8 @@ function ModelLanguages({
 export function matchesFilters(
   model: ModelEntry,
   searchQuery: string,
-  selectedLanguage: string
+  selectedLanguage: string,
+  caps?: { onlyStreaming?: boolean; onlyTranslate?: boolean }
 ): boolean {
   const matchesSearch =
     searchQuery === "" ||
@@ -184,7 +187,11 @@ export function matchesFilters(
     selectedLanguage === "all" ||
     supportsLanguageCode(model.languages, selectedLanguage);
 
-  return matchesSearch && matchesLanguage;
+  const matchesCapabilities =
+    (!caps?.onlyStreaming || model.capabilities.streaming) &&
+    (!caps?.onlyTranslate || model.capabilities.translate);
+
+  return matchesSearch && matchesLanguage && matchesCapabilities;
 }
 
 /**
@@ -203,9 +210,11 @@ export function selectDownloadedModels(
     selectedLanguage: string;
     sortBy: SortOption;
     sortDirection: "asc" | "desc";
+    onlyStreaming?: boolean;
+    onlyTranslate?: boolean;
   }
 ): InstalledModel[] {
-  const { searchQuery, selectedLanguage, sortBy, sortDirection } = filters;
+  const { searchQuery, selectedLanguage, sortBy, sortDirection, onlyStreaming, onlyTranslate } = filters;
   return downloaded
     .filter((file) => {
       const model = catalog.find((m) => m.id === file.model_id);
@@ -224,9 +233,12 @@ export function selectDownloadedModels(
         const matchesSearch = searchQuery === "" || name.includes(searchQuery.toLowerCase());
         const matchesLanguage =
           selectedLanguage === "all" || tokens.includes(selectedLanguage.toLowerCase());
-        return matchesSearch && matchesLanguage;
+        // No capabilities on disk for a hand-installed file: a capability
+        // toggle hides it, honestly — the app cannot prove the claim either way.
+        const matchesCapabilities = !onlyStreaming && !onlyTranslate;
+        return matchesSearch && matchesLanguage && matchesCapabilities;
       }
-      return matchesFilters(model, searchQuery, selectedLanguage);
+      return matchesFilters(model, searchQuery, selectedLanguage, { onlyStreaming, onlyTranslate });
     })
     .sort((a, b) => {
       const modelA = catalog.find((m) => m.id === a.model_id);
@@ -250,9 +262,13 @@ export const Models = () => {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedLanguage, setSelectedLanguage] = useState<string>("all");
+  // Capability toggles: off = no filtering by that capability. Both on at once
+  // selects the intersection — empty by construction (no model in the catalogue
+  // has both), which the list renders honestly as "no models match".
+  const [onlyStreaming, setOnlyStreaming] = useState(false);
+  const [onlyTranslate, setOnlyTranslate] = useState(false);
   const [sortBy, setSortBy] = useState<SortOption>("accuracy");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
-
   const [downloadingModelId, setDownloadingModelId] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -367,10 +383,10 @@ export const Models = () => {
         const isDownloaded = model.files.some((f) => downloadedFilesSet.has(f.filename));
         if (isDownloaded) return false;
 
-        return matchesFilters(model, searchQuery, selectedLanguage);
+        return matchesFilters(model, searchQuery, selectedLanguage, { onlyStreaming, onlyTranslate });
       })
       .sort((a, b) => compareModels(a, b, sortBy, sortDirection));
-  }, [models, downloadedFilesSet, searchQuery, selectedLanguage, sortBy, sortDirection]);
+  }, [models, downloadedFilesSet, searchQuery, selectedLanguage, sortBy, sortDirection, onlyStreaming, onlyTranslate]);
 
   // Filter and sort downloaded models.
   //
@@ -385,8 +401,10 @@ export const Models = () => {
         selectedLanguage,
         sortBy,
         sortDirection,
+        onlyStreaming,
+        onlyTranslate,
       }),
-    [downloadedModels, models, searchQuery, selectedLanguage, sortBy, sortDirection]
+    [downloadedModels, models, searchQuery, selectedLanguage, sortBy, sortDirection, onlyStreaming, onlyTranslate]
   );
 
   // Toggle sort direction
@@ -478,6 +496,28 @@ export const Models = () => {
                 title={`Sort by accuracy (${sortBy === "accuracy" ? sortDirection : "desc"})`}
               >
                 <Languages className="w-3.5 h-3.5" />
+              </Button>
+
+              {/* Capability toggles: streaming-only / translate-capable.
+                  Off = no filtering; headings show the live counts. */}
+              <Button
+                variant={onlyStreaming ? "secondary" : "ghost"}
+                size="icon"
+                className={cn("h-8 w-8 text-muted-foreground hover:text-foreground", onlyStreaming && "text-primary")}
+                onClick={() => setOnlyStreaming((v) => !v)}
+                title={onlyStreaming ? "Showing streaming models only (click to clear)" : "Show streaming models only"}
+              >
+                <Gauge className="w-3.5 h-3.5" />
+              </Button>
+
+              <Button
+                variant={onlyTranslate ? "secondary" : "ghost"}
+                size="icon"
+                className={cn("h-8 w-8 text-muted-foreground hover:text-foreground", onlyTranslate && "text-primary")}
+                onClick={() => setOnlyTranslate((v) => !v)}
+                title={onlyTranslate ? "Showing translate-capable models only (click to clear)" : "Show translate-capable models only"}
+              >
+                <Target className="w-3.5 h-3.5" />
               </Button>
 
               {/* Language filter dropdown */}

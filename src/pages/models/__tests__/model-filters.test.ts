@@ -18,6 +18,7 @@ const model = (over: Partial<ModelEntry>): ModelEntry =>
     name: "Model",
     description: "",
     languages: ["ru"],
+    capabilities: { streaming: false, translate: false, lang_detect: false, timestamps: "none" },
     files: [{ filename: "f.gguf", quant: "Q8_0", size_bytes: 100, sha256: "0" }],
     accuracy_score: 5,
     speed_score: 5,
@@ -78,7 +79,28 @@ describe("models page filtering", () => {
   it("lets the language filter through as 'all'", () => {
     expect(matchesFilters(model({ languages: [] }), "", "all")).toBe(true);
   });
-});
+
+  it("filters by streaming capability when the toggle is on", () => {
+    const stream = model({ capabilities: { streaming: true, translate: false, lang_detect: false, timestamps: "token" } });
+    const batch = model({ capabilities: { streaming: false, translate: false, lang_detect: false, timestamps: "none" } });
+    expect(matchesFilters(stream, "", "all", { onlyStreaming: true })).toBe(true);
+    expect(matchesFilters(batch, "", "all", { onlyStreaming: true })).toBe(false);
+    // Toggle off = no filtering.
+    expect(matchesFilters(batch, "", "all")).toBe(true);
+  });
+
+  it("filters by translate capability when the toggle is on", () => {
+    const tr = model({ capabilities: { streaming: false, translate: true, lang_detect: false, timestamps: "none" } });
+    const plain = model({ capabilities: { streaming: false, translate: false, lang_detect: false, timestamps: "none" } });
+    expect(matchesFilters(tr, "", "all", { onlyTranslate: true })).toBe(true);
+    expect(matchesFilters(plain, "", "all", { onlyTranslate: true })).toBe(false);
+  });
+
+  it("both toggles select the intersection (empty in the current catalogue)", () => {
+    const stream = model({ capabilities: { streaming: true, translate: false, lang_detect: false, timestamps: "token" } });
+    expect(matchesFilters(stream, "", "all", { onlyStreaming: true, onlyTranslate: true })).toBe(false);
+  });
+  });
 
 /**
  * The wiring, not just the comparator.
