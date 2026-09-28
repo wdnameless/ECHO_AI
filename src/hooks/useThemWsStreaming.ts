@@ -187,9 +187,24 @@ export function useThemWsStreaming({
       handleAsrStreamFrame(ev.data, { onPartialTranscript, onFinalTranscript });
     };
     ws.onclose = () => {
-      if (wsRef.current === ws) {
+      // Only the CURRENT socket may free the shared slot.
+      //
+      // `releaseStream("them")` used to run unconditionally, right next to a
+      // check that already established whether this socket is current. A stale
+      // socket closing later (the one replaced when audio arrived after a
+      // finalize) then freed the slot belonging to its successor: two streams
+      // raced on one model, the engine answered `500 model busy` for the batch
+      // pass, and utterances were lost — exactly what `asr-gate.ts` exists to
+      // prevent.
+      const isCurrent = wsRef.current === ws;
+      if (isCurrent) {
         wsRef.current = null;
         pushStatus({ online: false });
+      }
+      if (!isCurrent) {
+        // The stale socket's own teardown ends here: it must not release the
+        // slot and must not schedule a competing reconnect.
+        return;
       }
       releaseStream("them");
       // A close we triggered with `finalize` is the protocol working: reopen

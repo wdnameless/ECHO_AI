@@ -274,7 +274,17 @@ export function useSystemAudio() {
     onError: setError,
     // A question heard while the answer was still streaming is held by the
     // manager; ask it now that the AI is free.
+    //
+    // The ref is cleared HERE, synchronously, before the release. It is normally
+    // kept in step by `useEffect([isAIProcessing])`, but that runs after the
+    // render commits — and `onProcessingComplete` fires synchronously from the
+    // stream's `finally`, so `releaseHeld()` still saw `true`, re-parked the
+    // question ("still busy"), and nothing ever called it again: a question asked
+    // during an answer was dropped silently. Clearing it first is what the
+    // caller's own comment promises ("a question held during the answer sees
+    // `isAIProcessing === false` and goes out immediately").
     onProcessingComplete: () => {
+      isAIProcessingRef.current = false;
       autoAskManagerRef.current?.releaseHeld();
     },
   });

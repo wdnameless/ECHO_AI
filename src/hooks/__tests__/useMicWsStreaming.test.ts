@@ -393,6 +393,42 @@ describe("useMicWsStreaming", () => {
     expect(ws.readyState).toBe(MockWebSocket.CLOSED);
   });
 
+  /**
+   * A socket that is still CONNECTING must be closable.
+   *
+   * The ref was assigned only inside `onopen`, so `micWsCloseSocketOnly` — which
+   * walks `micWsRef.current` — saw `null` during the handshake and left the
+   * socket alive. It finished connecting in the background and held one of the
+   * three engine sessions shared with the interviewer channel, so later streams
+   * were refused as `model busy` while the app believed it had closed everything.
+   * The interviewer channel had been fixed this way; the microphone had not.
+   */
+  it("closes a socket that is still connecting", async () => {
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useMicWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    act(() => {
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const ws = MockWebSocket.instances[0];
+    // Still CONNECTING: no triggerOpen().
+    expect(ws.readyState).toBe(MockWebSocket.CONNECTING);
+    // The hook must already track it, or the close below cannot reach it.
+    expect(result.current.micWsRef.current).toBe(ws);
+
+    act(() => {
+      result.current.cleanupMicWs();
+    });
+
+    expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
   it("cleans up on cleanupMicWs without reconnecting", async () => {
     const onPartialTranscript = vi.fn();
     const capturingRef = { current: true };

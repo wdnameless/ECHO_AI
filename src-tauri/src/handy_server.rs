@@ -42,6 +42,10 @@ static JOB_OBJECT: Mutex<Option<SendHandle>> = Mutex::new(None);
 
 pub static STT_SERVER: Mutex<Option<Child>> = Mutex::new(None);
 
+/// Serialises `ensure_server_running`: see its comment for the double-start race
+/// this prevents.
+static START_LOCK: Mutex<()> = Mutex::new(());
+
 /// Default port of the native engine, and the range it rebounds into when the
 /// default one is taken.
 const ENGINE_PORT: u16 = 9877;
@@ -601,7 +605,20 @@ fn start_sidecar_watchdog() {
 }
 
 /// Start the local Handy STT server if it isn't already running.
+///
+/// Serialised by `START_LOCK`. Two paths call this concurrently — the app setup
+/// (`lib.rs`) and the renderer's "restart engine" button — and the liveness
+/// check cannot see a child that is still loading its model: `native_engine_port`
+/// only answers once the port responds. So both callers saw "offline", both
+/// spawned `pluely-asr`, and the second spawn overwrote the Job Object
+/// (whose `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` kills the first child) while
+/// fighting over the same port. A poisoned lock still recovers: the guard only
+/// protects the spawn, and a panic inside it must not disable the engine forever.
 pub fn ensure_server_running() {
+    let _guard = START_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     if native_engine_port().is_some() {
         start_sidecar_watchdog();
         return;

@@ -74,6 +74,12 @@ export function useAIStreaming({
   const [isAIProcessing, setIsAIProcessing] = useState(false);
   const [lastAIResponse, setLastAIResponse] = useState<string>("");
   const abortControllerRef = useRef<AbortController | null>(null);
+  /**
+   * Which stream is current. Bumped by every `processWithAI`; an older stream
+   * compares its own token before settling shared state, so aborting one to ask
+   * something new cannot make the old stream clear the new one's flags.
+   */
+  const generationRef = useRef(0);
   const streamBufferRef = useRef<string>("");
   const streamFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastAIResponseAtRef = useRef<number>(0);
@@ -84,7 +90,14 @@ export function useAIStreaming({
       abortControllerRef.current = null;
     }
     clearFiller();
-  }, [clearFiller]);
+    // Cancelling ends the answer, so anything held during it must not be
+    // stranded. `finally` cannot do it: an abort still leaves the generation
+    // current (nothing replaced it), so the stream settles itself — but the
+    // release is gated on the flag, and the flag is only cleared by the render
+    // that follows. Releasing here, explicitly, is what guarantees the held
+    // question goes out instead of waiting for an answer that was cancelled.
+    onProcessingComplete?.();
+  }, [clearFiller, onProcessingComplete]);
 
   const processWithAI = useCallback(
     async (
@@ -99,6 +112,13 @@ export function useAIStreaming({
       }
 
       abortControllerRef.current = new AbortController();
+      // Generation token: an aborted stream's `finally` must not touch the state
+      // of the stream that replaced it. Without this, starting a new question
+      // mid-answer let the OLD stream's `finally` run `setIsAIProcessing(false)`
+      // and `onProcessingComplete()` while the new stream was still streaming —
+      // which released held questions into an answer that had not finished.
+      generationRef.current += 1;
+      const generation = generationRef.current;
 
       try {
         setIsAIProcessing(true);
@@ -180,11 +200,16 @@ export function useAIStreaming({
         console.warn("[ai-stream]", err);
         clearFiller();
       } finally {
-        setIsAIProcessing(false);
-        clearFiller();
-        // After the flag is cleared, so a question held during the answer sees
-        // `isAIProcessing === false` and goes out immediately.
-        onProcessingComplete?.();
+        // Only the newest stream may settle the shared state: an aborted one
+        // finishes later and would otherwise clear the flag and release held
+        // questions while its successor is still answering.
+        if (generationRef.current === generation) {
+          setIsAIProcessing(false);
+          clearFiller();
+          // After the flag is cleared, so a question held during the answer sees
+          // `isAIProcessing === false` and goes out immediately.
+          onProcessingComplete?.();
+        }
       }
     },
     [
