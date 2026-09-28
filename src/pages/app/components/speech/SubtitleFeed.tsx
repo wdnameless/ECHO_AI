@@ -15,7 +15,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { fastTranslate } from "@/lib/fast-translator";
+import { useTranslationQueue } from "@/hooks/useTranslationQueue";
 import { useAppVersion } from "@/lib/version";
 import { getMetrics, onMetrics, resetMetrics } from "@/lib/metrics";
 import {
@@ -704,57 +704,7 @@ export const SubtitleFeed = ({
     });
   }, []);
   const scrollRef = useRef<HTMLDivElement>(null);
-  /**
- * How long a failed translation waits before being retried.
- *
- * Long enough that a provider outage does not turn into a retry storm (the
- * effect re-runs on every new word), short enough that a row recovers on its
- * own rather than sitting on a dash until the user says something new.
- */
-const TRANSLATE_RETRY_BACKOFF_MS = 45_000;
-/** How often to re-run the queue so failed rows are retried on their own. */
-const TRANSLATE_RETRY_TICK_MS = 15_000;
-
-const translatedKeysRef = useRef<Set<string>>(new Set());
-  /**
-   * Rows whose translation failed, with the time of the failure.
-   *
-   * Without this a failed row is re-selected by the next run of the translation
-   * effect — which fires on every change to `entries`, i.e. on every new word on
-   * screen — so a provider that is down or out of quota is hit in a tight loop
-   * and the row keeps its spinner indefinitely.
-   */
-  const translateFailedAtRef = useRef<Map<string, number>>(new Map());
-  /**
-   * Render tick: the setter alone is used. A failure is recorded in a ref, and
-   * a ref change does not re-render, so the dash would never replace the
-   * spinner. Bumping this state repaints the rows WITHOUT restarting the queue
-   * (see `queueRunId` for why those must be separate).
-   */
-  const [, setTranslationTick] = useState(0);
-  /**
-   * Bumped ONLY by the retry interval, to re-run the queue.
-   *
-   * It must not be `translationTick`: a failure inside the queue used to bump
-   * that state, which was also a dependency of the queue effect, so React tore
-   * the effect down (setting `cancelled`) and both workers died mid-loop —
-   * every remaining row in the queue was dropped after the first provider
-   * failure. The render bump and the re-run trigger are now separate: a failure
-   * repaints the dash without cancelling work, and only the interval restarts
-   * the queue (after clearing the marks it just expired).
-   */
-  const [queueRunId, setQueueRunId] = useState(0);
-  /**
-   * Whether this row's translation already failed.
-   *
-   * Drives the difference between "still waiting" (a spinner) and "no
-   * translation available" (a dash). The row is not retried until its backoff
-   * expires, so without this distinction it would spin for the whole window.
-   */
-  const translationFailed = useCallback(
-    (key: string) => translateFailedAtRef.current.has(key.trim()),
-    []
-  );
+  
   const [translationsOn, setTranslationsOn] = useState(true);
   const appVersion = useAppVersion();
   // Recognition timings live in a store, not in props: every measured pass
@@ -762,7 +712,6 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
   // would re-render the whole tree on each tick.
   const [metrics, setMetrics] = useState(() => getMetrics());
   useEffect(() => onMetrics((m) => setMetrics(m)), []);
-  const [translations, setTranslations] = useState<Record<string, string>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [feedbackGiven, setFeedbackGiven] = useState<
     Record<string, "like" | "dislike">
@@ -1088,117 +1037,15 @@ const translatedKeysRef = useRef<Set<string>>(new Set());
     onDeepen?.();
   }, [paused, onTogglePause, onDeepen]);
 
-  // Translation queue: newest entries first (they are on screen), two
-  // parallel workers keep latency low without hammering the endpoint.
-  //
-  // Only finished rows are translated: a live row renders full width (no
-  // translation column), so translating partial text would burn the endpoint
-  // for something nobody can see.
-  useEffect(() => {
-    if (!translationsOn) return;
-    let cancelled = false;
+  // The queue itself lives in a hook: its state was a ref plus a state tick
+  // whose relationship was expressed nowhere, and both defects that reached
+  // users came from that coupling (a failure cancelling its own workers, and a
+  // result discarded during teardown). See `useTranslationQueue`.
+  const { translations, hasFailed: translationFailed } = useTranslationQueue(
+    entries,
+    translationsOn
+  );
 
-    const now = Date.now();
-    const pending = entries
-      .filter((e) => {
-        const key = e.text.trim();
-        // Переводим все строки, включая собственную речь: при ответе на
-        // английском нужно видеть, как звучит фраза, а не прочерк. Строки
-        // в процессе распознавания пропускаем — текст ещё меняется.
-        if (!key || e.streaming) return false;
-        // A row that failed is not retried until its backoff expires.
-        //
-        // The old code deleted the key from `translatedKeysRef` on failure and
-        // left `translations[key]` unset, so the effect re-selected the same row
-        // on its next run — and the effect runs on every `entries` change, which
-        // is every new word on screen. With MyMemory out of quota (it answers
-        // 429 to every request) that was an unthrottled retry storm against two
-        // providers, and the row showed a spinner forever instead of a result.
-        const failedAt = translateFailedAtRef.current.get(key);
-        if (failedAt !== undefined && now - failedAt < TRANSLATE_RETRY_BACKOFF_MS) {
-          return false;
-        }
-        return !translatedKeysRef.current.has(key) && translations[key] === undefined;
-      })
-      // Вопросы собеседника и ответы ИИ — в первую очередь.
-      .sort((a, b) => b.ts - a.ts);
-
-    if (pending.length === 0) return;
-
-    const worker = async (queue: typeof pending, offset: number) => {
-      for (let i = offset; i < queue.length; i += 2) {
-        if (cancelled) return;
-        const e = queue[i];
-        const key = e.text.trim();
-        translatedKeysRef.current.add(key);
-        const translated = await fastTranslate(key);
-        // A provider failure returns the input unchanged; check that BEFORE the
-        // cancellation test so a torn-down effect cannot record a good result as
-        // a failure.
-        const usable = Boolean(translated) && translated.trim() !== key;
-        if (cancelled) {
-          // The effect was torn down while this request was in flight. Dropping
-          // the result and deleting the key made the row stall forever: the next
-          // effect run skipped the key (this worker still held it when that run
-          // built its `pending` list) and the retry interval did not know about
-          // it either. Finish the bookkeeping instead — a good result is stored,
-          // a failure is handed to the retry path, which now owns the row.
-          translatedKeysRef.current.delete(key);
-          if (usable) {
-            setTranslations((p) => ({ ...p, [key]: translated }));
-          } else {
-            translateFailedAtRef.current.set(key, Date.now());
-          }
-          continue;
-        }
-        // Never store the source as its own translation.
-        //
-        // A provider failure returns the input unchanged, and storing it made
-        // the row read «русский переводит русский». Now the failure is
-        // remembered with a timestamp instead of being retried on every render.
-        if (!usable) {
-          translatedKeysRef.current.delete(key);
-          translateFailedAtRef.current.set(key, Date.now());
-          // The failure lives in a ref, so React would not re-render and the row
-          // would keep its spinner instead of showing the dash. Bump to render.
-          setTranslationTick((n) => n + 1);
-          continue;
-        }
-        translateFailedAtRef.current.delete(key);
-        setTranslations((p) => ({ ...p, [key]: translated }));
-      }
-    };
-
-    void worker(pending, 0);
-    void worker(pending, 1);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [entries, translationsOn, queueRunId]);
-
-  // Keep the queue moving on its own.
-  //
-  // The effect above only re-runs when `entries` changes, which means a row
-  // whose translation failed stayed on a dash until the next thing was said —
-  // and on a quiet call, indefinitely. This tick re-runs it so a recovered
-  // provider is picked up within the backoff window without user action.
-  useEffect(() => {
-    if (!translationsOn) return;
-    const id = setInterval(() => {
-      // Nudge the effect by clearing expired failure marks, then re-render.
-      const now = Date.now();
-      let changed = false;
-      for (const [key, at] of translateFailedAtRef.current) {
-        if (now - at >= TRANSLATE_RETRY_BACKOFF_MS) {
-          translateFailedAtRef.current.delete(key);
-          changed = true;
-        }
-      }
-      if (changed) setQueueRunId((n) => n + 1);
-    }, TRANSLATE_RETRY_TICK_MS);
-    return () => clearInterval(id);
-  }, [translationsOn]);
 
   const handleCopy = useCallback(async (id: string, text: string) => {
     try {
