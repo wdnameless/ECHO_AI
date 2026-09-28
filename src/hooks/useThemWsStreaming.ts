@@ -41,6 +41,14 @@ export function useThemWsStreaming({
   const stoppedByUsRef = useRef(false);
   const producedTextRef = useRef(false);
   /**
+   * Frames actually handed to the engine on the current socket.
+   *
+   * The microphone channel uses the same counter to tell an engine refusal from
+   * a socket that died before carrying anything; this channel only had
+   * `producedTextRef`, so it could not make that distinction at all.
+   */
+  const framesSentRef = useRef(0);
+  /**
    * A finalize-driven close asked for a reopen, but no speech has arrived yet.
    * The socket is opened on the next frame instead of immediately, so an idle
    * capture session does not hold an engine session (the pool is finite).
@@ -207,6 +215,22 @@ export function useThemWsStreaming({
         return;
       }
       releaseStream("them");
+      // A model that cannot stream is refused the moment real audio reaches it:
+      // the engine accepts the handshake, answers a status frame, and then drops
+      // the socket on the first audio frame WITHOUT sending error text — so the
+      // textual marker checked in `onmessage` never arrives. The observable
+      // signature is audio sent and not one partial returned. Recording it stops
+      // the next utterance from paying for the same doomed socket and lets the
+      // batch path handle the audio instead. The microphone channel has had this
+      // since its own fix; the interviewer channel never did, so on a
+      // batch-only model it reopened a socket per utterance forever.
+      if (
+        !stoppedByUsRef.current &&
+        framesSentRef.current > 0 &&
+        !producedTextRef.current
+      ) {
+        noteStreamingUnsupported();
+      }
       // A close we triggered with `finalize` is the protocol working: reopen
       // at once so the handshake never lands inside the next utterance.
       if (stoppedByUsRef.current) {
@@ -254,6 +278,10 @@ export function useThemWsStreaming({
     if (ws && ws.readyState === WebSocket.OPEN && !belongsToFinishedUtterance) {
       try {
         ws.send(pcm);
+        // Audio really reached the engine: this, not the socket state, is what
+        // distinguishes "the model refused the stream" from "the socket never
+        // carried anything". Paired with `producedTextRef` in `onclose`.
+        framesSentRef.current += 1;
       } catch {
         // socket died between the check and the send
       }
@@ -376,6 +404,9 @@ export function useThemWsStreaming({
   /** Called at the start of an utterance. */
   const beginUtterance = useCallback(() => {
     producedTextRef.current = false;
+    // Reset with the text flag: both describe the CURRENT utterance, and the
+    // refusal check compares them against each other on close.
+    framesSentRef.current = 0;
   }, []);
 
   return {

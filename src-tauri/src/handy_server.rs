@@ -46,6 +46,14 @@ pub static STT_SERVER: Mutex<Option<Child>> = Mutex::new(None);
 /// this prevents.
 static START_LOCK: Mutex<()> = Mutex::new(());
 
+/// How long the start path waits for a freshly spawned engine to answer.
+///
+/// The model takes ~4s to load on this machine (measured in the sidecar log),
+/// and waiting is what stops a second caller from spawning over the first. The
+/// bound keeps a genuinely broken engine from blocking the caller forever; the
+/// watchdog takes over from there.
+const ENGINE_START_DEADLINE: Duration = Duration::from_secs(12);
+
 /// Default port of the native engine, and the range it rebounds into when the
 /// default one is taken.
 const ENGINE_PORT: u16 = 9877;
@@ -606,15 +614,20 @@ fn start_sidecar_watchdog() {
 
 /// Start the local Handy STT server if it isn't already running.
 ///
-/// Serialised by `START_LOCK`. Two paths call this concurrently — the app setup
-/// (`lib.rs`) and the renderer's "restart engine" button — and the liveness
-/// check cannot see a child that is still loading its model: `native_engine_port`
-/// only answers once the port responds. So both callers saw "offline", both
-/// spawned `pluely-asr`, and the second spawn overwrote the Job Object
-/// (whose `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` kills the first child) while
-/// fighting over the same port. A poisoned lock still recovers: the guard only
-/// protects the spawn, and a panic inside it must not disable the engine forever.
+/// Serialised by `START_LOCK`, which is held until the engine ANSWERS.
+///
+/// Two paths call this concurrently — app setup (`lib.rs`) and the renderer's
+/// "restart engine" button — and the liveness check cannot see a child that is
+/// still loading its model: `native_engine_port` only answers once the port
+/// responds, which takes seconds. Holding the lock for the spawn call alone was
+/// not enough, because the spawn returns immediately with the child still
+/// loading: the second caller then saw "offline" too and spawned again, and
+/// `track_server` KILLS the child it replaces — so the second start destroyed
+/// the first engine mid-load. The lock is therefore held across the wait, and
+/// the wait is bounded so a genuine failure still returns.
 pub fn ensure_server_running() {
+    // A poisoned lock must not disable the engine forever: the guard only
+    // protects a start, so recovering it is strictly better than panicking.
     let _guard = START_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -624,10 +637,19 @@ pub fn ensure_server_running() {
         return;
     }
 
-    // Try starting the native pluely-asr GPU microservice first if available
-    if spawn_pluely_asr() {
-        start_sidecar_watchdog();
-        return;
+    let spawned = spawn_pluely_asr();
+
+    if spawned {
+        // Wait for the port to answer before letting the next caller in. The
+        // watchdog uses the same idea (it waits while the child is alive and the
+        // port is not up yet); this is the same rule applied to the start path.
+        let deadline = std::time::Instant::now() + ENGINE_START_DEADLINE;
+        while std::time::Instant::now() < deadline {
+            if native_engine_port().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
 
     start_sidecar_watchdog();
@@ -675,6 +697,12 @@ pub async fn restart_server() -> Result<(), String> {
         wait_for_shutdown(Duration::from_secs(8));
         // Give the OS a moment to release the port before rebinding.
         std::thread::sleep(Duration::from_millis(400));
+        // The SAME lock as `ensure_server_running`: a restart that skips it can
+        // spawn a second engine while the first one is still loading, and
+        // `track_server` kills whichever child it replaces.
+        let _guard = START_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         spawn_pluely_asr()
     })
     .await
