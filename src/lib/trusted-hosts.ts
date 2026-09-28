@@ -9,6 +9,30 @@ const DEFAULT_TRUSTED_HOSTS: readonly string[] = [
   "0.0.0.0",
 ];
 
+/**
+ * Hosts the app itself calls, named in its own source rather than by the user.
+ *
+ * These are fixed endpoints for features built into the product — web-search
+ * providers and the free translation fallback. Because `capabilities` allow
+ * `http://**` and `https://**`, the gate is the only egress control, and routing
+ * these calls through it (they used to bypass it entirely) would otherwise pop
+ * the trust dialog on every search and every translation. A host the USER
+ * configures is still gated: this list only covers the app's own constants.
+ */
+const BUILT_IN_SERVICE_HOSTS: readonly string[] = [
+  "api.search.brave.com",
+  "api.exa.ai",
+  "api.tavily.com",
+  "api.duckduckgo.com",
+  "translate.googleapis.com",
+];
+
+/** True for hosts the app itself names (not user-supplied templates). */
+export function isBuiltInServiceHost(hostOrUrl: string): boolean {
+  const host = normalizeHost(hostOrUrl);
+  return Boolean(host && BUILT_IN_SERVICE_HOSTS.includes(host));
+}
+
 export function normalizeHost(hostOrUrl: string): string | null {
   if (!hostOrUrl) return null;
   const trimmed = hostOrUrl.trim();
@@ -120,6 +144,10 @@ export function isTrustedHost(urlOrHost: string): boolean {
   for (const defaultHost of DEFAULT_TRUSTED_HOSTS) {
     if (host === defaultHost) return true;
   }
+
+  // The app's own endpoints: see `BUILT_IN_SERVICE_HOSTS` for why these skip
+  // the prompt while user-configured hosts do not.
+  if (isBuiltInServiceHost(host)) return true;
 
   if (KNOWN_PROVIDER_HOSTS[host]) {
     return true;

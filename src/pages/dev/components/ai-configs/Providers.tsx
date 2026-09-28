@@ -8,7 +8,7 @@ import {
   deepVariableReplacer,
 } from "@/lib/functions/common.function";
 import { fetchProviderModels } from "@/lib/functions/models.function";
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { gatedFetch } from "@/lib/host-trust-gate";
 import { getSecret, secretKey, SequentialSecretWriter } from "@/lib/storage/secret-store";
 
 export const Providers = ({
@@ -470,7 +470,7 @@ export const Providers = ({
               ) as Record<string, string>;
 
               const started = Date.now();
-              const res = await tauriFetch(url, {
+              const res = await gatedFetch(url, {
                 method: json?.method || "POST",
                 headers: {
                   "Content-Type": "application/json",

@@ -299,9 +299,17 @@ export function useConversationStore() {
     }, CONVERSATION_SAVE_DEBOUNCE_MS);
 
     return () => {
+      // Flush instead of dropping the pending save.
+      //
+      // The panel is opened and closed as the meeting comes and goes, and every
+      // close unmounted this hook with a 500ms debounce still pending — so the
+      // last thing said before closing was never written to SQLite. Clearing the
+      // timer alone is a silent data loss with no retry: nothing else knows the
+      // conversation changed.
       if (saveTimeoutRef.current) {
         clearTimeout(saveTimeoutRef.current);
         saveTimeoutRef.current = null;
+        void performSave();
       }
     };
   }, [

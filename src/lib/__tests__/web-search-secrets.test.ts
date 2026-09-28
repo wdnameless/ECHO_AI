@@ -143,12 +143,21 @@ describe("first keyed search must not destroy the key", () => {
 
     const { performWebSearch } = await import("../web-search");
     const sent: Array<Record<string, string>> = [];
-    vi.stubGlobal("fetch", async (_url: string, init?: { headers?: Record<string, string> }) => {
-      sent.push(init?.headers ?? {});
-      return {
-        json: async () => ({ web: { results: [] } }),
-      };
-    });
+    // The provider call goes through the Tauri HTTP plugin (via `gatedFetch`),
+    // not `window.fetch`: the gate must approve the host and sets
+    // `maxRedirections: 0`, and the browser fetch cannot honour either. The stub
+    // therefore watches the plugin — the transport the app really uses — so this
+    // test still fails if the key stops being sent.
+    vi.doMock("@tauri-apps/plugin-http", () => ({
+      fetch: async (_url: string, init?: { headers?: Record<string, string> }) => {
+        sent.push(init?.headers ?? {});
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ web: { results: [] } }),
+        };
+      },
+    }));
 
     await performWebSearch("kafka");
 
@@ -159,6 +168,7 @@ describe("first keyed search must not destroy the key", () => {
     expect(localStorage.getItem(WEB_SEARCH_SETTINGS_KEY) ?? "").not.toContain(
       "bsa-paid-key"
     );
+    vi.doUnmock("@tauri-apps/plugin-http");
     vi.unstubAllGlobals();
   });
 });

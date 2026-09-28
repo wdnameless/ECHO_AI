@@ -1,4 +1,4 @@
-import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { gatedFetch } from "./host-trust-gate";
 import { detectLanguage } from "./language-detect";
 
 /**
@@ -127,7 +127,7 @@ async function gtxTranslate(url: string, source: string): Promise<string | null>
     // all, only the headers the host-trust gate approves. Matching that shape
     // is the whole point: the provider sees a plain client, not a browser
     // impersonation, and stops blocking it.
-    const response = await tauriFetch(url, {
+    const response = await gatedFetch(url, {
       method: "GET",
       signal: AbortSignal.timeout(5000),
     });
@@ -197,7 +197,7 @@ async function gatewayTranslate(text: string, tl: "ru" | "en"): Promise<string |
     };
     if (key) headers.Authorization = `Bearer ${key}`;
 
-    const response = await tauriFetch(GATEWAY_URL, {
+    const response = await gatedFetch(GATEWAY_URL, {
       method: "POST",
       headers,
       body: JSON.stringify({
