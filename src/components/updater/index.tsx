@@ -18,6 +18,7 @@ import { Markdown } from "@/components/Markdown";
 import { check, Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useWindowResize } from "@/hooks";
+import { PortableUpdateNotice, useIsPortable } from "./PortableUpdateNotice";
 
 type UpdateState =
   | "checking"
@@ -47,6 +48,10 @@ export const Updater = () => {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [manualClose, setManualClose] = useState(false);
 
+  // Portable copies are not updated in place: the installer puts a normal copy
+  // in the system location, and the portable data (settings, engine, models)
+  // does not move across. Warn before the button, not after the reboot.
+  const isPortable = useIsPortable();
   const { resizeWindow } = useWindowResize();
 
   const checkForUpdates = async () => {
@@ -260,6 +265,7 @@ export const Updater = () => {
               </p>
             </div>
 
+            {isPortable && <PortableUpdateNotice />}
 
             {/* Release Notes */}
             <div className="prose prose-sm dark:prose-invert max-w-none">
