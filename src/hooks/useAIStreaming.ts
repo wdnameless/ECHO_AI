@@ -90,14 +90,17 @@ export function useAIStreaming({
       abortControllerRef.current = null;
     }
     clearFiller();
-    // Cancelling ends the answer, so anything held during it must not be
-    // stranded. `finally` cannot do it: an abort still leaves the generation
-    // current (nothing replaced it), so the stream settles itself — but the
-    // release is gated on the flag, and the flag is only cleared by the render
-    // that follows. Releasing here, explicitly, is what guarantees the held
-    // question goes out instead of waiting for an answer that was cancelled.
-    onProcessingComplete?.();
-  }, [clearFiller, onProcessingComplete]);
+    // Deliberately does NOT release a held question.
+    //
+    // `abortAI` is the SHUTDOWN signal, not "user cancelled one answer": the
+    // lifecycle hook calls it on `stopCapture` and on unmount, right before it
+    // tears the capture down and resets the question assembler. Releasing here
+    // would dispatch a question into a session that is closing — the AI would
+    // answer text the user just stopped listening for. A question held when the
+    // session ends is meant to be dropped with it.
+    // (The genuine "answer finished, ask the held question" path is
+    // `onProcessingComplete` in the stream's `finally`.)
+  }, [clearFiller]);
 
   const processWithAI = useCallback(
     async (

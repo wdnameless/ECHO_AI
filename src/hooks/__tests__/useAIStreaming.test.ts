@@ -279,15 +279,16 @@ describe("useAIStreaming", () => {
   });
 
   /**
-   * A cancelled answer must not strand a question that was held during it.
+   * `abortAI` is the SHUTDOWN signal, not "cancel one answer".
    *
-   * `onProcessingComplete` is what releases the held question, and the flag it
-   * checks (`isAIProcessing`) is normally kept in step by a `useEffect` that
-   * runs after the render commits — too late for a synchronous caller. Asking a
-   * question and then cancelling therefore left the held one waiting for an
-   * answer that was never coming.
+   * The lifecycle hook calls it on `stopCapture` and on unmount, just before it
+   * tears the capture down and resets the question assembler — so releasing a
+   * held question here would dispatch it into a session that is closing, and the
+   * AI would answer text the user had just stopped listening for. This pins the
+   * contract so the tempting "release on abort" fix is not applied again: only
+   * a completed answer releases what it held.
    */
-  it("releases the held question when the answer is aborted", () => {
+  it("does NOT release a held question when the session is aborted", () => {
     const onProcessingComplete = vi.fn();
     const props = { ...createHookProps(), onProcessingComplete };
     const { result } = renderHook(() => useAIStreaming(props));
@@ -296,7 +297,7 @@ describe("useAIStreaming", () => {
       result.current.abortAI();
     });
 
-    expect(onProcessingComplete).toHaveBeenCalled();
+    expect(onProcessingComplete).not.toHaveBeenCalled();
   });
 
   /**
