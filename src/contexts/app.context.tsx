@@ -857,11 +857,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     };
 
     checkImageSupport();
-    // Deliberately NOT `allAiProviders` as a dependency: that array is rebuilt
-    // on every render, so depending on it would re-run this effect forever. The
-    // stale-closure problem it has (custom providers load after the first run)
-    // is fixed by the ref read inside `checkImageSupport` instead.
-  }, [pluelyApiEnabled, selectedAIProvider.provider]);
+    // `allAiProviders` belongs in this array.
+    //
+    // It is `useMemo`'d on `customAiProviders` (see above), so it is stable
+    // between renders and changes only when the provider list genuinely does — no
+    // re-run loop. Without it the effect kept the verdict from its FIRST run,
+    // when the list was still empty, so a custom provider that loads after mount
+    // never had its `{{IMAGE}}` capability checked.
+  }, [pluelyApiEnabled, selectedAIProvider.provider, allAiProviders]);
 
   // Computed all STT providers
   const allSttProviders: TYPE_PROVIDER[] = useMemo(
