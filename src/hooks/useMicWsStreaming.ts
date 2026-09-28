@@ -18,10 +18,13 @@ import { getAsrLanguage } from "@/lib/asr-language";
 import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
 import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
-const MIC_WS_RECONNECT_MS = 400;
-/** Cap on the retry delay once several attempts in a row have been refused. */
-const MIC_WS_RECONNECT_MAX_MS = 3000;
-
+import {
+  nextReconnectDelay,
+  closeSocketDetached,
+  looksLikeStreamRefusal,
+  type ReconnectBackoff,
+} from "@/lib/asr-ws-shared";
+const MIC_WS_BACKOFF: ReconnectBackoff = { baseMs: 400, maxMs: 3000 };
 /**
  * Maximum number of PCM frames buffered while WebSocket is connecting or waiting
  * for stream lock. At 250ms per frame, 24 frames = ~6 seconds of speech preserved.
@@ -74,16 +77,10 @@ export function useMicWsStreaming({
     }
     const ws = micWsRef.current;
     micWsRef.current = null;
-    if (
-      ws &&
-      (ws.readyState === WebSocket.OPEN ||
-        ws.readyState === WebSocket.CONNECTING)
-    ) {
-      ws.onclose = null;
-      ws.onerror = null;
-      ws.onmessage = null;
-      ws.close();
-    }
+    // Shared with the interviewer channel: detach handlers, then close whatever
+    // state the socket is in — a handshake finishing in the background would
+    // otherwise hold an engine session.
+    closeSocketDetached(ws);
   }, []);
 
   const micWsClose = useCallback(() => {
@@ -120,7 +117,10 @@ export function useMicWsStreaming({
     // that wait hammering the engine — eight refusals inside one utterance, each
     // counted in the UI and each re-paying the base-URL lookup. The delay grows
     // to a second and resets as soon as the socket opens.
-    const delay = Math.min(MIC_WS_RECONNECT_MS * 2 ** micWsReconnectAttemptsRef.current, MIC_WS_RECONNECT_MAX_MS);
+    const delay = nextReconnectDelay(
+      micWsReconnectAttemptsRef.current,
+      MIC_WS_BACKOFF
+    );
     micWsReconnectAttemptsRef.current += 1;
     micWsReconnectTimerRef.current = setTimeout(() => {
       micWsReconnectTimerRef.current = null;
@@ -268,9 +268,11 @@ export function useMicWsStreaming({
           // guard, saying one short sentence disabled streaming for the whole
           // application session, for models that support it perfectly well.
           if (
-            !micWsStoppedByUsRef.current &&
-            micFramesSentRef.current > 0 &&
-            !micProducedTextRef.current
+            looksLikeStreamRefusal({
+              stoppedByUs: micWsStoppedByUsRef.current,
+              framesSent: micFramesSentRef.current,
+              producedText: micProducedTextRef.current,
+            })
           ) {
             noteStreamingUnsupported();
           }

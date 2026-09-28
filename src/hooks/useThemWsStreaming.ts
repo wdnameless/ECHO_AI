@@ -21,19 +21,14 @@ import { pushStatus } from "@/lib/asr-status";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
 import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
 import { recordWsReconnect } from "@/lib/metrics";
+import {
+  nextReconnectDelay,
+  closeSocketDetached,
+  looksLikeStreamRefusal,
+  type ReconnectBackoff,
+} from "@/lib/asr-ws-shared";
 
-const WS_RECONNECT_MS = 400;
-/**
- * Ceiling for the exponential reconnect backoff.
- *
- * A flat 400ms retry spent the wait for the single model hammering the engine:
- * this channel's reconnect is refused for as long as the microphone holds the
- * stream, so every utterance produced a burst of refusals, each counted in the
- * UI and each re-paying the base-URL lookup. The microphone channel has backed
- * off since it was fixed; this one never did.
- */
-const WS_RECONNECT_MAX_MS = 3000;
-
+const WS_BACKOFF: ReconnectBackoff = { baseMs: 400, maxMs: 3000 };
 export interface UseThemWsStreamingProps {
   capturingRef: React.MutableRefObject<boolean>;
   onPartialTranscript: (text: string) => void;
@@ -86,13 +81,9 @@ export function useThemWsStreaming({
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      try {
-        ws.close();
-      } catch {
-        // already closing
-      }
-    }
+    // Shared with the microphone channel: detach handlers, then close whatever
+    // state the socket is in.
+    closeSocketDetached(ws);
   }, []);
 
   const scheduleReconnect = useCallback(() => {
@@ -100,10 +91,7 @@ export function useThemWsStreaming({
     if (reconnectTimerRef.current) return;
     // Back off while the retries keep failing (see WS_RECONNECT_MAX_MS). The
     // delay resets on a served connection, below in `onopen`.
-    const delay = Math.min(
-      WS_RECONNECT_MS * 2 ** reconnectAttemptsRef.current,
-      WS_RECONNECT_MAX_MS
-    );
+    const delay = nextReconnectDelay(reconnectAttemptsRef.current, WS_BACKOFF);
     reconnectAttemptsRef.current += 1;
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null;
@@ -247,9 +235,11 @@ export function useThemWsStreaming({
       // since its own fix; the interviewer channel never did, so on a
       // batch-only model it reopened a socket per utterance forever.
       if (
-        !stoppedByUsRef.current &&
-        framesSentRef.current > 0 &&
-        !producedTextRef.current
+        looksLikeStreamRefusal({
+          stoppedByUs: stoppedByUsRef.current,
+          framesSent: framesSentRef.current,
+          producedText: producedTextRef.current,
+        })
       ) {
         noteStreamingUnsupported();
       }
