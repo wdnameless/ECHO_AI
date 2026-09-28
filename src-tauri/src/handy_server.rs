@@ -623,34 +623,63 @@ fn start_sidecar_watchdog() {
 /// not enough, because the spawn returns immediately with the child still
 /// loading: the second caller then saw "offline" too and spawned again, and
 /// `track_server` KILLS the child it replaces — so the second start destroyed
-/// the first engine mid-load. The lock is therefore held across the wait, and
-/// the wait is bounded so a genuine failure still returns.
+/// the first engine mid-load.
+///
+/// The wait for the port runs on a WORKER THREAD, not the caller's.
+///
+/// `lib.rs` calls this from `setup()`, which runs on the main thread before the
+/// window is interactive: polling there for up to `ENGINE_START_DEADLINE` froze
+/// the UI for the whole model load (measured ~4s, bounded at 12s). The caller
+/// now returns immediately and a thread holds `START_LOCK` until the engine
+/// answers, which still serialises concurrent starts.
 pub fn ensure_server_running() {
-    // A poisoned lock must not disable the engine forever: the guard only
-    // protects a start, so recovering it is strictly better than panicking.
-    let _guard = START_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-
     if native_engine_port().is_some() {
         start_sidecar_watchdog();
         return;
     }
 
-    let spawned = spawn_pluely_asr();
+    std::thread::Builder::new()
+        .name("asr-start".into())
+        .spawn(|| {
+            // A poisoned lock must not disable the engine forever: the guard only
+            // protects a start, so recovering it is strictly better than panicking.
+            let _guard = START_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-    if spawned {
-        // Wait for the port to answer before letting the next caller in. The
-        // watchdog uses the same idea (it waits while the child is alive and the
-        // port is not up yet); this is the same rule applied to the start path.
-        let deadline = std::time::Instant::now() + ENGINE_START_DEADLINE;
-        while std::time::Instant::now() < deadline {
+            // Re-check under the lock: another start may have completed while
+            // this thread was waiting for it.
             if native_engine_port().is_some() {
-                break;
+                return;
             }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-    }
+
+            if !spawn_pluely_asr() {
+                return;
+            }
+
+            // Hold the lock until the port answers, so a concurrent start cannot
+            // spawn over this one (see the note above).
+            let deadline = std::time::Instant::now() + ENGINE_START_DEADLINE;
+            while std::time::Instant::now() < deadline {
+                if native_engine_port().is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        })
+        .map(|_| ())
+        .unwrap_or_else(|e| {
+            // Under resource pressure we cannot start on a worker. Fall back to
+            // the synchronous path rather than not starting at all, accepting the
+            // startup pause in that rare case.
+            eprintln!("[tauri] could not spawn the ASR start thread ({}), starting inline", e);
+            let _guard = START_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if native_engine_port().is_none() {
+                spawn_pluely_asr();
+            }
+        });
 
     start_sidecar_watchdog();
 }

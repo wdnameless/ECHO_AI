@@ -170,9 +170,11 @@ jobs:
           # the real one missing notes. Manual runs had the same problem.
           version="${{ needs.check.outputs.version }}"
           tag="v${version}"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          if gh release view "$tag" \
+              --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "Release $tag already exists - publishing if draft."
-            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false || true
+            gh release edit "$tag" \
+              --repo "$GITHUB_REPOSITORY" --draft=false || true
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
               --title "Echo AI $tag" \

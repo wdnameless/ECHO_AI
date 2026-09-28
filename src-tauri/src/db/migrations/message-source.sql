@@ -9,3 +9,18 @@
 -- and inventing one from `role` would be a guess — `user` covers both the
 -- candidate's own speech and the interviewer's transcription.
 ALTER TABLE messages ADD COLUMN source TEXT;
+
+-- Idempotency note.
+--
+-- SQLite has no `ADD COLUMN IF NOT EXISTS`, and SQLx replays a migration only
+-- when its version is absent from `_sqlx_migrations` — so this statement runs
+-- exactly once per database, and a database where the column exists but version
+-- 7 is unrecorded cannot arise from the app's own code:
+--   * SQLx records the version in the same transaction as the statement, so a
+--     failure rolls both back;
+--   * `patch_migration_checksums` only rewrites checksums of ALREADY recorded
+--     versions, so it cannot create a column without a version either.
+-- Verified against the two live databases: the main one has the column AND
+-- version 7, the portable one has neither — consistent in both directions.
+-- A manually edited database is therefore the only way to reach the duplicate
+-- case, and it is not worth making every startup pay for it.

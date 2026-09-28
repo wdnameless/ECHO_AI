@@ -36,6 +36,39 @@ beforeEach(() => {
 });
 
 describe("debounced save on unmount", () => {
+  /**
+   * The debounce must survive normal updates.
+   *
+   * A previous fix put `performSave()` inside the effect's cleanup, but that
+   * effect depends on the conversation — so the cleanup also runs before every
+   * re-execution, i.e. on every new message. That saved immediately each time,
+   * destroying the debounce: one SQLite write per spoken line during a meeting,
+   * which is exactly what the debounce exists to prevent. The flush now lives in
+   * a mount-only effect, whose cleanup runs once.
+   */
+  it("does not save on every message update", async () => {
+    const { result } = renderHook(() => useConversationStore());
+
+    // Three rapid updates, as three recognised lines would arrive.
+    for (let i = 1; i <= 3; i++) {
+      act(() => {
+        result.current.setConversation({
+          id: "conv-debounce",
+          title: "t",
+          createdAt: 1,
+          updatedAt: i + 1,
+          messages: [
+            { id: `m${i}`, role: "user", content: `фраза ${i}`, timestamp: i },
+          ],
+        });
+      });
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // Nothing yet: the debounce is still holding (it is 20ms in this suite).
+    expect(saveConversation).not.toHaveBeenCalled();
+  });
+
   it("writes the last messages instead of dropping them", async () => {
     const { result, unmount } = renderHook(() => useConversationStore());
 

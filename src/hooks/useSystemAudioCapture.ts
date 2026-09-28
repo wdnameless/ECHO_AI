@@ -666,15 +666,23 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       utteranceEndedRef.current = false;
       // Cancel the previous utterance's flush-safety timer.
       //
-      // It is armed for 1200ms when speech ends, and if the person resumes
-      // inside that window it fired anyway — dispatching the NEW utterance's
-      // text through `flushUtteranceRef` and calling `finalizeAndClose()` on the
-      // socket that is mid-sentence, which truncated the stream and asked the AI
-      // a half-formed question. New speech is the proof the previous utterance
-      // is over AND that the flush it was waiting for is no longer needed.
+      // The safety timer belonged to the utterance that is now over: dispatch it
+      // BEFORE cancelling, then start clean.
+      //
+      // It is armed for 1200ms when speech ends. If the person resumes inside
+      // that window it must not fire later against the NEXT utterance — that was
+      // the original bug, which truncated a live stream mid-sentence and asked
+      // the AI a half-formed question. But simply cancelling it is the opposite
+      // mistake: the text already recognised for the finished utterance was then
+      // never dispatched at all, because the socket's own final had not arrived
+      // yet (recognition lags ~1s) and this handler wipes the accumulator that
+      // held it. Flushing first, then clearing, keeps both properties.
       if (flushSafetyTimerRef.current) {
         clearTimeout(flushSafetyTimerRef.current);
         flushSafetyTimerRef.current = null;
+        // Only if there is something to dispatch: `flushUtteranceRef` also clears
+        // the accumulator and re-arms nothing, so this is safe when empty.
+        flushUtteranceRef.current();
       }
       livePcmRef.current = [];
       liveTextRef.current = "";

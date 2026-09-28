@@ -113,10 +113,17 @@ export function useTranslationQueue(
         translatedKeysRef.current.add(key);
         const translated = await fastTranslate(key);
 
-        // A provider failure returns the input unchanged. This is evaluated
-        // BEFORE the cancellation check so a torn-down effect cannot record a
-        // good result as a failure.
-        const usable = Boolean(translated) && translated.trim() !== key;
+        // A provider failure returns the input unchanged — but so does a
+        // legitimately identical translation: "Docker", "123", a person's name,
+        // a code snippet. Content alone cannot tell the two apart, and treating
+        // every identical reply as a failure put a dash on rows that were
+        // translated perfectly well.
+        //
+        // So an identical reply is accepted as the translation. Showing the same
+        // word where the translation goes is a cosmetic oddity in the outage
+        // case, while a dash HIDES a correct result in the common case — and the
+        // retry interval still revisits every row that produced nothing at all.
+        const usable = Boolean(translated);
 
         if (cancelled) {
           // The effect was torn down while this request was in flight. Dropping

@@ -50,10 +50,30 @@ describe("useTranslationQueue", () => {
     expect(fastTranslate).not.toHaveBeenCalled();
   });
 
-  it("records a failure instead of storing the source as its translation", async () => {
-    // A provider failure returns the input unchanged; storing that made the row
-    // read «русский переводит русский».
-    fastTranslate.mockResolvedValue("Привет");
+  /**
+   * An identical reply is ACCEPTED, not treated as a failure.
+   *
+   * The provider signals failure by echoing the input, but so does a legitimately
+   * identical translation — "Docker", "123", a name, a code snippet. Content
+   * alone cannot separate them, and the previous rule (identical ⇒ failure) put a
+   * dash on rows that were translated perfectly well: it HID the correct result
+   * in the common case to avoid showing the source in the outage case.
+   *
+   * The tradeoff is explicit: during a provider outage a row shows its own text
+   * where the translation goes. Empty replies are still failures and are retried.
+   */
+  it("accepts an identical reply as a translation", async () => {
+    fastTranslate.mockResolvedValue("Docker");
+    const { result } = renderHook(() =>
+      useTranslationQueue([entry("Docker")], true)
+    );
+
+    await waitFor(() => expect(result.current.translations["Docker"]).toBe("Docker"));
+    expect(result.current.hasFailed("Docker")).toBe(false);
+  });
+
+  it("still records a failure when the provider returns nothing", async () => {
+    fastTranslate.mockResolvedValue("");
     const { result } = renderHook(() =>
       useTranslationQueue([entry("Привет")], true)
     );

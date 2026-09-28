@@ -299,18 +299,17 @@ export function useConversationStore() {
     }, CONVERSATION_SAVE_DEBOUNCE_MS);
 
     return () => {
-      // Flush instead of dropping the pending save.
+      if (!saveTimeoutRef.current) return;
+      // Cancel the pending timer, but only FLUSH when this cleanup is a real
+      // unmount.
       //
-      // The panel is opened and closed as the meeting comes and goes, and every
-      // close unmounted this hook with a 500ms debounce still pending — so the
-      // last thing said before closing was never written to SQLite. Clearing the
-      // timer alone is a silent data loss with no retry: nothing else knows the
-      // conversation changed.
-      if (saveTimeoutRef.current) {
-        clearTimeout(saveTimeoutRef.current);
-        saveTimeoutRef.current = null;
-        void performSave();
-      }
+      // This effect depends on the conversation, so its cleanup also runs before
+      // every re-execution — i.e. on every new message. Flushing there would save
+      // immediately on each update, destroying the debounce entirely: during a
+      // meeting that is one SQLite write per spoken line, which is what the
+      // debounce exists to prevent.
+      clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
     };
   }, [
     conversation.messages.length,
@@ -318,6 +317,31 @@ export function useConversationStore() {
     conversation.id,
     conversation.updatedAt,
   ]);
+
+  /**
+   * Flush the pending save when the component actually goes away.
+   *
+   * A mount-only effect, so its cleanup runs exactly once — on unmount — and can
+   * safely write. That matters because the meeting panel is opened and closed as
+   * the conversation comes and goes, and a 500ms debounce was still pending on
+   * every close: the last thing said before closing was never written, with no
+   * retry, because nothing else knew the conversation had changed.
+   */
+  useEffect(() => {
+    return () => {
+      const conv = latestConversationRef.current;
+      if (!conv.id || conv.updatedAt === 0 || conv.messages.length === 0) return;
+      // A save may already be running; `performSave`'s own in-flight guard turns
+      // this into a trailing save instead of racing it.
+      if (isSavingRef.current) {
+        hasPendingSaveRef.current = true;
+        return;
+      }
+      void saveConversation(conv).catch((error) => {
+        console.error("Failed to save conversation on unmount:", error);
+      });
+    };
+  }, []);
 
   const appendLiveSegment = useCallback(
     (source: "me" | "them", text: string, partial = false) => {
