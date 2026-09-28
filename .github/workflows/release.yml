@@ -4,14 +4,69 @@ on:
   push:
     tags:
       - 'v*'
+    # A release must be able to start from a merge, not only from a hand-made
+    # tag. Tagging by hand is what made "запуш в гит… версия не меняется" a
+    # recurring complaint: the code was on master while users kept the old build,
+    # because nothing in CI ran for a branch push.
+    branches:
+      - master
+      - main
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  # Decides WHETHER this run builds a release.
+  #
+  # A branch push does not carry a version change every time, and the release tag
+  # is derived from the version — so without this guard every ordinary push to
+  # master would try to reuse an existing tag and fail the build. The rule:
+  # release when the version has not been released yet (or when a human asked).
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.decide.outputs.should_release }}
+      version: ${{ steps.decide.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Decide whether this run releases
+        id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          tag="v${version}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual run: releasing $tag."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A tag push is an explicit act: treat it as "release this", even if a
+          # release object already exists (the build may be re-run after a fix).
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "Tag push (${{ github.ref_name }}): releasing."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; nothing to build."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$tag has not been released yet: building."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
     runs-on: windows-latest
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -106,15 +161,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $GITHUB_REF_NAME already exists - publishing if draft."
-            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false >/dev/null 2>&1 || true
+          set -euo pipefail
+          # The tag comes from the VERSION, never from the ref name.
+          #
+          # `GITHUB_REF_NAME` is the branch (`master`) on a branch push, so this
+          # step would have created a release literally named "master" while the
+          # build below uploaded assets under `v<version>` — two releases, and
+          # the real one missing notes. Manual runs had the same problem.
+          version="${{ needs.check.outputs.version }}"
+          tag="v${version}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists - publishing if draft."
+            gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false || true
           else
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --title "Echo AI $GITHUB_REF_NAME" \
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --title "Echo AI $tag" \
               --notes "Auto-generated release." \
               --verify-tag
-            echo "Release $GITHUB_REF_NAME created with PAT."
+            echo "Release $tag created with PAT."
           fi
       - name: Build & Publish release
         uses: tauri-apps/tauri-action@v0
