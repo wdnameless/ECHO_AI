@@ -152,7 +152,19 @@ export function useTranslationQueue(
     return () => {
       cancelled = true;
     };
-  }, [entries, enabled, runId, translations]);
+    // `translations` is deliberately NOT a dependency, even though the effect
+    // reads it to decide what is pending.
+    //
+    // The effect calls `setTranslations` for every completed row, so depending on
+    // it tore the effect down the moment one row finished: `cancelled` became
+    // true and the OTHER worker — mid-request — discarded its result. That is the
+    // same defect this hook was extracted to make impossible, reintroduced
+    // through the dependency array.
+    //
+    // "Already translated" is tracked by `translatedKeysRef` (a ref, so it cannot
+    // retrigger), which is what the pending filter keys on; the state read is
+    // only an extra guard for rows whose key was never added.
+  }, [entries, enabled, runId]);
 
   // Keep the queue moving: clear expired failure marks, then re-run it.
   useEffect(() => {

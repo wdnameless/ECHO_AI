@@ -446,9 +446,7 @@ impl Drop for SpeakerStream {
             // `Drop` runs on a Tokio worker thread, and a bare `join()` blocked
             // it for up to a full second (the capture loop's event wait). The
             // shutdown flag is set above and the loop now polls every 50ms, so a
-            // short bounded wait is enough in practice; past that the thread has
-            // been asked to stop and owns nothing shared, so detaching it is
-            // strictly better than stalling the runtime.
+            // short bounded wait covers the normal case.
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
             while !thread.is_finished() && std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(10));
@@ -458,9 +456,29 @@ impl Drop for SpeakerStream {
                     error!("Failed to join capture thread: {:?}", e);
                 }
             } else {
-                // Detach: the thread still holds the stream, which is being torn
-                // down anyway, and the process exits with it if nothing else.
-                std::mem::forget(thread);
+                // Still shutting down. Hand the join to a detached helper rather
+                // than `mem::forget`-ing the handle.
+                //
+                // This path used to leak on purpose, which is wrong twice: the
+                // `JoinHandle` is never released, and the capture thread holds the
+                // WASAPI client until its loop exits — so a slow teardown kept the
+                // loopback stream open while the app had already forgotten it. The
+                // helper blocks on the join OUTSIDE the runtime, so the worker is
+                // never stalled and the OS resources are still reclaimed.
+                std::thread::Builder::new()
+                    .name("speaker-stream-reaper".into())
+                    .spawn(move || {
+                        if let Err(e) = thread.join() {
+                            error!("Capture thread failed during deferred join: {:?}", e);
+                        }
+                    })
+                    .map(|_| ())
+                    .unwrap_or_else(|e| {
+                        // Spawning a thread can fail under resource pressure. Then
+                        // the handle is dropped (detaching it), which is the same
+                        // trade as before but is now the FALLBACK, not the design.
+                        error!("Could not spawn capture reaper, detaching: {}", e);
+                    });
             }
         }
     }

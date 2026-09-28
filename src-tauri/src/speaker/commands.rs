@@ -153,9 +153,14 @@ pub async fn start_system_audio_capture(
         // `stop_system_audio_capture` can no longer find or abort.
         let still_owner = match state.capture_generation.lock() {
             Ok(guard) => *guard == my_generation,
-            // A poisoned lock must not strand the state: treat it as "not owner"
-            // so we never clobber a capture we cannot identify.
-            Err(_) => false,
+            // Recover a poisoned lock instead of giving up. The generation value
+            // is still intact after a panic elsewhere (poisoning marks the lock,
+            // it does not clear the data), and reporting "not owner" here left
+            // `is_capturing` stuck `true` forever — the app believed the engine
+            // was recording while every caller wanted it stopped. Reading the real
+            // value is both safer and more correct, and matches the convention
+            // used by the shortcut handlers.
+            Err(poisoned) => *poisoned.into_inner() == my_generation,
         };
         if still_owner {
             if let Ok(mut guard) = state.stream_task.lock() {
@@ -643,6 +648,13 @@ fn samples_to_wav_b64(sample_rate: u32, mono_f32: &[f32]) -> Result<String, Stri
 pub async fn stop_system_audio_capture(app: AppHandle) -> Result<(), String> {
     let state = app.state::<crate::AudioState>();
 
+    // Which capture we are stopping. A start that lands during the delays below
+    // claims a NEWER generation, and this stop must then leave its state alone.
+    let stopping_generation = *state
+        .capture_generation
+        .lock()
+        .map_err(|e| format!("Failed to read capture generation: {}", e))?;
+
     // Abort task in separate scope (Send trait fix)
     {
         let mut guard = state
@@ -659,17 +671,33 @@ pub async fn stop_system_audio_capture(app: AppHandle) -> Result<(), String> {
     // capture restarts during interviews).
     tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
 
-    // Mark as not capturing
-    *state
-        .is_capturing
-        .lock()
-        .map_err(|e| format!("Failed to update capturing state: {}", e))? = false;
+    // Mark as not capturing — but ONLY if no new capture started meanwhile.
+    //
+    // These delays are 250ms in total, and the UI restarts capture right after
+    // stopping it (the interview flow does exactly that). Writing `false`
+    // unconditionally therefore wiped the state of a capture that had already
+    // begun: the engine was recording while every caller believed it was not.
+    let still_ours = {
+        let guard = state
+            .capture_generation
+            .lock()
+            .map_err(|e| format!("Failed to read capture generation: {}", e))?;
+        *guard == stopping_generation
+    };
+    if still_ours {
+        *state
+            .is_capturing
+            .lock()
+            .map_err(|e| format!("Failed to update capturing state: {}", e))? = false;
+    }
 
     // Additional cleanup delay (CRITICAL for mic indicator)
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    // Emit stopped event
-    let _ = app.emit("capture-stopped", ());
+    // Emit stopped event only for the capture this call actually stopped.
+    if still_ours {
+        let _ = app.emit("capture-stopped", ());
+    }
     Ok(())
 }
 
