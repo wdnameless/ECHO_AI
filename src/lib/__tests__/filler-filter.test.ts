@@ -24,9 +24,11 @@ describe("FillerFilterService & filler removal", () => {
 
   it("removes English filler words correctly", () => {
     const service = new FillerFilterService();
-    const input = "Um, I think, like, we should, you know, refactor this, uh, service.";
+    // No "like" in defaults: the verb survives ("I like it"), so a filler
+    // "like" survives here too — the price of not destroying meaning.
+    const input = "Um, I think, you know, we should refactor this, uh, service.";
     const result = service.filter(input);
-    expect(result).toBe("I think, we should, refactor this, service.");
+    expect(result).toBe("I think, we should refactor this, service.");
   });
 
   it("does not corrupt legitimate vocabulary containing substrings (test 1.3)", () => {
@@ -85,5 +87,37 @@ describe("FillerFilterService & filler removal", () => {
   it("convenience function filterFillers works as expected", () => {
     const result = filterFillers("Ээ, тест, um, works.", "тест");
     expect(result).toBe("works.");
+  });
+
+  it("keeps hyphenated words whole: 'ну-ка' is not trimmed to '-ка'", () => {
+    const service = new FillerFilterService();
+    expect(service.filter("ну-ка расскажи")).toBe("ну-ка расскажи");
+    expect(service.filter("Скажи ну-ка")).toBe("Скажи ну-ка");
+    expect(service.filter("Send this letter now")).toBe("Send this letter now");
+    // Elongated fillers ARE removed.
+    expect(service.filter("ну-у, погоди")).toBe("погоди");
+    expect(service.filter("ну-у-у, я не знаю")).toBe("я не знаю");
+  });
+
+  it("keeps the discourse particle: 'ну же' survives, bare 'ну' does not", () => {
+    const service = new FillerFilterService("ну");
+    expect(service.filter("ну-ка, покажи")).toBe("ну-ка, покажи");
+    expect(service.filter("ну же, пойдём")).toBe("ну же, пойдём");
+    expect(service.filter("Привет, ну, расскажи")).toBe("Привет, расскажи");
+    expect(service.filter("ну, да")).toBe("да");
+  });
+
+  it("does not mistake the verb for the filler: 'I like it' survives", () => {
+    const service = new FillerFilterService();
+    expect(service.filter("I like it a lot")).toBe("I like it a lot");
+  });
+
+  it("deduplicates stray commas left by removed fillers", () => {
+    expect(normalizePunctuationAndWhitespace("Привет, , расскажи")).toBe("Привет, расскажи");
+    expect(normalizePunctuationAndWhitespace("Привет,, расскажи")).toBe("Привет, расскажи");
+    expect(normalizePunctuationAndWhitespace("Привет,   ,   расскажи")).toBe("Привет, расскажи");
+    const service = new FillerFilterService();
+    // Bare "ну" IS a filler and is removed; only "ну-ка"/"ну же" survive.
+    expect(service.filter("Ну, типа, я пошёл")).toBe("я пошёл");
   });
 });

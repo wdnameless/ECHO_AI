@@ -47,10 +47,14 @@ logs.zip
 # access. Only the model is excluded — it is downloaded by the user at runtime.
 !src-tauri/resources/pluely-asr.exe
 
-# Runtime leftovers: the sidecar writes its bound port next to its binary.
 src-tauri/resources/asr-port
 asr-port
 
+# A 751 MB model a user downloaded for local runs. Untracked by the *.gguf
+src-tauri/resources/nemotron-3.5-asr-streaming-0.6b-Q8_0.gguf
+
+# One-off local DB snapshots (pre-migration dumps). Never part of a commit.
+/backups/
 # Generated architecture reports (tooling output)
 .archmap/
 src/.archmap/

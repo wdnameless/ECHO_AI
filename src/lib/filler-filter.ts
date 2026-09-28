@@ -32,6 +32,8 @@ export const DEFAULT_FILLER_WORDS_RU = [
   "э-э",
   "э",
   "ну",
+  "ну-у",
+  "ну-у-у",
   "типа",
   "как бы",
   "короче",
@@ -47,7 +49,9 @@ export const DEFAULT_FILLER_WORDS_EN = [
   "uh",
   "er",
   "ah",
-  "like",
+  // No "like": a token filter cannot tell the verb from the filler, and
+  // "I like it" -> "I it" destroys meaning while a leaked "like" is noise.
+  // Whoever wants it filtered adds it via custom fillers.
   "you know",
   "i mean",
   "uh-huh",
@@ -105,10 +109,13 @@ export function normalizePunctuationAndWhitespace(text: string): string {
 
   let result = text;
 
+  // Deduplicate commas separated by spaces or other commas: ", ," or ",  ," -> ", "
+  result = result.replace(/,\s*(?:,\s*)+/g, ", ");
+
   // Collapse spaces before commas, periods, exclamation marks, question marks, colons, semicolons
   result = result.replace(/\s+([,.:;!?])/g, "$1");
 
-  // Remove duplicate commas/punctuation like ",," or ", ," or ", ."
+  // Collapse consecutive commas: "word,, text" -> "word, text"
   result = result.replace(/,\s*,+/g, ",");
   result = result.replace(/([,;])\s*([.!?])/g, "$2");
 
@@ -155,16 +162,32 @@ export class FillerFilterService {
       .sort((a, b) => b.length - a.length);
 
     this.fillerPatterns = all.map((filler) => {
-      // Word boundaries for cyrillic and latin characters.
-      // Standard \b does not work reliably across all unicode / Cyrillic boundaries in standard JS regex,
-      // so we use lookaround / unicode-aware boundary checks or boundary conditions:
-      // (?<=^|[\s,.:;!?"'«»()—-])filler(?=$|[\s,.:;!?"'«»()—-])
-      const escaped = escapeRegex(filler.toLowerCase());
-      // Matches filler token surrounded by boundaries or punctuation
-      return new RegExp(
-        `(?<=^|[\\s,.:;!?"'«»()—\\[\\]{}/<>-])${escaped}(?=$|[\\s,.:;!?"'«»()—\\[\\]{}/<>-])`,
-        "gi"
-      );
+      const lower = filler.toLowerCase().trim();
+      const escaped = escapeRegex(lower);
+
+      // "ну" is a discourse particle as well as a filler: "ну-ка" and "ну же"
+      // are legitimate speech, a bare "ну" between pauses is not. The negative
+      // lookahead keeps the former and removes the latter.
+      if (lower === "ну") {
+        return new RegExp(
+          `(?<=^|[\\s,.:;!?"'«»()—\\[\\]{}/<>-])${escaped}(?![-]|\\s+же(?=[\\s,.:;!?"'«»()—\\[\\]{}/<>-]|$))(?=$|[\\s,.:;!?"'«»()—\\[\\]{}/<>-])`,
+          "gi"
+        );
+      }
+
+      // Hyphen-safe boundaries: "-" is no longer a terminator but a guard.
+      // Old pattern cut "ну-ка" to "-ка" and "letter" would break the same way
+      // for any filler ending inside a hyphenated word. Lookbehind is ES2018+;
+      // target is ES2020, so this holds in all our runtimes.
+      const boundaryStart = lower.startsWith("-")
+        ? `(?<=^|[\\s,.:;!?"'«»()—\\[\\]{}/<>])`
+        : `(?<=^|[\\s,.:;!?"'«»()—\\[\\]{}/<>])(?<!-)`;
+
+      const boundaryEnd = lower.endsWith("-")
+        ? `(?=$|[\\s,.:;!?"'«»()—\\[\\]{}/<>])`
+        : `(?!-)(?=$|[\\s,.:;!?"'«»()—\\[\\]{}/<>])`;
+
+      return new RegExp(`${boundaryStart}${escaped}${boundaryEnd}`, "gi");
     });
   }
 
