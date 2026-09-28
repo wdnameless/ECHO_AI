@@ -16,6 +16,12 @@ on:
 permissions:
   contents: write
 
+# One release at a time: a tag push and a branch push for the same version
+# otherwise pass `check` together and race `gh release create` — the loser
+# fails after a full Tauri build. Serial, never cancelled.
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
   # Decides WHETHER this run builds a release.
   #
@@ -178,9 +184,10 @@ jobs:
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
               --title "Echo AI $tag" \
-              --notes "Auto-generated release." \
-              --verify-tag
+              --notes "Auto-generated release."
             echo "Release $tag created with PAT."
+            # (No --verify-tag: on a branch push the git tag does not exist yet
+            # and `gh release create` mints it via the API.)
           fi
       - name: Build & Publish release
         uses: tauri-apps/tauri-action@v0
