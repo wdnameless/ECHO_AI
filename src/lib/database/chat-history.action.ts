@@ -25,6 +25,7 @@ interface DbMessage {
   content: string;
   timestamp: number;
   attached_files: string | null; // JSON string
+  source: string | null; // 'me' | 'them' | null (written before migration 7)
 }
 
 /**
@@ -125,7 +126,7 @@ export async function createConversation(
       const BATCH_SIZE = 50;
       for (let i = 0; i < validMessages.length; i += BATCH_SIZE) {
         const batch = validMessages.slice(i, i + BATCH_SIZE);
-        const placeholders = batch.map(() => "(?, ?, ?, ?, ?, ?)").join(", ");
+        const placeholders = batch.map(() => "(?, ?, ?, ?, ?, ?, ?)").join(", ");
         const params: unknown[] = [];
         for (const message of batch) {
           const attachedFilesJson = message.attachedFiles
@@ -137,11 +138,15 @@ export async function createConversation(
             message.role,
             message.content,
             message.timestamp,
-            attachedFilesJson
+            attachedFilesJson,
+            // Which side said it. Without this the fact was dropped on reload,
+            // so the LLM could no longer attribute a line and the feed lost the
+            // speaker after a restart.
+            typeof message.source === "string" ? message.source : null
           );
         }
         await db.execute(
-          `INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES ${placeholders}`,
+          `INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files, source) VALUES ${placeholders}`,
           params
         );
       }
@@ -210,6 +215,9 @@ export async function getAllConversations(): Promise<ChatConversation[]> {
           content: msg.content,
           timestamp: msg.timestamp,
           attachedFiles: safeJsonParse(msg.attached_files, undefined),
+          // Restore the speaker. `undefined` (not null) for pre-migration rows,
+          // so callers fall back to their own default instead of showing nothing.
+          source: asMessageSource(msg.source),
         })) || [],
     }));
   } catch (error) {
@@ -261,6 +269,7 @@ export async function getConversationById(
         content: msg.content,
         timestamp: msg.timestamp,
         attachedFiles: safeJsonParse(msg.attached_files, undefined),
+        source: asMessageSource(msg.source),
       })),
     };
   } catch (error) {
@@ -303,7 +312,7 @@ export async function updateConversation(
       const BATCH_SIZE = 50;
       for (let i = 0; i < validMessages.length; i += BATCH_SIZE) {
         const batch = validMessages.slice(i, i + BATCH_SIZE);
-        const placeholders = batch.map(() => "(?, ?, ?, ?, ?, ?)").join(", ");
+        const placeholders = batch.map(() => "(?, ?, ?, ?, ?, ?, ?)").join(", ");
         const params: unknown[] = [];
         for (const message of batch) {
           const attachedFilesJson = message.attachedFiles
@@ -315,12 +324,13 @@ export async function updateConversation(
             message.role,
             message.content,
             message.timestamp,
-            attachedFilesJson
+            attachedFilesJson,
+            typeof message.source === "string" ? message.source : null
           );
           keptIds.push(message.id);
         }
         await db.execute(
-          `INSERT OR REPLACE INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES ${placeholders}`,
+          `INSERT OR REPLACE INTO messages (id, conversation_id, role, content, timestamp, attached_files, source) VALUES ${placeholders}`,
           params
         );
       }
@@ -383,6 +393,17 @@ function orderedByTime<T extends { timestamp: number }>(messages: T[]): T[] {
 /**
  * Save or update a conversation (upsert operation)
  */
+/**
+ * Narrows the stored `source` TEXT to the two values the app knows.
+ *
+ * The column is free-form (SQLite has no enum), and rows predate it, so
+ * anything else must become `undefined` rather than leak a stray string into a
+ * field typed `"me" | "them"`.
+ */
+function asMessageSource(value: string | null | undefined): "me" | "them" | undefined {
+  return value === "me" || value === "them" ? value : undefined;
+}
+
 export async function saveConversation(
   conversation: ChatConversation
 ): Promise<ChatConversation> {
@@ -533,12 +554,19 @@ export async function migrateLocalStorageToSQLite(): Promise<{
           ]
         );
 
-        // Insert messages
+        // Insert messages OLDEST FIRST.
+        //
+        // The store keeps messages newest-first, and inserting them in that raw
+        // order made the trigger (`updated_at = NEW.timestamp`) end on the
+        // OLDEST message — so a just-migrated chat looked ancient. Retention
+        // then purged it on the next launch: the user's history was deleted
+        // immediately after being migrated. `orderedByTime` is what
+        // `saveConversation` already uses; this path was missing it.
         if (
           Array.isArray(conversation.messages) &&
           conversation.messages.length > 0
         ) {
-          for (const message of conversation.messages) {
+          for (const message of orderedByTime(conversation.messages)) {
             // Validate message
             if (
               !message?.id ||
@@ -557,7 +585,7 @@ export async function migrateLocalStorageToSQLite(): Promise<{
               : null;
 
             await db.execute(
-              "INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files) VALUES (?, ?, ?, ?, ?, ?)",
+              "INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
               [
                 message.id,
                 conversation.id,
@@ -565,6 +593,7 @@ export async function migrateLocalStorageToSQLite(): Promise<{
                 message.content,
                 message.timestamp || Date.now(),
                 attachedFilesJson,
+                typeof message.source === "string" ? message.source : null,
               ]
             );
           }

@@ -52,7 +52,9 @@ describe("chat-history actions audit fixes (R01, R02, R26, R27)", () => {
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         timestamp INTEGER NOT NULL,
-        attached_files TEXT
+        attached_files TEXT,
+        -- Mirrors migration 7 in src-tauri/src/db/migrations/message-source.sql.
+        source TEXT
       );
     `);
   });

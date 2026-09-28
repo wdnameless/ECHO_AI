@@ -35,9 +35,17 @@ export function getDatabase(): Promise<Database> {
         // while the meeting screen was recording.
         try {
           await db.execute("PRAGMA busy_timeout = 5000");
+          // Foreign keys are per-CONNECTION in SQLite, and this is the plugin's
+          // pooled connection — the only one the renderer writes through. The
+          // same pragma in Rust (`db/main.rs`) runs on a separate connection
+          // opened just to apply it, so it never affected these writes. Without
+          // it here, `ON DELETE CASCADE` on `messages` did nothing:
+          // `deleteConversation` removed the parent row and left every message
+          // orphaned, and retention's parent-only deletes did the same.
+          await db.execute("PRAGMA foreign_keys = ON");
         } catch (error) {
           // A read-only or already-configured connection must not stop startup.
-          console.warn("[db] could not set busy_timeout:", error);
+          console.warn("[db] could not set pragmas:", error);
         }
         dbInstance = db;
         return db;

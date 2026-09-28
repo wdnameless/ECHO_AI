@@ -1,0 +1,11 @@
+-- Remember who said each message.
+--
+-- The live feed distinguishes the interviewer from the candidate, but the
+-- column did not exist, so that fact was dropped on every reload: history came
+-- back with the speaker gone, which broke the LLM's `buildHistory` (it could no
+-- longer attribute a line) and hid speech rows in the feed after restarting.
+--
+-- Nullable on purpose: messages written before this migration have no source,
+-- and inventing one from `role` would be a guess — `user` covers both the
+-- candidate's own speech and the interviewer's transcription.
+ALTER TABLE messages ADD COLUMN source TEXT;

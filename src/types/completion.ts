@@ -13,6 +13,14 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   attachedFiles?: AttachedFile[];
+  /**
+   * Which side said it, when that is known.
+   *
+   * Persisted since migration 7. Absent for rows written before it, and for
+   * messages that have no side (a system prompt) — callers must keep their own
+   * default rather than treating this as "them".
+   */
+  source?: "me" | "them";
 }
 
 export interface ChatConversation {
