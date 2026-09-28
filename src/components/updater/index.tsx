@@ -15,10 +15,10 @@ import {
   ScrollArea,
 } from "@/components/ui";
 import { Markdown } from "@/components/Markdown";
-import { check, Update } from "@tauri-apps/plugin-updater";
+import { Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useWindowResize } from "@/hooks";
-import { PortableUpdateNotice, useIsPortable } from "./PortableUpdateNotice";
+import { PortableUpdateNotice, useIsPortable, checkForUpdateForLayout } from "./PortableUpdateNotice";
 
 type UpdateState =
   | "checking"
@@ -58,7 +58,9 @@ export const Updater = () => {
     try {
       setUpdateState("checking");
 
-      const foundUpdate = await check();
+      // Portable copies fetch the zip target; installed copies the MSI/NSIS
+      // default. Same button, same flow — different package.
+      const foundUpdate = await checkForUpdateForLayout(isPortable);
       if (foundUpdate) {
         setUpdate(foundUpdate);
         setUpdateState("available");

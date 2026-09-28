@@ -189,19 +189,6 @@ jobs:
             # (No --verify-tag: on a branch push the git tag does not exist yet
             # and `gh release create` mints it via the API.)
           fi
-      - name: Build & Publish release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: v__VERSION__
-          releaseName: "Echo AI v__VERSION__"
-          releaseBody: "Auto-generated release from the latest push."
-          releaseDraft: false
-          prerelease: false
-
       - name: Build portable archive
         shell: powershell
         run: |
@@ -233,6 +220,44 @@ jobs:
           Compress-Archive -Path "$stage/*" -DestinationPath $archive -Force
           Write-Host "Portable archive: $archive ($([math]::Round((Get-Item $archive).Length / 1MB, 1)) MB)"
 
+      - name: Sign portable archive for the updater
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          archive="Echo.AI_${version}_portable_x64.zip"
+          # Same key the MSI/NSIS updater targets use: the updater verifies the
+          # zip bytes against the signature recorded in latest.json and refuses
+          # the update when they do not match (fail-closed).
+          npx --yes @tauri-apps/cli@2 signer sign "$archive" \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            --write-signature-file
+          echo "Signed $archive ($archive.sig)"
+
+      - name: Build & Publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "Echo AI v__VERSION__"
+          releaseBody: "Auto-generated release from the latest push."
+          releaseDraft: false
+          prerelease: false
+          # Portable in-place updates: publish the hand-built zip as a
+          # `windows-x86_64-portable` target in latest.json, so a portable copy
+          # fetches the zip via check({ target }) instead of the MSI.
+          includeUpdaterJson: true
+          updaterJsonKeepUniversal: false
+          includeRelease: true
+          includeArchives: "Echo.AI_*_portable_x64.zip;Echo.AI_*_portable_x64.zip.sig"
+
       - name: Upload portable archive to the release
         shell: bash
         env:
@@ -240,5 +265,5 @@ jobs:
         run: |
           version=$(node -p "require('./src-tauri/tauri.conf.json').version")
           archive="Echo.AI_${version}_portable_x64.zip"
-          gh release upload "v${version}" "$archive" --repo "$GITHUB_REPOSITORY" --clobber
-          echo "Uploaded $archive"
+          gh release upload "v${version}" "$archive" "$archive.sig" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Uploaded $archive + sig"

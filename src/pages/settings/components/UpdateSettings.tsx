@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import { type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Button, Header } from "@/components";
-import { PortableUpdateNotice, useIsPortable } from "@/components/updater/PortableUpdateNotice";
+import { PortableUpdateNotice, useIsPortable, checkForUpdateForLayout } from "@/components/updater/PortableUpdateNotice";
 import { CheckCircle2Icon, DownloadIcon, Loader2Icon, RefreshCwIcon, AlertCircleIcon } from "lucide-react";
 export const UpdateSettings = () => {
   const [checking, setChecking] = useState(false);
@@ -11,13 +11,12 @@ export const UpdateSettings = () => {
   const [status, setStatus] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const isPortable = useIsPortable();
-
   const handleCheck = async () => {
     setChecking(true);
     setError(null);
     setStatus(null);
     try {
-      const found = await check();
+      const found = await checkForUpdateForLayout(isPortable);
       if (found) {
         setUpdate(found);
         setStatus(`Доступно обновление: v${found.version}`);

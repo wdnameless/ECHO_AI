@@ -2,19 +2,27 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 /**
- * A portable copy is updated into the normal install location, not in place: the
- * new copy starts with a fresh data directory, so the settings and the downloaded
- * speech model from the portable folder do not move across and the app comes back
- * looking broken. Someone pressed that button without knowing it once; this pins
- * the warning that tells them, and the case where it must stay out of the way.
+ * A portable copy updates from the zip target in place (`.echo-ai/` preserved);
+ * an installed copy uses the default MSI/NSIS target. The layout decides the
+ * package, and these pin that routing plus the notice text matching reality.
  */
 const getPathsMock = vi.fn();
+const checkMock = vi.fn();
 
 vi.mock("@/lib/storage/app-paths", () => ({
   getPaths: () => getPathsMock(),
 }));
 
-import { PortableUpdateNotice, useIsPortable } from "../PortableUpdateNotice";
+vi.mock("@tauri-apps/plugin-updater", () => ({
+  check: (...args: unknown[]) => checkMock(...args),
+}));
+
+import {
+  PortableUpdateNotice,
+  useIsPortable,
+  checkForUpdateForLayout,
+  PORTABLE_UPDATE_TARGET,
+} from "../PortableUpdateNotice";
 
 const Probe = () => {
   const isPortable = useIsPortable();
@@ -28,18 +36,37 @@ const Probe = () => {
 
 beforeEach(() => {
   getPathsMock.mockReset();
+  checkMock.mockReset();
 });
 
-describe("portable update warning", () => {
-  it("warns a portable copy that the update installs elsewhere", async () => {
+describe("portable update routing", () => {
+  it("a portable copy checks the zip target", async () => {
+    checkMock.mockResolvedValue(null);
+    await checkForUpdateForLayout(true);
+    expect(checkMock).toHaveBeenCalledOnce();
+    expect(checkMock.mock.calls[0][0]).toEqual({
+      target: PORTABLE_UPDATE_TARGET,
+    });
+  });
+
+  it("an installed copy checks the default target", async () => {
+    checkMock.mockResolvedValue(null);
+    await checkForUpdateForLayout(false);
+    expect(checkMock).toHaveBeenCalledOnce();
+    // No target override: updater resolves MSI/NSIS itself.
+    expect(checkMock.mock.calls[0][0]).toBeUndefined();
+  });
+
+  it("the notice promises in-place data preservation, not a reinstall", async () => {
     getPathsMock.mockResolvedValue({ root_kind: "portable", root: "D:/app" });
 
     render(<Probe />);
 
     expect(await screen.findByText(/портативном режиме/i)).toBeTruthy();
-    // The consequence and the way to stay portable both have to be stated.
-    expect(screen.getByText(/своей папкой данных/i)).toBeTruthy();
-    expect(screen.getByText(/portable_x64\.zip/)).toBeTruthy();
+    expect(screen.getByText(/\.echo-ai/i)).toBeTruthy();
+    // The old text described installing elsewhere — it must be gone.
+    expect(screen.queryByText(/системный каталог/i)).toBeNull();
+    expect(screen.queryByText(/portable_x64\.zip/i)).toBeNull();
   });
 
   it("stays silent for a normal install, where the update is in place", async () => {
