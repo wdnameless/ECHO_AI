@@ -140,6 +140,13 @@
   backdrop-filter: var(--backdrop-blur, none);
 }
 
+/* The meeting panel is portalled to body, outside the card tree: without this
+   the opacity slider moves the bar but the panel stays opaque — and a boss-key
+   that hides the bar would leave the answers on screen. */
+.panel-docked {
+  opacity: var(--opacity, 1);
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: rgb(from var(--muted-foreground) r g b / 0.2) transparent !important;

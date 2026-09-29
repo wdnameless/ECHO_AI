@@ -256,6 +256,7 @@ export function useSystemAudio() {
     setLastAIResponse,
     processWithAI,
     triggerAIForQuestion,
+    triggerCodeAnswer,
     abortAI,
   } = useAIStreaming({
     selectedAIProvider,
@@ -511,9 +512,12 @@ export function useSystemAudio() {
       clearFiller,
     ]
   );
-  const answerLastInterviewerUtterance = useCallback(async () => {
-    // Last finalized interviewer line, without copying and reversing the feed
-    // array on every ask.
+  // Freshest interviewer text, shared by the spoken "Ответить" and the manual
+  // code answer: newest finalized "them" segment wins over the merged question.
+  const resolveFreshestInterviewerText = useCallback((): {
+    text: string;
+    segmentId: string | null;
+  } => {
     const segments = liveSegmentsRef.current || [];
     let lastThemSegment: LiveSegment | null = null;
     for (let i = segments.length - 1; i >= 0; i--) {
@@ -523,16 +527,20 @@ export function useSystemAudio() {
         break;
       }
     }
-
-    // Whichever text is newer decides: a question the assembler merged earlier
-    // must not outrank the line the interviewer has just finished, and a fresh
-    // merged question must not be replaced by its own tail fragment.
     const assembled = lastInterviewerQuestionRef.current;
     const segment = lastInterviewerSegmentRef.current;
     const freshest =
       segment && (!assembled || segment.at >= assembled.at) ? segment.text : null;
-    const textToAnswer =
-      (freshest || assembled?.text || lastThemSegment?.text || theirLastTranscription || "").trim();
+    return {
+      text: (freshest || assembled?.text || lastThemSegment?.text || theirLastTranscription || "").trim(),
+      segmentId: lastThemSegment?.id ?? null,
+    };
+  }, [
+    theirLastTranscription,
+    liveSegmentsRef,
+  ]);
+  const answerLastInterviewerUtterance = useCallback(async () => {
+    const { text: textToAnswer, segmentId } = resolveFreshestInterviewerText();
     if (!textToAnswer || !textToAnswer.trim()) return;
     autoAskManagerRef.current?.cancel();
 
@@ -544,19 +552,31 @@ export function useSystemAudio() {
       return;
     }
 
-    if (lastThemSegment?.id) {
-      await askAIForTranscript(lastThemSegment.id, textToAnswer, "them");
+    if (segmentId) {
+      await askAIForTranscript(segmentId, textToAnswer, "them");
     } else {
       await triggerAIForQuestion(textToAnswer, "them");
     }
   }, [
     isAIProcessing,
-    theirLastTranscription,
     askAIForTranscript,
     triggerAIForQuestion,
-    liveSegmentsRef,
+    resolveFreshestInterviewerText,
   ]);
 
+  // Manual live-coding answer (R01/R02): same freshest-text resolution as the
+  // spoken "Ответить", but routes into the two-stage code path. First call
+  // (stage "plan") is instant; second call (stage "full") streams the snippet.
+  // Listens to the bar button + code_mode hotkey via "code-mode-trigger".
+  const answerCodeForLastUtterance = useCallback(async (stage: "plan" | "full") => {
+    const { text: textToAnswer } = resolveFreshestInterviewerText();
+    if (!textToAnswer || isAIProcessing) return;
+    await triggerCodeAnswer(textToAnswer, stage, "them");
+  }, [
+    isAIProcessing,
+    triggerCodeAnswer,
+    resolveFreshestInterviewerText,
+  ]);
   useEffect(() => {
     if (micCapture.stream) {
       micStreamRef.current = micCapture.stream;
@@ -627,6 +647,18 @@ export function useSystemAudio() {
   ]);
 
   // Hook 8. Keyboard & Scroll Shortcuts
+  // code_mode hotkey answers the freshest interviewer line with the plan
+  // stage; the bar button does the same via "code-mode-trigger". Both funnel
+  // into answerCodeForLastUtterance — one entry point, no drift.
+  const handleCodePlanRef = useRef<() => void>(() => {});
+  handleCodePlanRef.current = () => {
+    void answerCodeForLastUtterance("plan");
+  };
+  useEffect(() => {
+    const onTrigger = () => handleCodePlanRef.current();
+    window.addEventListener("code-mode-trigger", onTrigger);
+    return () => window.removeEventListener("code-mode-trigger", onTrigger);
+  }, []);
   useSystemAudioKeyboard({
     isPopoverOpen,
     isContinuousMode,
@@ -641,6 +673,7 @@ export function useSystemAudio() {
     startCapture,
     stopCapture,
     globalShortcuts,
+    onCodePlan: () => handleCodePlanRef.current(),
   });
 
   return {
@@ -695,5 +728,6 @@ export function useSystemAudio() {
     autoAskMode,
     setAutoAskMode,
     answerLastInterviewerUtterance,
+    answerCodeForLastUtterance,
   };
 }

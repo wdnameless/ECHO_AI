@@ -14,6 +14,11 @@ import { fetchAIResponse, shouldUsePluelyAPI } from "@/lib/functions";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
 import { startQuestion, recordFirstToken } from "@/lib/metrics";
 import { DEFAULT_SYSTEM_PROMPT } from "@/config";
+import {
+  buildCodePlan,
+  buildCodeFull,
+  buildCodeSystemPrompt,
+} from "@/lib/code-answer";
 import type { Message } from "@/types/completion";
 import type { TYPE_PROVIDER } from "@/types";
 import type { ChatMessage, ChatConversation } from "./useConversationStore";
@@ -296,6 +301,50 @@ export function useAIStreaming({
     ]
   );
 
+  // Manual live-coding answer, two stages (R01/R02). Bypasses the filler and
+  // cooldown guards: a hand-raised "Код" is never a backchannel. Stage "plan"
+  // renders instantly from the template; stage "full" streams the model only
+  // when no template matched (template path needs no model call at all).
+  const triggerCodeAnswer = useCallback(
+    async (
+      question: string,
+      stage: "plan" | "full",
+      source: "me" | "them" = "them"
+    ) => {
+      startQuestion();
+      const previousMessages = buildHistory(conversation.messages);
+      if (stage === "plan") {
+        const answer = buildCodePlan(question);
+        setLastAIResponse(answer.text);
+        lastAIResponseAtRef.current = Date.now();
+        addInteraction(question, answer.text, source);
+        return;
+      }
+      const full = buildCodeFull(question);
+      if (full.text) {
+        setLastAIResponse(full.text);
+        lastAIResponseAtRef.current = Date.now();
+        addInteraction(question, full.text, source);
+        return;
+      }
+      const { prompt } = buildCodeSystemPrompt(question);
+      await processWithAI(
+        question,
+        prompt,
+        previousMessages,
+        pendingScreenshotRef.current ? [pendingScreenshotRef.current] : [],
+        source
+      );
+    },
+    [
+      buildHistory,
+      conversation,
+      processWithAI,
+      pendingScreenshotRef,
+      addInteraction,
+    ]
+  );
+
   return {
     isAIProcessing,
     setIsAIProcessing,
@@ -303,6 +352,7 @@ export function useAIStreaming({
     setLastAIResponse,
     processWithAI,
     triggerAIForQuestion,
+    triggerCodeAnswer,
     abortAI,
     abortControllerRef,
     lastAIResponseAtRef,

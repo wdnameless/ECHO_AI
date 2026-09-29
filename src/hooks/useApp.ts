@@ -82,8 +82,11 @@ export const useAppBootstrap = () => {
       (event) => {
         const platform = navigator.platform.toLowerCase();
         if (typeof event.payload === "boolean" && platform.includes("win")) {
-          setIsHidden(!event.payload);
-          // find popover open and close it
+          // Rust emits the NEW hidden state (*is_hidden after the flip):
+          // apply verbatim. The old `!payload` inverted it, so the first
+          // boss-key press hid the Rust flag but SHOWED the React tree —
+          // and every press after that was off by one.
+          setIsHidden(event.payload);
           const popover = document.getElementById("popover-content");
           // set display to none, change data-state to closed
           if (popover) {

@@ -62,6 +62,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     autoAskMode = "auto",
     setAutoAskMode,
     answerLastInterviewerUtterance,
+    answerCodeForLastUtterance,
   } = props;
   const isVadMode = !isContinuousMode;
   const handleModeChange = (vadEnabled: boolean) => {
@@ -204,6 +205,27 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                           <SparklesIcon className="w-3 h-3" />
                         )}
                         Ответить
+                      </Button>
+                      {/* Code mode (R01): plan first, snippet on demand. */}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => answerCodeForLastUtterance?.("plan")}
+                        disabled={isAIProcessing || !hasInterviewerUtterance}
+                        className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
+                        title="Код: 1 фраза-план (Ctrl+Shift+K)"
+                      >
+                        План
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => answerCodeForLastUtterance?.("full")}
+                        disabled={isAIProcessing || !hasInterviewerUtterance}
+                        className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
+                        title="Код: фрагмент + объяснение"
+                      >
+                        Код
                       </Button>
                     </>
                   )}

@@ -106,8 +106,11 @@ export function ThemeProvider({
   }, [transparency]);
 
   const onSetTransparency = (transparency: number) => {
-    localStorage.setItem(STORAGE_KEYS.TRANSPARENCY, transparency.toString());
-    setTransparency(transparency);
+    // Clamp: opacity slider promises 20-100%, i.e. transparency 0-80.
+    // Below 20% the overlay is unreadable; the slider never offers it.
+    const clamped = Math.min(80, Math.max(0, Math.round(transparency)));
+    localStorage.setItem(STORAGE_KEYS.TRANSPARENCY, clamped.toString());
+    setTransparency(clamped);
   };
 
   const value = {

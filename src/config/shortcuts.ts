@@ -81,4 +81,14 @@ export const DEFAULT_SHORTCUT_ACTIONS: ShortcutAction[] = [
       linux: "ctrl+shift+s",
     },
   },
+  {
+    id: "code_mode",
+    name: "Code Mode",
+    description: "Trigger live-coding answer: plan phrase first, snippet on demand",
+    defaultKey: {
+      macos: "cmd+shift+k",
+      windows: "ctrl+shift+k",
+      linux: "ctrl+shift+k",
+    },
+  },
 ];

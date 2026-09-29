@@ -26,7 +26,10 @@ export interface UseSystemAudioKeyboardProps {
   globalShortcuts: {
     registerSystemAudioCallback: (cb: () => Promise<void>) => (() => void) | void;
     registerAssistantAudioCallback?: (cb: () => Promise<void>) => (() => void) | void;
+    registerCustomShortcutCallback?: (id: string, cb: () => void) => void;
+    unregisterCustomShortcutCallback?: (id: string) => void;
   };
+  onCodePlan?: () => void;
 }
 
 export function useSystemAudioKeyboard({
@@ -43,8 +46,18 @@ export function useSystemAudioKeyboard({
   startCapture,
   stopCapture,
   globalShortcuts,
+  onCodePlan,
 }: UseSystemAudioKeyboardProps) {
-  // Arrow keys navigation
+  // code_mode hotkey (R02): manual trigger for the plan stage. Registered
+  // through the same custom-shortcut channel as assistant_voice; cleanup
+  // mirrors useShortcuts so no stale closure outlives the component.
+  useEffect(() => {
+    if (!onCodePlan || !globalShortcuts.registerCustomShortcutCallback) return;
+    globalShortcuts.registerCustomShortcutCallback("code_mode", onCodePlan);
+    return () => {
+      globalShortcuts.unregisterCustomShortcutCallback?.("code_mode");
+    };
+  }, [onCodePlan, globalShortcuts]);
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isPopoverOpen) return;

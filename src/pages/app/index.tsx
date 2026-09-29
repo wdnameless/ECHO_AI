@@ -7,7 +7,8 @@ import {
 } from "./components";
 import { useAppBootstrap, useBarChrome } from "@/hooks";
 import { useApp } from "@/contexts";
-import { HeadphonesIcon, MicIcon, Eye, EyeOff, PinIcon } from "lucide-react";
+import { useTheme } from "@/contexts/theme.context";
+import { HeadphonesIcon, MicIcon, Eye, EyeOff, PinIcon, CodeIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ErrorBoundary } from "react-error-boundary";
 import { ErrorLayout } from "@/layouts";
@@ -23,11 +24,13 @@ import { cn } from "@/lib/utils";
 type AppMode = "dictation" | "meeting";
 
 const App = () => {
-  const { isHidden, systemAudio } = useAppBootstrap();
+  const { isHidden, setIsHidden, systemAudio } = useAppBootstrap();
   const { customizable, toggleStealthMode, toggleAlwaysOnTop } = useApp();
+  const { transparency, onSetTransparency } = useTheme();
+  // Opacity slider promises 20-100%; transparency is its mirror (0-80).
+  const opacity = 100 - transparency;
   const platform = getPlatform();
   useBarChrome();
-
   const handleDragMouseDown = async (e: React.MouseEvent) => {
     // Only drag with left mouse button
     if (e.button !== 0) return;
@@ -87,6 +90,20 @@ const App = () => {
     window.addEventListener("storage", apply);
     return () => window.removeEventListener("storage", apply);
   }, []);
+
+  // Esc-hide (R03): instant hide, yields to inline editing. The boss-key
+  // (ctrl+backslash) toggles back — both go through the same isHidden state,
+  // so no off-by-one between Rust and React visibility.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      const t = e.target as HTMLElement | null;
+      if (t?.closest("input, textarea, select, [contenteditable]")) return;
+      setIsHidden(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setIsHidden]);
 
   return (
     <ErrorBoundary
@@ -239,7 +256,29 @@ const App = () => {
               <Eye className="h-4 w-4 opacity-70" />
             )}
           </Button>
-
+          {/* Code mode: manual trigger for live-coding answers (R02).
+              No auto-detect: the candidate decides when the question needs code. */}
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 cursor-pointer shrink-0 transition-colors text-muted-foreground hover:text-foreground hover:bg-muted/50"
+            title="Режим кода (Ctrl+Shift+K): 1 фраза-план, затем фрагмент по запросу"
+            onClick={() => window.dispatchEvent(new CustomEvent("code-mode-trigger"))}
+            data-no-drag="true"
+          >
+            <CodeIcon className="h-4 w-4 opacity-70" />
+          </Button>
+          {/* Opacity 20-100%: stealth visibility control (R03). */}
+          <input
+            type="range"
+            min={20}
+            max={100}
+            value={opacity}
+            onChange={(e) => onSetTransparency(100 - Number(e.target.value))}
+            title={`Прозрачность: ${opacity}% (Ctrl+\\ — скрыть/показать, Esc — скрыть)`}
+            data-no-drag="true"
+            className="w-16 h-1 cursor-pointer shrink-0 accent-primary"
+          />
           <Updater />
           <DragButton />
         </Card>
