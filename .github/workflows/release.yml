@@ -189,11 +189,28 @@ jobs:
             # (No --verify-tag: on a branch push the git tag does not exist yet
             # and `gh release create` mints it via the API.)
           fi
+      - name: Build & Publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "Echo AI v__VERSION__"
+          releaseBody: "Auto-generated release from the latest push."
+          releaseDraft: false
+          prerelease: false
+
       - name: Build portable archive
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
+          # The exe exists only AFTER tauri-action built it: this step used to run
+          # before the build and failed every release with "Release executable
+          # not found in src-tauri/target/release". Order is load-bearing here.
+          #
           # A single-file build: the engine and its libraries are embedded in
           # the executable and extracted on first run, so this archive is just
           # the exe plus a marker that turns on portable mode. The speech model
@@ -238,25 +255,31 @@ jobs:
             --write-signature-file
           echo "Signed $archive ($archive.sig)"
 
-      - name: Build & Publish release
-        uses: tauri-apps/tauri-action@v0
+      - name: Patch latest.json with the portable target
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          tagName: v__VERSION__
-          releaseName: "Echo AI v__VERSION__"
-          releaseBody: "Auto-generated release from the latest push."
-          releaseDraft: false
-          prerelease: false
-          # Portable in-place updates: publish the hand-built zip as a
-          # `windows-x86_64-portable` target in latest.json, so a portable copy
-          # fetches the zip via check({ target }) instead of the MSI.
-          includeUpdaterJson: true
-          updaterJsonKeepUniversal: false
-          includeRelease: true
-          includeArchives: "Echo.AI_*_portable_x64.zip;Echo.AI_*_portable_x64.zip.sig"
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          set -euo pipefail
+          # tauri-action writes latest.json with only the MSI/NSIS targets it
+          # built. The portable zip is hand-built, so its target is patched in:
+          # download + verify the signature tauri-action just produced, then
+          # add `windows-x86_64-portable` pointing at the zip + sig.
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          tag="v${version}"
+          archive="Echo.AI_${version}_portable_x64.zip"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern "latest.json" --clobber --output ./latest.json
+          sig=$(cat "$archive.sig")
+          url="https://github.com/wdnameless/ECHO_AI/releases/download/${tag}/${archive}"
+          SIG="$sig" URL="$url" node -e "
+            const fs = require('fs');
+            const j = JSON.parse(fs.readFileSync('./latest.json', 'utf8'));
+            j.platforms['windows-x86_64-portable'] = { signature: process.env.SIG, url: process.env.URL };
+            fs.writeFileSync('./latest.json', JSON.stringify(j, null, 2));
+          "
+          gh release upload "$tag" ./latest.json --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Patched latest.json with windows-x86_64-portable -> $url"
 
       - name: Upload portable archive to the release
         shell: bash
