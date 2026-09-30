@@ -20,7 +20,7 @@ import {
   RotateCcwIcon,
   ChevronUpIcon,
 } from "lucide-react";
-import { VadConfig } from "@/hooks/useSystemAudio";
+import { VadConfig, DEFAULT_VAD_CONFIG } from "@/hooks/useSystemAudio";
 import {
   PROMPT_TEMPLATES,
   getPromptTemplateById,
@@ -33,28 +33,35 @@ import {
   type AsrLanguage,
 } from "@/lib/asr-language";
 
-// Sensitivity presets for simpler UX
+// Sensitivity presets for simpler UX.
+//
+// Studio = quiet room + good mic: gate down AND min_speech down as a pair.
+// Gate alone at zero makes the engine hear room noise as speech ("Yeah.");
+// Office = previous Normal; Noisy = push the floor up + demand longer speech.
 const SENSITIVITY_PRESETS = {
-  low: {
-    sensitivity_rms: 0.015,
-    peak_threshold: 0.045,
-    noise_gate_threshold: 0.005,
-    label: "Low",
-    description: "Only picks up clear, loud speech",
+  studio: {
+    sensitivity_rms: 0.008,
+    peak_threshold: 0.025,
+    noise_gate_threshold: 0.0015,
+    min_speech_chunks: 5,
+    label: "Studio",
+    description: "Quiet room, good mic: catches quiet phrase starts, no noise to hallucinate",
   },
-  normal: {
+  office: {
     sensitivity_rms: 0.012,
     peak_threshold: 0.035,
     noise_gate_threshold: 0.003,
-    label: "Normal",
+    min_speech_chunks: 7,
+    label: "Office",
     description: "Balanced for typical conversations",
   },
-  high: {
-    sensitivity_rms: 0.008,
-    peak_threshold: 0.025,
-    noise_gate_threshold: 0.002,
-    label: "High",
-    description: "Picks up quieter speech",
+  noisy: {
+    sensitivity_rms: 0.015,
+    peak_threshold: 0.045,
+    noise_gate_threshold: 0.005,
+    min_speech_chunks: 9,
+    label: "Noisy",
+    description: "Loud room: ignores background, demands clearer speech",
   },
 } as const;
 
@@ -64,7 +71,6 @@ interface SettingsPanelProps {
   // VAD Config
   vadConfig: VadConfig;
   onUpdateVadConfig: (config: VadConfig) => void;
-  // Context settings
   useSystemPrompt: boolean;
   setUseSystemPrompt: (value: boolean) => void;
   contextContent: string;
@@ -98,7 +104,8 @@ export const SettingsPanel = ({
         Math.abs(vadConfig.sensitivity_rms - preset.sensitivity_rms) < 0.001 &&
         Math.abs(vadConfig.peak_threshold - preset.peak_threshold) < 0.001 &&
         Math.abs(vadConfig.noise_gate_threshold - preset.noise_gate_threshold) <
-          0.001
+          0.001 &&
+        vadConfig.min_speech_chunks === preset.min_speech_chunks
       ) {
         return key as SensitivityPreset;
       }
@@ -115,6 +122,7 @@ export const SettingsPanel = ({
       sensitivity_rms: presetValues.sensitivity_rms,
       peak_threshold: presetValues.peak_threshold,
       noise_gate_threshold: presetValues.noise_gate_threshold,
+      min_speech_chunks: presetValues.min_speech_chunks,
     });
   };
 
@@ -127,18 +135,9 @@ export const SettingsPanel = ({
   };
 
   const handleResetDefaults = () => {
-    const defaultConfig: VadConfig = {
-      enabled: vadConfig.enabled, // Keep current mode
-      hop_size: 1024,
-      sensitivity_rms: 0.012,
-      peak_threshold: 0.035,
-      silence_chunks: 12,
-      min_speech_chunks: 7,
-      pre_speech_chunks: 12,
-      noise_gate_threshold: 0.003,
-      max_recording_duration_secs: 180,
-    };
-    onUpdateVadConfig(defaultConfig);
+    // From the single source of truth, not a hardcoded copy that drifts
+    // (the old copy missed min_speech_chunks the moment presets grew it).
+    onUpdateVadConfig({ ...DEFAULT_VAD_CONFIG, enabled: vadConfig.enabled });
   };
 
   return (
@@ -405,13 +404,38 @@ export const SettingsPanel = ({
                             silence_chunks: Math.round(value),
                           })
                         }
-                        min={20}
+                        min={8}
                         max={180}
                         step={5}
                         className="w-full"
                       />
                       <p className="text-[10px] text-muted-foreground">
                         How long to wait after speech stops
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-xs font-medium flex items-center justify-between">
+                        <span>Min Speech</span>
+                        <span className="text-muted-foreground font-normal">
+                          {vadConfig.min_speech_chunks} chunks
+                        </span>
+                      </Label>
+                      <Slider
+                        value={[vadConfig.min_speech_chunks]}
+                        onValueChange={([value]) =>
+                          onUpdateVadConfig({
+                            ...vadConfig,
+                            min_speech_chunks: Math.round(value),
+                          })
+                        }
+                        min={3}
+                        max={15}
+                        step={1}
+                        className="w-full"
+                      />
+                      <p className="text-[10px] text-muted-foreground">
+                        Shorter catches quiet starts, longer cuts noise
                       </p>
                     </div>
                   </>

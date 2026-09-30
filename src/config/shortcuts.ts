@@ -82,6 +82,16 @@ export const DEFAULT_SHORTCUT_ACTIONS: ShortcutAction[] = [
     },
   },
   {
+    id: "lang_switch",
+    name: "RU/EN Model Switch",
+    description: "Toggle speech recognition model between Russian and English",
+    defaultKey: {
+      macos: "cmd+shift+l",
+      windows: "ctrl+shift+l",
+      linux: "ctrl+shift+l",
+    },
+  },
+  {
     id: "code_mode",
     name: "Code Mode",
     description: "Trigger live-coding answer: plan phrase first, snippet on demand",

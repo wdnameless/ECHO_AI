@@ -192,7 +192,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       {/* RU/EN streaming model (R01). Model switch, not language pin. */}
                       <div
                         className="flex items-center bg-muted rounded-md p-0.5 gap-0.5 shrink-0"
-                        title="Модель распознавания: RU — Voxtral streaming (русский), EN — Parakeet streaming (английский). Переключает модель движка."
+                        title="Модель распознавания: RU — Parakeet TDT (русский, batch), EN — Parakeet Unified streaming (английский, Q4). Переключает модель движка (Ctrl+Shift+L)."
                       >
                         <button
                           type="button"

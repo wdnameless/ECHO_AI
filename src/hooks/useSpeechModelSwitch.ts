@@ -4,7 +4,7 @@ import { setAsrLanguage, type AsrLanguage } from "@/lib/asr-language";
 import { safeLocalStorage } from "@/lib/storage/helper";
 
 /**
- * Speech-model switch: RU/EN streaming model, not the recognition language.
+ * Speech-model switch: RU/EN model pair, not the recognition language.
  *
  * Why a separate state: `asr_language` (auto/ru/en) only pins the recogniser's
  * expected language on the SAME model — it cannot fix a monolingual English
@@ -12,9 +12,11 @@ import { safeLocalStorage } from "@/lib/storage/helper";
  * (selectModel + restart), then pins the language to match.
  *
  * Model map (catalogue ids → engine file):
- * - ru → Voxtral-Mini-4B-Realtime-2602: the only streaming model with `ru`
- *   (WER 2.07, 2.6–4.4 GB — needs RAM/VRAM, said honestly in the UI).
- * - en → parakeet-unified-en-0.6b: WER 1.6, ~700 MB, recommended.
+ * - ru → parakeet-tdt-0.6b-v3: WER 1.94, speed 96, ~700 MB. Batch-only
+ *   (streaming:false), so RU goes through the 300ms batch cadence — no socket
+ *   partials, but ~64ms per pass. A RU-streaming model lighter than 4.5 GB
+ *   does not exist in the catalogue (Voxtral is the only one and needs VRAM).
+ * - en → parakeet-unified-en-0.6b: WER 1.6, speed 96, streaming, recommended.
  *
  * No silent substitution: when the file is not on disk the caller gets
  * `{ ok: false, missingModel }` and shows "Скачать в Моделях" instead.
@@ -24,9 +26,11 @@ import { safeLocalStorage } from "@/lib/storage/helper";
 
 export type SpeechModelLang = "ru" | "en";
 
-const MODEL_BY_LANG: Record<SpeechModelLang, { id: string; asr: AsrLanguage }> = {
-  ru: { id: "Voxtral-Mini-4B-Realtime-2602", asr: "ru" },
-  en: { id: "parakeet-unified-en-0.6b", asr: "en" },
+const MODEL_BY_LANG: Record<SpeechModelLang, { id: string; asr: AsrLanguage; quant: string | null }> = {
+  // RU stays Q8: at WER 1.94 every 0.1 counts, and Q8 is the catalogue default.
+  ru: { id: "parakeet-tdt-0.6b-v3", asr: "ru", quant: null },
+  // EN has headroom (WER 1.6): Q4 halves RAM/disk, quality loss is inaudible.
+  en: { id: "parakeet-unified-en-0.6b", asr: "en", quant: "Q4_K_M" },
 };
 
 const STORAGE_KEY = "speech_model_lang";
@@ -46,7 +50,13 @@ export function useSpeechModelSwitch() {
     try {
       const [installed, active] = await Promise.all([listModels(), selectedModel()]);
       const want = MODEL_BY_LANG[next];
-      const file = installed.find((f) => f.model_id === want.id);
+      // EN prefers the Q4 file when present (same model, half the weight);
+      // RU pins Q8. Fall back to whatever is installed rather than failing.
+      const files = installed.filter((f) => f.model_id === want.id);
+      const file =
+        (want.quant && files.find((f) => f.quant === want.quant)) ??
+        files.find((f) => f.quant === "Q8_0") ??
+        files[0];
       if (!file) return { ok: false, missingModel: want.id };
       if (active?.file_name !== file.file_name) {
         await selectModel(file.path);

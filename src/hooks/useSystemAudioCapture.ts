@@ -45,11 +45,13 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
  * pathological 8s utterance), and the first words reach the screen ~300ms
  * sooner, which is the delay that is actually perceived.
  *
- * Not lowered further: 250ms would leave ~1.15x headroom on a long utterance,
- * where a pass approaching the interval makes the passes queue instead of
- * arriving on time.
+ * At 250ms the headroom on a pathological 8s utterance is ~1.15x — thin but
+ * guarded: liveBusyRef drops (not queues) an overlapping pass, and the
+ * end-of-speech batch pass always covers the whole utterance. First words
+ * reach the screen ~50ms sooner than at 300ms, which is the delay the user
+ * actually perceives. Below 250ms the passes would queue instead of arriving.
  */
-const LIVE_BATCH_MS = 300;
+const LIVE_BATCH_MS = 250;
 
 /**
  * Hard limit on how long ONE utterance may grow before the live pass keeps only

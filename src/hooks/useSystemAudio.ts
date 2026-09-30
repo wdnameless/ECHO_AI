@@ -697,6 +697,10 @@ export function useSystemAudio() {
     stopCapture,
     globalShortcuts,
     onCodePlan: () => handleCodePlanRef.current(),
+    onLangSwitch: () => {
+      const next = speechModel.lang === "ru" ? "en" : "ru";
+      void speechModel.switchTo(next);
+    },
   });
 
   return {

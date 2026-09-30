@@ -30,6 +30,7 @@ export interface UseSystemAudioKeyboardProps {
     unregisterCustomShortcutCallback?: (id: string) => void;
   };
   onCodePlan?: () => void;
+  onLangSwitch?: () => void;
 }
 
 export function useSystemAudioKeyboard({
@@ -47,6 +48,7 @@ export function useSystemAudioKeyboard({
   stopCapture,
   globalShortcuts,
   onCodePlan,
+  onLangSwitch,
 }: UseSystemAudioKeyboardProps) {
   // code_mode hotkey (R02): manual trigger for the plan stage. Registered
   // through the same custom-shortcut channel as assistant_voice; cleanup
@@ -58,6 +60,16 @@ export function useSystemAudioKeyboard({
       globalShortcuts.unregisterCustomShortcutCallback?.("code_mode");
     };
   }, [onCodePlan, globalShortcuts]);
+
+  // lang_switch hotkey (R02): toggles RU/EN speech model mid-call.
+  // Same lock as the segment buttons (switchTo ignores while switching).
+  useEffect(() => {
+    if (!onLangSwitch || !globalShortcuts.registerCustomShortcutCallback) return;
+    globalShortcuts.registerCustomShortcutCallback("lang_switch", onLangSwitch);
+    return () => {
+      globalShortcuts.unregisterCustomShortcutCallback?.("lang_switch");
+    };
+  }, [onLangSwitch, globalShortcuts]);
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (!isPopoverOpen) return;
