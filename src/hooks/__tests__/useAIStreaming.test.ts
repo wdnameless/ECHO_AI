@@ -40,6 +40,7 @@ describe("useAIStreaming", () => {
 
   const buildHistory = vi.fn(() => []);
   const addInteraction = vi.fn();
+  const getActiveFiller = vi.fn(() => null);
   const setFillerForInterviewer = vi.fn();
   const clearFiller = vi.fn();
   const onError = vi.fn();
@@ -66,6 +67,7 @@ describe("useAIStreaming", () => {
       addInteraction,
       setFillerForInterviewer,
       clearFiller,
+      getActiveFiller,
       pendingUtteranceId: null as string | null,
       onError,
       pendingScreenshotRef,

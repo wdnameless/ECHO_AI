@@ -44,6 +44,8 @@ export interface UseAIStreamingProps {
   ) => void;
   setFillerForInterviewer: (questionText?: string) => void;
   clearFiller: () => void;
+  /** Snapshot of the stall phrase for stitching (R02). Read at stream start. */
+  getActiveFiller?: () => string | null;
   pendingUtteranceId?: string | null;
   pendingScreenshotRef: React.MutableRefObject<string | null>;
   setPendingScreenshot: (val: string | null) => void;
@@ -70,6 +72,7 @@ export function useAIStreaming({
   addInteraction,
   setFillerForInterviewer,
   clearFiller,
+  getActiveFiller,
   pendingUtteranceId,
   pendingScreenshotRef,
   setPendingScreenshot,
@@ -168,6 +171,15 @@ export function useAIStreaming({
             if (isFirstChunk) {
               isFirstChunk = false;
               recordFirstToken();
+              // Persistent filler (R02): the stall phrase becomes the FIRST
+              // LINE of the answer body instead of vanishing. clearFiller only
+              // drops the STATE (pending id/anchor); the stitched text stays.
+              const fillerSnapshot = typeof getActiveFiller === "function" ? getActiveFiller() : null;
+              const stitched = fillerSnapshot && String(fillerSnapshot).trim() ? String(fillerSnapshot).trim() + "\n\n" : "";
+              if (stitched) {
+                fullResponse += stitched;
+                streamBufferRef.current += stitched;
+              }
               clearFiller();
             }
             fullResponse += chunk;
@@ -228,6 +240,7 @@ export function useAIStreaming({
       pendingScreenshotRef,
       setPendingScreenshot,
       clearFiller,
+      getActiveFiller,
       addInteraction,
     ]
   );

@@ -11,6 +11,10 @@ import { listen } from "@tauri-apps/api/event";
 import { useWindowResize, useGlobalShortcuts } from ".";
 import { useApp } from "@/contexts";
 import { isExplicitAskEligible } from "@/lib/transcript-stabilizer";
+import { findCodeRequestInHistory } from "@/lib/code-templates";
+import { useSpeechModelSwitch } from "./useSpeechModelSwitch";
+import { getAnswerLengthOverride, setAnswerLengthOverride } from "@/lib/answer-length-override";
+import type { AnswerLengthOverride } from "@/lib/answer-length";
 import {
   generateConversationId,
   getAutoAskConfig,
@@ -161,6 +165,10 @@ export function useSystemAudio() {
     liveSegmentsRef,
   });
 
+  // Snapshot for R02 stitching: read at stream start, not at render.
+  const activeFillerRef = useRef<string | null>(null);
+  useEffect(() => { activeFillerRef.current = activeFiller; }, [activeFiller]);
+
   /**
    * A finished utterance is handed to the assembler, which owns the ONLY
    * dispatch for it: every non-duplicate fragment arms its gap timer, and that
@@ -269,6 +277,7 @@ export function useSystemAudio() {
     addInteraction,
     setFillerForInterviewer,
     clearFiller,
+    getActiveFiller: () => activeFillerRef.current,
     pendingUtteranceId,
     pendingScreenshotRef,
     setPendingScreenshot,
@@ -564,18 +573,28 @@ export function useSystemAudio() {
     resolveFreshestInterviewerText,
   ]);
 
-  // Manual live-coding answer (R01/R02): same freshest-text resolution as the
-  // spoken "Ответить", but routes into the two-stage code path. First call
-  // (stage "plan") is instant; second call (stage "full") streams the snippet.
-  // Listens to the bar button + code_mode hotkey via "code-mode-trigger".
+  // Manual live-coding answer: searches BACK through the dialogue for the last
+  // code-flavored request (template hit or code verb), not just the freshest
+  // line. The candidate presses "Код" after the talk moved on ("Mm-hmm",
+  // "Логично") — answering that line gives the generic fallback, while the
+  // real task ("Напиши функцию...") sits a few messages back.
   const answerCodeForLastUtterance = useCallback(async (stage: "plan" | "full") => {
-    const { text: textToAnswer } = resolveFreshestInterviewerText();
-    if (!textToAnswer || isAIProcessing) return;
+    const { text: freshest } = resolveFreshestInterviewerText();
+    if (isAIProcessing) return;
+    const historyTexts = [
+      ...conversation.messages.map((m) => m.content),
+      ...((liveSegmentsRef.current || []).map((s) => s.text)),
+    ];
+    const textToAnswer =
+      findCodeRequestInHistory(historyTexts) || freshest;
+    if (!textToAnswer || !textToAnswer.trim()) return;
     await triggerCodeAnswer(textToAnswer, stage, "them");
   }, [
     isAIProcessing,
     triggerCodeAnswer,
     resolveFreshestInterviewerText,
+    conversation,
+    liveSegmentsRef,
   ]);
   useEffect(() => {
     if (micCapture.stream) {
@@ -645,6 +664,10 @@ export function useSystemAudio() {
     setIsMicProcessing, setIsSystemProcessing, setIsAIProcessing,
     clearFiller, setIsPopoverOpen, setRawUseSystemPrompt,
   ]);
+
+  const speechModel = useSpeechModelSwitch();
+  const [answerLengthOverride, setAnswerLengthOverrideState] = useState<AnswerLengthOverride>(() => getAnswerLengthOverride());
+  const handleAnswerLengthOverride = (v: AnswerLengthOverride) => { setAnswerLengthOverride(v); setAnswerLengthOverrideState(v); };
 
   // Hook 8. Keyboard & Scroll Shortcuts
   // code_mode hotkey answers the freshest interviewer line with the plan
@@ -729,5 +752,10 @@ export function useSystemAudio() {
     setAutoAskMode,
     answerLastInterviewerUtterance,
     answerCodeForLastUtterance,
+    speechModelLang: speechModel.lang,
+    speechModelSwitching: speechModel.switching,
+    onSpeechModelSwitch: (next: "ru" | "en") => { void speechModel.switchTo(next); },
+    answerLengthOverride,
+    onAnswerLengthOverride: handleAnswerLengthOverride,
   };
 }

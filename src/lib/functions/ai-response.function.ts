@@ -14,14 +14,21 @@ import { shouldUsePluelyAPI } from "./pluely.api";
 import { raceStall } from "./stall-guard";
 import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
 import { getSecret, secretKey } from "@/lib/storage/secret-store";
-import { getResponseSettings, RESPONSE_LENGTHS, LANGUAGES } from "@/lib";
+import { getResponseSettings, LANGUAGES } from "@/lib";
+import { buildSelfEvolutionPromptBlock } from "../storage/user-facts";
+import {
+  resolveAnswerLength,
+  SHORT_LENGTH_PROMPT,
+  LONG_LENGTH_PROMPT,
+} from "@/lib/answer-length";
+import { getAnswerLengthOverride } from "@/lib/answer-length-override";
 import { MARKDOWN_FORMATTING_INSTRUCTIONS, STORAGE_KEYS } from "@/config/constants";
 import {
   getHumanizerSettings,
   HUMANIZER_INSTRUCTIONS,
   INTERVIEW_MODE_INSTRUCTIONS,
+  pickAnswerOpener,
 } from "@/config/humanizer.rules";
-import { buildSelfEvolutionPromptBlock } from "../storage/user-facts";
 import { getWebSearchSettings, performWebSearch, SearchResultItem } from "../web-search";
 import {
   buildSearchBlock,
@@ -179,25 +186,45 @@ async function buildEnhancedSystemPrompt(
   // Add markdown formatting instructions
   prompts.push(MARKDOWN_FORMATTING_INSTRUCTIONS);
 
-  const lengthOption = RESPONSE_LENGTHS.find(
-    (l) => l.id === responseSettings.responseLength
+  // Answer length: per-question, not per-settings. The toolbar override and
+  // explicit prefixes beat the heuristic; the settings preset is the fallback
+  // when everything says "auto". The old path always pushed the preset, so a
+  // detailed "почему" was answered in 35-55 words no matter what.
+  const answerLength = resolveAnswerLength(
+    userMessage || "",
+    getAnswerLengthOverride()
   );
-  if (lengthOption?.prompt?.trim()) {
-    prompts.push(lengthOption.prompt);
-  }
+  prompts.push(answerLength === "long" ? LONG_LENGTH_PROMPT : SHORT_LENGTH_PROMPT);
 
   // Humanizer rules
   const humanizer = getHumanizerSettings();
   if (humanizer.enabled) {
     prompts.push(HUMANIZER_INSTRUCTIONS);
     if (humanizer.interviewMode) {
-      prompts.push(INTERVIEW_MODE_INSTRUCTIONS);
+      // Length lives above now: the interview cap (35-55) would strangle long
+      // answers back to short. Keep think-aloud + first-person, drop the cap.
+      prompts.push(
+        INTERVIEW_MODE_INSTRUCTIONS.replace(
+          /KEEP ANSWERS CONCISE: strictly 1-3 spoken sentences \(35-55 words maximum\)\. Get straight to the point\./,
+          "LENGTH: the ANSWER-LENGTH rule above decides (short = tight, long = full detail)."
+        )
+      );
     }
     if (humanizer.customStyle?.trim()) {
       prompts.push(
         `Match this personal speaking style: ${humanizer.customStyle.trim()}`
       );
     }
+  }
+
+  // Rotating opener: one per answer, never the same twice. Replaces the three
+  // hardcoded examples the model copied into every response («Ну, смотрите»).
+  const openerLang = detectLanguage(userMessage || "") === "russian" ? "ru" : "en";
+  const opener = pickAnswerOpener(openerLang);
+  if (opener) {
+    prompts.push(`Open with exactly this phrase, then answer: "${opener}"`);
+  } else {
+    prompts.push("Start straight into the answer with no introductory phrase.");
   }
 
   // RAG context: resume and job description (fetched in parallel - they are

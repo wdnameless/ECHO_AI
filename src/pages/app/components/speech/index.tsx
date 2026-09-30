@@ -63,6 +63,11 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     setAutoAskMode,
     answerLastInterviewerUtterance,
     answerCodeForLastUtterance,
+    speechModelLang,
+    speechModelSwitching,
+    onSpeechModelSwitch,
+    answerLengthOverride,
+    onAnswerLengthOverride,
   } = props;
   const isVadMode = !isContinuousMode;
   const handleModeChange = (vadEnabled: boolean) => {
@@ -182,6 +187,61 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                         >
                           Вручную
                         </button>
+                      </div>
+
+                      {/* RU/EN streaming model (R01). Model switch, not language pin. */}
+                      <div
+                        className="flex items-center bg-muted rounded-md p-0.5 gap-0.5 shrink-0"
+                        title="Модель распознавания: RU — Voxtral streaming (русский), EN — Parakeet streaming (английский). Переключает модель движка."
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onSpeechModelSwitch?.("ru")}
+                          disabled={speechModelSwitching}
+                          className={cn(
+                            "px-2 py-1 text-[11px] font-medium rounded transition-all",
+                            speechModelLang === "ru"
+                              ? "bg-background shadow-sm text-foreground"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                        >
+                          RU
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onSpeechModelSwitch?.("en")}
+                          disabled={speechModelSwitching}
+                          className={cn(
+                            "px-2 py-1 text-[11px] font-medium rounded transition-all",
+                            speechModelLang === "en"
+                              ? "bg-background shadow-sm text-foreground"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                        >
+                          EN
+                        </button>
+                      </div>
+
+                      {/* Answer length override (R03): auto + manual. */}
+                      <div
+                        className="flex items-center bg-muted rounded-md p-0.5 gap-0.5 shrink-0"
+                        title="Длина ответа: Авто (по вопросу), Кратко (35-55 слов), Подробно (~140 слов). Префиксы кратко:/подробно: в вопросе тоже работают."
+                      >
+                        {["auto","short","long"].map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            onClick={() => onAnswerLengthOverride?.(m as "auto" | "short" | "long")}
+                            className={cn(
+                              "px-2 py-1 text-[11px] font-medium rounded transition-all",
+                              answerLengthOverride === m
+                                ? "bg-background shadow-sm text-foreground"
+                                : "text-muted-foreground hover:text-foreground"
+                            )}
+                          >
+                            {m === "auto" ? "Авто" : m === "short" ? "Кратко" : "Подробно"}
+                          </button>
+                        ))}
                       </div>
 
                       {/* Кнопка ответа на последнюю реплику собеседника */}
