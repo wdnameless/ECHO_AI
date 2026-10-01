@@ -24,6 +24,7 @@ import {
   rememberPanelHeight,
 } from "@/hooks";
 import { cn } from "@/lib/utils";
+import { detectTextLanguage } from "@/lib/transcript-stabilizer";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp } from "@/contexts";
@@ -224,7 +225,27 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                           EN
                         </button>
                       </div>
-
+                      {/* Язык последней реплики vs активная модель (P2): мягкое
+                          предупреждение, не авто-переключение. Детект по скрипту
+                          (detectTextLanguage): смешанная строка решает большинством. */}
+                      {(() => {
+                        const lastText = (theirLastTranscription || "").trim();
+                        if (!lastText || lastText.length < 8) return null;
+                        const spoken = detectTextLanguage(lastText);
+                        if (spoken === speechModelLang) return null;
+                        const want = spoken === "ru" ? "RU" : "EN";
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => onSpeechModelSwitch?.(spoken)}
+                            disabled={speechModelSwitching}
+                            className="px-2 py-1 text-[11px] font-medium rounded transition-all bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/40 hover:bg-amber-500/25 shrink-0"
+                            title={`Собеседник говорит на ${want}, а модель стоит ${speechModelLang.toUpperCase()}. Клик — переключить модель (движок рестартует).`}
+                          >
+                            {want}?
+                          </button>
+                        );
+                      })()}
                       {/* Прогреть перед собесом (P0): движок+модель+провайдер+RAG до первого вопроса. */}
                       {warmupVisible && (
                         <Button
@@ -310,6 +331,16 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                         title="Код: фрагмент + объяснение"
                       >
                         Код
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => answerCodeForLastUtterance?.("full", { screenshot: true })}
+                        disabled={isAIProcessing || !hasInterviewerUtterance}
+                        className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
+                        title="Код со скрина: захватить экран, прочитать код глазами модели, разбор + фрагмент"
+                      >
+                        Код со скрина
                       </Button>
                     </>
                   )}

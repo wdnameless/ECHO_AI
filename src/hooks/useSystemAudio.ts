@@ -579,7 +579,7 @@ export function useSystemAudio() {
   // line. The candidate presses "Код" after the talk moved on ("Mm-hmm",
   // "Логично") — answering that line gives the generic fallback, while the
   // real task ("Напиши функцию...") sits a few messages back.
-  const answerCodeForLastUtterance = useCallback(async (stage: "plan" | "full") => {
+  const answerCodeForLastUtterance = useCallback(async (stage: "plan" | "full", opts?: { screenshot?: boolean }) => {
     const { text: freshest } = resolveFreshestInterviewerText();
     if (isAIProcessing) return;
     const historyTexts = [
@@ -589,6 +589,16 @@ export function useSystemAudio() {
     const textToAnswer =
       findCodeRequestInHistory(historyTexts) || freshest;
     if (!textToAnswer || !textToAnswer.trim()) return;
+    if (opts?.screenshot) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const base64 = await invoke<string>("capture_to_base64");
+        pendingScreenshotRef.current = base64;
+        setPendingScreenshot(base64);
+      } catch {
+        return;
+      }
+    }
     await triggerCodeAnswer(textToAnswer, stage, "them");
   }, [
     isAIProcessing,

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   CODE_TEMPLATES,
   matchCodeTemplate,
+  findCodeRequestInHistory,
 } from "../code-templates";
 import {
   buildCodePlan,
@@ -73,5 +74,49 @@ describe("code answer stages", () => {
     const { prompt, template } = buildCodeSystemPrompt("расскажи про опыт");
     expect(template).toBeNull();
     expect(prompt).not.toMatch(/REFERENCE SOLUTION/);
+  });
+});
+
+describe("findCodeRequestInHistory", () => {
+  it("finds the code task buried under later chatter", () => {
+    const hist = [
+      "That create transact so. GLM select switch to which is",
+      "Пишем аккуратно по шагам: сначала каркас, потом детали.",
+      "Mm-hmm.",
+      "Да, давайте так. Мы просто открываем транзакцию...",
+      "Напиши функцию, пусть будет на псевдопитон с понятными шагами, минималистично.",
+      "Да, понятная задача. Мы обычно вешаем уникальный индекс...",
+      "BAAAAA Логично. Но помни. Это привет. Давай, марий.",
+      "Если в двух словах я бы завязался на уникальный constraint...",
+    ];
+    expect(findCodeRequestInHistory(hist)).toContain("Напиши функцию");
+  });
+
+  it("prefers the NEWEST code request when several exist", () => {
+    const hist = [
+      "напиши дебаунс для поиска",
+      "ок, понял",
+      "а теперь напиши функцию валидации скобок",
+      "ага",
+    ];
+    expect(findCodeRequestInHistory(hist)).toContain("скобок");
+  });
+
+  it("returns null when nobody asked for code", () => {
+    expect(findCodeRequestInHistory(["Mm-hmm.", "Логично.", "Да, понятно."])).toBeNull();
+  });
+});
+
+
+describe("buildCodeSystemPrompt with screenshot", () => {
+  it("adds the vision rule when a screenshot rides along", () => {
+    const { prompt } = buildCodeSystemPrompt("почини", true);
+    expect(prompt).toMatch(/screenshot/i);
+    expect(prompt).toMatch(/TABS/);
+  });
+
+  it("no vision rule without screenshot", () => {
+    const { prompt } = buildCodeSystemPrompt("почини", false);
+    expect(prompt).not.toMatch(/screenshot/i);
   });
 });

@@ -334,13 +334,16 @@ export function useAIStreaming({
         return;
       }
       const full = buildCodeFull(question);
-      if (full.text) {
+      const hasScreenshot = !!pendingScreenshotRef.current;
+      // Screenshot forces the model path: a template match would otherwise
+      // return early and drop the screenshot (it was captured for THIS answer).
+      if (full.text && !hasScreenshot) {
         setLastAIResponse(full.text);
         lastAIResponseAtRef.current = Date.now();
         addInteraction(question, full.text, source);
         return;
       }
-      const { prompt } = buildCodeSystemPrompt(question);
+      const { prompt } = buildCodeSystemPrompt(question, hasScreenshot);
       await processWithAI(
         question,
         prompt,
