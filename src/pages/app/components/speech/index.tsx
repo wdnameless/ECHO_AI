@@ -68,6 +68,9 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     onSpeechModelSwitch,
     answerLengthOverride,
     onAnswerLengthOverride,
+    warmupState,
+    warmupVisible,
+    onWarmup,
   } = props;
   const isVadMode = !isContinuousMode;
   const handleModeChange = (vadEnabled: boolean) => {
@@ -221,6 +224,27 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                           EN
                         </button>
                       </div>
+
+                      {/* Прогреть перед собесом (P0): движок+модель+провайдер+RAG до первого вопроса. */}
+                      {warmupVisible && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => onWarmup?.()}
+                          disabled={warmupState === "running"}
+                          className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
+                          title="Прогреть: движок, модель, провайдер, RAG — первый вопрос не ждёт холодного старта"
+                        >
+                          {warmupState === "running" ? (
+                            <>
+                              <LoaderIcon className="w-3 h-3 animate-spin" />
+                              Готовится
+                            </>
+                          ) : (
+                            "Прогреть"
+                          )}
+                        </Button>
+                      )}
 
                       {/* Answer length override (R03): auto + manual. */}
                       <div

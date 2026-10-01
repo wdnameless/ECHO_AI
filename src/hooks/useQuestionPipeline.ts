@@ -23,7 +23,7 @@ import { AI_PROVIDERS } from "@/config/ai-providers.constants";
 import { deepVariableReplacer } from "@/lib/functions/common.function";
 import { LiveSegment } from "./useConversationStore";
 
-function resolveActiveProviderUrl(): string | null {
+export function resolveActiveProviderUrl(): string | null {
   try {
     const rawSelected = safeLocalStorage.getItem(STORAGE_KEYS.SELECTED_AI_PROVIDER);
     const selected = rawSelected

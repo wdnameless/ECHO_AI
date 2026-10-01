@@ -13,6 +13,7 @@ import { useApp } from "@/contexts";
 import { isExplicitAskEligible } from "@/lib/transcript-stabilizer";
 import { findCodeRequestInHistory } from "@/lib/code-templates";
 import { useSpeechModelSwitch } from "./useSpeechModelSwitch";
+import { useWarmup } from "./useWarmup";
 import { getAnswerLengthOverride, setAnswerLengthOverride } from "@/lib/answer-length-override";
 import type { AnswerLengthOverride } from "@/lib/answer-length";
 import {
@@ -30,7 +31,7 @@ import {
   ChatConversation,
 } from "./useConversationStore";
 import { useMicWsStreaming } from "./useMicWsStreaming";
-import { useQuestionPipeline } from "./useQuestionPipeline";
+import { useQuestionPipeline, resolveActiveProviderUrl } from "./useQuestionPipeline";
 import { useAIStreaming } from "./useAIStreaming";
 import {
   useSystemAudioCapture,
@@ -666,6 +667,7 @@ export function useSystemAudio() {
   ]);
 
   const speechModel = useSpeechModelSwitch();
+  const warmup = useWarmup({ providerUrl: resolveActiveProviderUrl(), modelKey: speechModel.lang });
   const [answerLengthOverride, setAnswerLengthOverrideState] = useState<AnswerLengthOverride>(() => getAnswerLengthOverride());
   const handleAnswerLengthOverride = (v: AnswerLengthOverride) => { setAnswerLengthOverride(v); setAnswerLengthOverrideState(v); };
 
@@ -761,5 +763,8 @@ export function useSystemAudio() {
     onSpeechModelSwitch: (next: "ru" | "en") => { void speechModel.switchTo(next); },
     answerLengthOverride,
     onAnswerLengthOverride: handleAnswerLengthOverride,
+    warmupState: warmup.state,
+    warmupVisible: warmup.visible,
+    onWarmup: () => { void warmup.warm(); },
   };
 }
