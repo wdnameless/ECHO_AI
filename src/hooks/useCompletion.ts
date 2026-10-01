@@ -170,6 +170,7 @@ export const useCompletion = () => {
             ? undefined
             : providerValidation.provider,
           selectedProvider: selectedAIProvider,
+          allProviders: allAiProviders,
           systemPrompt: systemPrompt || undefined,
           history: messageHistory,
           userMessage,

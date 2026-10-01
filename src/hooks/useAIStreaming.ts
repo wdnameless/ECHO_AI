@@ -162,6 +162,7 @@ export function useAIStreaming({
           for await (const chunk of fetchAIResponse({
             provider: usePluelyAPI ? undefined : provider,
             selectedProvider: selectedAIProvider,
+            allProviders: allAiProviders,
             systemPrompt: prompt,
             history: previousMessages,
             userMessage: transcription,

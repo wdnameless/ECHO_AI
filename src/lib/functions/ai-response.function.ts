@@ -835,6 +835,33 @@ async function* streamAIResponse(params: {
   }
 }
 
+const FAILURE_PREFIXES = [
+  "Network error",
+  "Запрос отменён",
+  "Failed to parse",
+  "Streaming not supported",
+  "Error reading stream",
+  "Провайдер не ответил",
+  "Провайдер недоступен",
+  "Провайдер отклонил",
+  "Провайдер ограничил",
+  "API request failed",
+  "Не настроен API-ключ",
+  "Не заполнена переменная",
+  "Provider not provided",
+  "User message is required",
+  "Failed to parse curl",
+];
+
+export function isFailureChunk(chunk: string): boolean {
+  if (!chunk || typeof chunk !== "string") return false;
+  const trimmed = chunk.trim();
+  if (!trimmed) return false;
+  if (/^HTTP \d{3}/i.test(trimmed)) return true;
+  if (trimmed.includes("does not support image input")) return true;
+  return FAILURE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
+}
+
 /**
  * Public entry point. Web search (when enabled) runs IN PARALLEL with the
  * request and never blocks the first token:
@@ -849,6 +876,7 @@ export async function* fetchAIResponse(params: {
     provider: string;
     variables: Record<string, string>;
   };
+  allProviders?: TYPE_PROVIDER[];
   systemPrompt?: string;
   history?: Message[];
   userMessage: string;
@@ -891,10 +919,135 @@ export async function* fetchAIResponse(params: {
     searchResults && searchResults.length > 0
       ? `${baseSystemPrompt} ${buildSearchBlock(searchResults)}`
       : baseSystemPrompt;
+  if (!params.allProviders) {
+    yield* streamAIResponse({
+      ...params,
+      systemPrompt: enrichedPrompt,
+      signal,
+    });
+    return;
+  }
 
-  yield* streamAIResponse({
-    ...params,
-    systemPrompt: enrichedPrompt,
-    signal,
-  });
+  const candidates: (TYPE_PROVIDER | undefined)[] = [];
+  const seenIds = new Set<string>();
+
+  if (params.provider) {
+    candidates.push(params.provider);
+    if (params.provider.id) {
+      seenIds.add(params.provider.id);
+    }
+  }
+
+  if (params.allProviders) {
+    for (const p of params.allProviders) {
+      if (!p.id || !seenIds.has(p.id)) {
+        if (p.id) seenIds.add(p.id);
+        candidates.push(p);
+      }
+    }
+  }
+
+  if (candidates.length === 0) {
+    candidates.push(undefined);
+  }
+
+  const triedIds: string[] = [];
+  let lastError = "";
+
+  for (let i = 0; i < candidates.length; i++) {
+    if (signal?.aborted) {
+      return;
+    }
+
+    const candidate = candidates[i];
+    const candidateId = candidate?.id ?? "unknown";
+    triedIds.push(candidateId);
+
+    const candidateVariables = {
+      ...(params.selectedProvider?.variables ?? {}),
+    };
+    if (candidate?.id && candidate.id !== params.selectedProvider?.provider) {
+      for (const k of Object.keys(candidateVariables)) {
+        if (k.toLowerCase().includes("api_key")) {
+          delete candidateVariables[k];
+        }
+      }
+    }
+    const candidateSelected = {
+      provider: candidate?.id ?? params.selectedProvider?.provider ?? "",
+      variables: candidateVariables,
+    };
+    let yieldedRealContent = false;
+    let candidateFailed = false;
+    let candidateError = "";
+
+    try {
+      const stream = streamAIResponse({
+        ...params,
+        provider: candidate,
+        selectedProvider: candidateSelected,
+        systemPrompt: enrichedPrompt,
+        signal,
+      });
+
+      for await (const chunk of stream) {
+        if (signal?.aborted) {
+          return;
+        }
+
+        if (!yieldedRealContent) {
+          if (isFailureChunk(chunk)) {
+            candidateFailed = true;
+            candidateError = chunk;
+            break;
+          }
+          if (chunk.length > 0) {
+            yieldedRealContent = true;
+          }
+        }
+
+        yield chunk;
+      }
+    } catch (error) {
+      if (
+        signal?.aborted ||
+        (error instanceof Error && error.name === "AbortError")
+      ) {
+        return;
+      }
+
+      if (!yieldedRealContent) {
+        candidateFailed = true;
+        candidateError =
+          error instanceof Error ? error.message : String(error);
+      } else {
+        return;
+      }
+    }
+
+    if (signal?.aborted) {
+      return;
+    }
+
+    if (yieldedRealContent) {
+      return;
+    }
+
+    if (!candidateFailed && !yieldedRealContent) {
+      candidateFailed = true;
+      candidateError = "Провайдер вернул пустой ответ";
+    }
+
+    lastError = candidateError;
+
+    if (i < candidates.length - 1) {
+      const nextCandidate = candidates[i + 1];
+      const nextId = nextCandidate?.id ?? "AI";
+      yield `(переключаю на ${nextId}…)`;
+    }
+  }
+
+  throw new Error(
+    `Все провайдеры недоступны (пробовали: ${triedIds.join(", ")}): ${lastError}`
+  );
 }

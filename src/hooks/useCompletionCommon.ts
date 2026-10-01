@@ -609,6 +609,7 @@ export interface StreamAIResponseOptions {
     provider: string;
     variables: Record<string, string>;
   };
+  allProviders?: TYPE_PROVIDER[];
   systemPrompt?: string;
   history: Message[];
   userMessage: string;
@@ -626,6 +627,7 @@ export interface StreamAIResponseOptions {
 export async function streamAIResponse({
   provider,
   selectedProvider,
+  allProviders,
   systemPrompt,
   history,
   userMessage,
@@ -641,6 +643,7 @@ export async function streamAIResponse({
     for await (const chunk of fetchAIResponse({
       provider,
       selectedProvider,
+      allProviders,
       systemPrompt: systemPrompt || undefined,
       history,
       userMessage,
