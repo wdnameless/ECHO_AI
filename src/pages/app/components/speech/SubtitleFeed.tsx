@@ -17,7 +17,10 @@ import {
 import { cn } from "@/lib/utils";
 import { useTranslationQueue } from "@/hooks/useTranslationQueue";
 import { useAppVersion } from "@/lib/version";
-import { getMetrics, onMetrics, resetMetrics } from "@/lib/metrics";
+import { getMetrics, onMetrics, resetMetrics, buildMetricsDump } from "@/lib/metrics";
+import { getAsrLanguage } from "@/lib/asr-language";
+import { getAnswerLengthOverride } from "@/lib/answer-length-override";
+import { getSpeechModelLang } from "@/hooks/useSpeechModelSwitch";
 import {
   recordFeedback,
   getSelfEvolutionStats,
@@ -123,6 +126,12 @@ interface SubtitleFeedProps {
   activeFiller?: string | null;
   pendingUtteranceId?: string | null;
   onCorrectWord?: (id: string, newText: string) => void;
+  isStalled?: boolean;
+  stallNextId?: string;
+  onStallWait?: () => void;
+  onStallRetry?: () => void;
+  onStallNext?: () => void;
+  onOpenProviders?: () => void;
 }
 
 const DISLIKE_REASONS = [
@@ -198,24 +207,111 @@ const StreamingAiRow = memo(function StreamingAiRow({
       </div>
 
       <div className="grid gap-x-2 w-full min-w-0 max-w-full grid-cols-1">
-        <div
-          className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
-          style={{
-            wordBreak: "break-word",
-            overflowWrap: "anywhere",
-            whiteSpace: "pre-wrap",
-          }}
-        >
-          {formatSpokenAnswer(text).map((p, i) => (
-            <p key={i} className="leading-relaxed">
-              {p}
-            </p>
-          ))}
-        </div>
+        <AnswerBody text={text} />
       </div>
     </div>
   );
 });
+
+/** Splits a code answer into fence block + spoken prose. */
+export function splitCodeAnswer(text: string): {
+  code: string | null;
+  lang: string;
+  prose: string[];
+} {
+  const m = text.match(/```(\w*)\n([\s\S]*?)```/);
+  if (!m) return { code: null, lang: "", prose: formatSpokenAnswer(text) };
+  const [, lang, code] = m;
+  const rest = (text.slice(0, m.index) + text.slice(m.index! + m[0].length)).trim();
+  return { code: code.replace(/\n$/, ""), lang: lang || "ts", prose: formatSpokenAnswer(rest) };
+}
+
+/** Code block with tab stops, copy-snippet button, and spoken narration below. */
+const CodeAnswerBody = memo(function CodeAnswerBody({
+  code,
+  lang,
+  prose,
+  onCopyCode,
+  codeCopied,
+}: {
+  code: string;
+  lang: string;
+  prose: string[];
+  onCopyCode: () => void;
+  codeCopied: boolean;
+}) {
+  return (
+    <div className="min-w-0 space-y-1.5">
+      <div className="relative rounded-md border border-border/60 bg-black/80 dark:bg-black/60 overflow-hidden">
+        <div className="flex items-center justify-between px-2 py-1 border-b border-white/10">
+          <span className="text-[0.62em] font-mono text-white/60">{lang}</span>
+          <button
+            onClick={onCopyCode}
+            className="flex items-center gap-1 text-[0.62em] text-white/60 hover:text-white transition-colors"
+            title="Скопировать код (табуляция preserved)"
+          >
+            {codeCopied ? (
+              <CheckIcon className="w-3 h-3 text-emerald-400" />
+            ) : (
+              <CopyIcon className="w-3 h-3" />
+            )}
+            {codeCopied ? "Скопировано" : "Код"}
+          </button>
+        </div>
+        <pre className="m-0 p-2 overflow-x-auto text-[0.82em] leading-relaxed text-emerald-50 font-mono whitespace-pre" style={{ tabSize: 4 }}>
+          <code>{code}</code>
+        </pre>
+      </div>
+      {prose.map((p, i) => (
+        <p key={i} className="leading-relaxed text-[0.86em] text-foreground">
+          {p}
+        </p>
+      ))}
+    </div>
+  );
+});
+
+/** Routes code answers to the block renderer, prose to paragraphs. */
+const AnswerBody = memo(function AnswerBody({
+  text,
+  onCopyCode,
+  codeCopied,
+}: {
+  text: string;
+  onCopyCode?: () => void;
+  codeCopied?: boolean;
+}) {
+  const split = splitCodeAnswer(text);
+  if (!split.code) {
+    return (
+      <div
+        className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
+        style={{ wordBreak: "break-word", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
+      >
+        {split.prose.map((p, i) => (
+          <p key={i} className="leading-relaxed">
+            {p}
+          </p>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <CodeAnswerBody
+      code={split.code}
+      lang={split.lang}
+      prose={split.prose}
+      onCopyCode={onCopyCode ?? (() => {})}
+      codeCopied={codeCopied ?? false}
+    />
+  );
+});
+
+/** Extracts the raw snippet for the copy button (fence stripped, tabs kept). */
+export function splitCodeForCopy(text: string): string {
+  const { code } = splitCodeAnswer(text);
+  return code ?? text;
+}
 
 const AiFeedRow = memo(function AiFeedRow({
   id,
@@ -370,20 +466,11 @@ const AiFeedRow = memo(function AiFeedRow({
           translationsOn && !streaming ? "grid-cols-2" : "grid-cols-1"
         )}
       >
-        <div
-          className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
-          style={{
-            wordBreak: "break-word",
-            overflowWrap: "anywhere",
-            whiteSpace: "pre-wrap",
-          }}
-        >
-          {formatSpokenAnswer(text).map((p, i) => (
-            <p key={i} className="leading-relaxed">
-              {streaming ? p : <HoverTranslate text={p} />}
-            </p>
-          ))}
-        </div>
+        <AnswerBody
+          text={text}
+          onCopyCode={() => onCopy(id, splitCodeForCopy(text))}
+          codeCopied={copied}
+        />
         {translationsOn && !streaming && (
           <div className="min-w-0 flex items-start border-l border-border/30 pl-2">
             {translation === undefined && !translationFailed ? (
@@ -682,6 +769,12 @@ export const SubtitleFeed = ({
   activeFiller,
   pendingUtteranceId,
   onCorrectWord,
+  isStalled = false,
+  stallNextId,
+  onStallWait,
+  onStallRetry,
+  onStallNext,
+  onOpenProviders,
 }: SubtitleFeedProps) => {
   const { promptProfiles, activeProfileId, selectPromptProfile, selectedAIProvider, allAiProviders } = useApp();
   const activeProfile =
@@ -696,6 +789,18 @@ export const SubtitleFeed = ({
   const [webSearchOn, setWebSearchOn] = useState<boolean>(
     () => getWebSearchSettings().enabled
   );
+  const [stalledSeconds, setStalledSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!isStalled) {
+      setStalledSeconds(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      setStalledSeconds((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isStalled]);
   const toggleWebSearch = useCallback(() => {
     setWebSearchOn((prev) => {
       const next = !prev;
@@ -712,6 +817,7 @@ export const SubtitleFeed = ({
   // would re-render the whole tree on each tick.
   const [metrics, setMetrics] = useState(() => getMetrics());
   useEffect(() => onMetrics((m) => setMetrics(m)), []);
+  const [dumpCopied, setDumpCopied] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [feedbackGiven, setFeedbackGiven] = useState<
     Record<string, "like" | "dislike">
@@ -1344,13 +1450,84 @@ export const SubtitleFeed = ({
         {/* Immediate filler/thinking row or streaming AI answer (isolated cheap subtree) */}
         {!paused && isAIProcessing && (
           !lastAIResponse?.trim() ? (
-            <div className="my-1.5 p-3 rounded-lg border border-violet-500/30 bg-violet-500/5 text-violet-600 dark:text-violet-300 shadow-sm transition-all animate-in fade-in">
-              <div className="flex items-center gap-1.5 mb-1 text-[0.72em] font-medium text-violet-500/90 tracking-wide uppercase">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span>Заполните паузу (зачитайте вслух):</span>
+            <div className="space-y-1.5 my-1.5">
+              <div className="p-3 rounded-lg border border-violet-500/30 bg-violet-500/5 text-violet-600 dark:text-violet-300 shadow-sm transition-all animate-in fade-in">
+                <div className="flex items-center gap-1.5 mb-1 text-[0.72em] font-medium text-violet-500/90 tracking-wide uppercase">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Заполните паузу (зачитайте вслух):</span>
+                </div>
+                <div className="text-[0.95em] font-medium leading-snug tracking-normal select-text text-foreground/90 pl-1 border-l-2 border-violet-500/60">
+                  «{activeFiller || fallbackFiller}»
+                </div>
               </div>
-              <div className="text-[0.95em] font-medium leading-snug tracking-normal select-text text-foreground/90 pl-1 border-l-2 border-violet-500/60">
-                «{activeFiller || fallbackFiller}»
+
+              {/* Quiet control row under filler card; prominent when stalled */}
+              <div
+                className={cn(
+                  "p-2 rounded-lg transition-all animate-in fade-in",
+                  isStalled
+                    ? "border border-amber-500/50 bg-amber-500/10 text-amber-900 dark:text-amber-200 shadow-sm"
+                    : "border border-transparent bg-transparent text-muted-foreground/70"
+                )}
+              >
+                {isStalled && (
+                  <div className="mb-1.5 text-[0.8em] font-medium text-amber-700 dark:text-amber-300">
+                    {`Провайдер молчит ${stalledSeconds}с — решайте: ждать, повторить или взять ${stallNextId || "следующий"}`}
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-2 text-[0.78em]">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={onStallWait}
+                      className={cn(
+                        "px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer",
+                        isStalled
+                          ? "border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-950 dark:text-amber-100 font-medium"
+                          : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                      )}
+                    >
+                      Ждать
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onStallRetry}
+                      className={cn(
+                        "px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer",
+                        isStalled
+                          ? "border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-950 dark:text-amber-100 font-medium"
+                          : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                      )}
+                    >
+                      Повторить
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onStallNext}
+                      className={cn(
+                        "px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer",
+                        isStalled
+                          ? "border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-950 dark:text-amber-100 font-medium"
+                          : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
+                      )}
+                    >
+                      Другой{stallNextId ? ` (${stallNextId})` : ""}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onOpenProviders) {
+                        onOpenProviders();
+                      } else {
+                        window.dispatchEvent(new CustomEvent("open-providers"));
+                      }
+                    }}
+                    className="underline text-[0.9em] text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
+                  >
+                    Провайдеры
+                  </button>
+                </div>
               </div>
             </div>
           ) : (
@@ -1517,6 +1694,29 @@ export const SubtitleFeed = ({
           title="Сбросить таймеры и счётчики сессии"
         >
           ⟲
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            // Clipboard, not file: one click, no dialogs, no paths to pick.
+            // Context that matters for slowness: which models and settings
+            // produced these numbers. Transcripts stay out of the dump.
+            const dump = buildMetricsDump({
+              appVersion,
+              sttModel: handyModel || null,
+              llmModel: llmModel || null,
+              asrLanguage: getAsrLanguage(),
+              speechModelLang: (() => { try { return getSpeechModelLang(); } catch { return null; } })(),
+              answerLength: (() => { try { return getAnswerLengthOverride(); } catch { return null; } })(),
+            });
+            navigator.clipboard?.writeText(dump).catch(() => {});
+            setDumpCopied(true);
+            setTimeout(() => setDumpCopied(false), 1500);
+          }}
+          className="font-mono text-muted-foreground/70 hover:text-foreground"
+          title="Дамп сессии в буфер: метрики + модели + настройки (без транскриптов)"
+        >
+          {dumpCopied ? "✓" : "⧉"}
         </button>
         {wsReconnects !== undefined && wsReconnects > 0 && (
           <span

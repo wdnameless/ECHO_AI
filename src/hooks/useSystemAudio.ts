@@ -267,6 +267,11 @@ export function useSystemAudio() {
     triggerAIForQuestion,
     triggerCodeAnswer,
     abortAI,
+    isStalled,
+    stallWait,
+    stallRetry,
+    stallNext,
+    stallNextId,
   } = useAIStreaming({
     selectedAIProvider,
     allAiProviders,
@@ -776,5 +781,10 @@ export function useSystemAudio() {
     warmupState: warmup.state,
     warmupVisible: warmup.visible,
     onWarmup: () => { void warmup.warm(); },
+    isStalled,
+    stallWait,
+    stallRetry,
+    stallNext,
+    stallNextId,
   };
 }

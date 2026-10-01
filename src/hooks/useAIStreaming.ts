@@ -10,7 +10,7 @@
  */
 
 import { useState, useRef, useCallback } from "react";
-import { fetchAIResponse, shouldUsePluelyAPI } from "@/lib/functions";
+import { fetchAIResponse, shouldUsePluelyAPI, STALL_SENTINEL } from "@/lib/functions";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
 import { startQuestion, recordFirstToken } from "@/lib/metrics";
 import { DEFAULT_SYSTEM_PROMPT } from "@/config";
@@ -81,6 +81,14 @@ export function useAIStreaming({
 }: UseAIStreamingProps) {
   const [isAIProcessing, setIsAIProcessing] = useState(false);
   const [lastAIResponse, setLastAIResponse] = useState<string>("");
+  const [isStalled, setIsStalled] = useState(false);
+  const lastRequestRef = useRef<{
+    transcription: string;
+    prompt: string;
+    previousMessages: Message[];
+    imagesBase64: string[];
+    source?: "me" | "them";
+  } | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   /**
    * Which stream is current. Bumped by every `processWithAI`; an older stream
@@ -97,6 +105,7 @@ export function useAIStreaming({
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
+    setIsStalled(false);
     clearFiller();
     // Deliberately does NOT release a held question.
     //
@@ -116,7 +125,8 @@ export function useAIStreaming({
       prompt: string,
       previousMessages: Message[],
       imagesBase64: string[] = [],
-      source?: "me" | "them"
+      source?: "me" | "them",
+      overrideProvider?: TYPE_PROVIDER
     ) => {
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
@@ -133,17 +143,26 @@ export function useAIStreaming({
 
       try {
         setIsAIProcessing(true);
+        setIsStalled(false);
         setLastAIResponse("");
         onError("");
         let fullResponse = "";
 
+        lastRequestRef.current = {
+          transcription,
+          prompt,
+          previousMessages,
+          imagesBase64,
+          source,
+        };
+
         const usePluelyAPI = await shouldUsePluelyAPI();
-        if (!selectedAIProvider.provider && !usePluelyAPI) {
+        if (!selectedAIProvider.provider && !usePluelyAPI && !overrideProvider) {
           onError("No AI provider selected.");
           return;
         }
 
-        const provider = allAiProviders.find(
+        const provider = overrideProvider || allAiProviders.find(
           (p) => p.id === selectedAIProvider.provider
         );
         if (!provider && !usePluelyAPI) {
@@ -160,8 +179,16 @@ export function useAIStreaming({
         try {
           let isFirstChunk = true;
           for await (const chunk of fetchAIResponse({
-            provider: usePluelyAPI ? undefined : provider,
-            selectedProvider: selectedAIProvider,
+            provider: usePluelyAPI && !overrideProvider ? undefined : provider,
+            selectedProvider: overrideProvider
+              ? {
+                  provider: overrideProvider.id ?? selectedAIProvider.provider,
+                  variables:
+                    overrideProvider.id === selectedAIProvider.provider
+                      ? selectedAIProvider.variables
+                      : {},
+                }
+              : selectedAIProvider,
             allProviders: allAiProviders,
             systemPrompt: prompt,
             history: previousMessages,
@@ -169,6 +196,10 @@ export function useAIStreaming({
             imagesBase64,
             signal: abortControllerRef.current.signal,
           })) {
+            if (chunk === STALL_SENTINEL) {
+              setIsStalled(true);
+              continue;
+            }
             if (isFirstChunk) {
               isFirstChunk = false;
               recordFirstToken();
@@ -226,6 +257,7 @@ export function useAIStreaming({
         // questions while its successor is still answering.
         if (generationRef.current === generation) {
           setIsAIProcessing(false);
+          setIsStalled(false);
           clearFiller();
           // After the flag is cleared, so a question held during the answer sees
           // `isAIProcessing === false` and goes out immediately.
@@ -361,6 +393,55 @@ export function useAIStreaming({
       addInteraction,
     ]
   );
+  const stallWait = useCallback(() => {
+    setIsStalled(false);
+  }, []);
+
+  const stallRetry = useCallback(() => {
+    setIsStalled(false);
+    if (lastRequestRef.current) {
+      const { transcription, prompt, previousMessages, imagesBase64, source } =
+        lastRequestRef.current;
+      void processWithAI(
+        transcription,
+        prompt,
+        previousMessages,
+        imagesBase64,
+        source
+      );
+    }
+  }, [processWithAI]);
+
+  const stallNext = useCallback(() => {
+    setIsStalled(false);
+    if (!lastRequestRef.current || allAiProviders.length === 0) return;
+    const currentIndex = allAiProviders.findIndex(
+      (p) => p.id === selectedAIProvider.provider
+    );
+    const nextIndex =
+      (currentIndex >= 0 ? currentIndex + 1 : 0) % allAiProviders.length;
+    const nextProvider = allAiProviders[nextIndex];
+    const { transcription, prompt, previousMessages, imagesBase64, source } =
+      lastRequestRef.current;
+    void processWithAI(
+      transcription,
+      prompt,
+      previousMessages,
+      imagesBase64,
+      source,
+      nextProvider
+    );
+  }, [allAiProviders, selectedAIProvider, processWithAI]);
+
+  const selectedIndex = allAiProviders.findIndex(
+    (p) => p.id === selectedAIProvider.provider
+  );
+  const nextIndex =
+    allAiProviders.length > 0
+      ? (selectedIndex >= 0 ? selectedIndex + 1 : 0) % allAiProviders.length
+      : -1;
+  const stallNextId = nextIndex >= 0 ? allAiProviders[nextIndex]?.id : undefined;
+
 
   return {
     isAIProcessing,
@@ -373,5 +454,10 @@ export function useAIStreaming({
     abortAI,
     abortControllerRef,
     lastAIResponseAtRef,
+    isStalled,
+    stallWait,
+    stallRetry,
+    stallNext,
+    stallNextId,
   };
 }

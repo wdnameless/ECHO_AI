@@ -9,6 +9,7 @@ import type { TYPE_PROVIDER } from "@/types";
 vi.mock("@/lib/functions", () => ({
   fetchAIResponse: vi.fn(),
   shouldUsePluelyAPI: vi.fn(),
+  STALL_SENTINEL: "__ECHO_STALL__",
 }));
 
 vi.mock("@/lib/metrics", () => ({
@@ -345,5 +346,94 @@ describe("useAIStreaming", () => {
 
     // The stale stream settled; the generation guard decides what that means.
     expect(onProcessingComplete).toHaveBeenCalled();
+  });
+  it("handles STALL_SENTINEL: sets isStalled, does not append sentinel to answer, stallWait resets isStalled", async () => {
+    const props = createHookProps();
+    const { result } = renderHook(() => useAIStreaming(props));
+
+    let resumeStream!: () => void;
+    const pausePromise = new Promise<void>((resolve) => {
+      resumeStream = resolve;
+    });
+    async function* stallStream() {
+      yield "__ECHO_STALL__";
+      await pausePromise;
+      yield "Actual answer";
+    }
+    vi.mocked(fetchAIResponse).mockReturnValue(stallStream() as never);
+
+    let streamPromise: Promise<void> | null = null;
+    act(() => {
+      streamPromise = result.current.processWithAI("question", "prompt", [], [], "them");
+    });
+
+    // Wait microtask tick for first chunk (__ECHO_STALL__) to be processed
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.isStalled).toBe(true);
+
+    // stallWait clears isStalled while stream is still paused
+    act(() => {
+      result.current.stallWait();
+    });
+    expect(result.current.isStalled).toBe(false);
+
+    // Resume stream and complete
+    await act(async () => {
+      resumeStream();
+      await streamPromise;
+    });
+
+    expect(props.addInteraction).toHaveBeenCalledWith(
+      "question",
+      "Actual answer",
+      "them"
+    );
+  });
+
+  it("exposes stallNext, stallNextId, stallRetry and resets isStalled", async () => {
+    const props = createHookProps();
+    props.allAiProviders = [
+      { id: "openai", name: "OpenAI" } as unknown as TYPE_PROVIDER,
+      { id: "anthropic", name: "Anthropic" } as unknown as TYPE_PROVIDER,
+    ];
+    props.selectedAIProvider = { provider: "openai", variables: {} };
+
+    const { result } = renderHook(() => useAIStreaming(props));
+
+    expect(result.current.stallNextId).toBe("anthropic");
+
+    async function* emptyStream() {
+      yield "done";
+    }
+    vi.mocked(fetchAIResponse).mockReturnValue(emptyStream() as never);
+
+    await act(async () => {
+      await result.current.processWithAI("test question", "test prompt", [], [], "them");
+    });
+
+    // Test stallRetry
+    vi.mocked(fetchAIResponse).mockClear();
+    vi.mocked(fetchAIResponse).mockReturnValue(emptyStream() as never);
+    await act(async () => {
+      result.current.stallRetry();
+      await Promise.resolve();
+    });
+    expect(fetchAIResponse).toHaveBeenCalled();
+
+    // Test stallNext
+    vi.mocked(fetchAIResponse).mockClear();
+    vi.mocked(fetchAIResponse).mockReturnValue(emptyStream() as never);
+    await act(async () => {
+      result.current.stallNext();
+      await Promise.resolve();
+    });
+    expect(fetchAIResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        selectedProvider: expect.objectContaining({ provider: "anthropic" }),
+      })
+    );
   });
 });

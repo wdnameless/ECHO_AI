@@ -120,6 +120,65 @@ describe("R18: SubtitleFeed streaming isolation", () => {
     expect(screen.getByText("«Hold on, thinking...»")).toBeDefined();
     expect(screen.getByText("Заполните паузу (зачитайте вслух):")).toBeDefined();
   });
+  it("renders quiet stall control row while AI is processing and prominent banner when stalled", () => {
+    const onWait = vi.fn();
+    const onRetry = vi.fn();
+    const onNext = vi.fn();
+    const onOpenProviders = vi.fn();
+
+    const { rerender } = render(
+      <SubtitleFeed
+        conversation={mockConversation}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={true}
+        isStalled={false}
+        stallNextId="gemini-flash"
+        onStallWait={onWait}
+        onStallRetry={onRetry}
+        onStallNext={onNext}
+        onOpenProviders={onOpenProviders}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    // Quiet row has the action buttons and link
+    expect(screen.getByText("Ждать")).toBeDefined();
+    expect(screen.getByText("Повторить")).toBeDefined();
+    expect(screen.getByText("Другой (gemini-flash)")).toBeDefined();
+    expect(screen.getByText("Провайдеры")).toBeDefined();
+    expect(screen.queryByText(/Провайдер молчит/)).toBeNull();
+
+    // Rerender as stalled
+    rerender(
+      <SubtitleFeed
+        conversation={mockConversation}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={true}
+        isStalled={true}
+        stallNextId="gemini-flash"
+        onStallWait={onWait}
+        onStallRetry={onRetry}
+        onStallNext={onNext}
+        onOpenProviders={onOpenProviders}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    // Prominent text appears
+    expect(screen.getByText(/Провайдер молчит \d+с — решайте: ждать, повторить или взять gemini-flash/)).toBeDefined();
+  });
 
   it("renders streaming AI tail separately when tokens arrive without clobbering committed rows", () => {
     const { rerender } = render(

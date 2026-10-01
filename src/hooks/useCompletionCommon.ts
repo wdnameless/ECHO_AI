@@ -16,6 +16,7 @@ import type {
 } from "@/types";
 import {
   fetchAIResponse,
+  STALL_SENTINEL,
   shouldUsePluelyAPI,
   generateRequestId,
   generateMessageId,
@@ -653,6 +654,9 @@ export async function streamAIResponse({
       if (!isCurrent() || signal.aborted) {
         return null;
       }
+      // P5: STALL sentinel is a control signal, not content — never into
+      // history, copy, or the UI. Chat path waits silently (R04).
+      if (chunk === STALL_SENTINEL) continue;
       fullResponse += chunk;
       onChunk(chunk, fullResponse);
     }

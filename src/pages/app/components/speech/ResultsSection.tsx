@@ -28,6 +28,12 @@ type Props = {
   ) => Promise<void>;
   activeFiller?: string | null;
   pendingUtteranceId?: string | null;
+  isStalled?: boolean;
+  stallNextId?: string;
+  onStallWait?: () => void;
+  onStallRetry?: () => void;
+  onStallNext?: () => void;
+  onOpenProviders?: () => void;
 };
 
 /**
@@ -52,6 +58,12 @@ export const ResultsSection = ({
   askAIForTranscript,
   activeFiller,
   pendingUtteranceId,
+  isStalled,
+  stallNextId,
+  onStallWait,
+  onStallRetry,
+  onStallNext,
+  onOpenProviders,
 }: Props) => {
   const handy = useHandyStatus();
   const handyModelShort = handy.model
@@ -87,6 +99,12 @@ export const ResultsSection = ({
         onAskAI={askAIForTranscript}
         activeFiller={activeFiller}
         pendingUtteranceId={pendingUtteranceId}
+        isStalled={isStalled}
+        stallNextId={stallNextId}
+        onStallWait={onStallWait}
+        onStallRetry={onStallRetry}
+        onStallNext={onStallNext}
+        onOpenProviders={onOpenProviders}
       />
     </div>
   );

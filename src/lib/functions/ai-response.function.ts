@@ -382,6 +382,8 @@ async function* fetchPluelyAIResponse(params: {
   }
 }
 
+export const STALL_SENTINEL = "__ECHO_STALL__";
+
 // Core streaming implementation (Echo AI API or configured provider).
 // Extracted so the parallel-search race can restart it with an enriched
 // system prompt without duplicating the request-building logic.
@@ -752,7 +754,20 @@ async function* streamAIResponse(params: {
      * restarts on every chunk, so it only fires on a genuine stall.
      */
     const STALL_TIMEOUT_MS = 25_000;
-    let receivedAnyContent = false;
+    let useUnboundedRead = false;
+
+    const onAbort = () => {
+      try {
+        void reader.cancel();
+      } catch {}
+    };
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     /**
      * The read races the stall budget; see `raceStall` for why cancelling the
@@ -760,40 +775,37 @@ async function* streamAIResponse(params: {
      */
     const raceStallRead = <T,>(promise: Promise<T>) => raceStall(promise, STALL_TIMEOUT_MS);
 
-    while (true) {
-      // Check if aborted
-      if (signal?.aborted) {
-        reader.cancel();
-        return;
-      }
-
-      let readResult;
-      try {
-        readResult = await raceStallRead(reader.read());
-      } catch (readError) {
-        if (readError instanceof Error && readError.message === "STALL") {
-          try {
-            await reader.cancel();
-          } catch {
-            // the transport may already be gone
-          }
-          if (!receivedAnyContent) {
-            yield `Провайдер не ответил за ${Math.round(STALL_TIMEOUT_MS / 1000)}с. Проверьте подключение или смените модель в настройках.`;
-          }
+    try {
+      while (true) {
+        // Check if aborted
+        if (signal?.aborted) {
+          onAbort();
           return;
         }
-        // Check if aborted
-        if (
-          signal?.aborted ||
-          (readError instanceof Error && readError.name === "AbortError")
-        ) {
-          return; // Silently return on abort
+
+        let readResult;
+        try {
+          readResult = useUnboundedRead
+            ? await reader.read()
+            : await raceStallRead(reader.read());
+        } catch (readError) {
+          if (readError instanceof Error && readError.message === "STALL") {
+            useUnboundedRead = true;
+            yield STALL_SENTINEL;
+            continue;
+          }
+          // Check if aborted
+          if (
+            signal?.aborted ||
+            (readError instanceof Error && readError.name === "AbortError")
+          ) {
+            return; // Silently return on abort
+          }
+          yield `Error reading stream: ${
+            readError instanceof Error ? readError.message : "Unknown error"
+          }`;
+          return;
         }
-        yield `Error reading stream: ${
-          readError instanceof Error ? readError.message : "Unknown error"
-        }`;
-        return;
-      }
       const { done, value } = readResult;
       if (done) {
         break;
@@ -801,7 +813,7 @@ async function* streamAIResponse(params: {
 
       // Check if aborted before processing
       if (signal?.aborted) {
-        reader.cancel();
+        onAbort();
         return;
       }
 
@@ -820,13 +832,17 @@ async function* streamAIResponse(params: {
               provider?.responseContentPath || ""
             );
             if (delta) {
-              receivedAnyContent = true;
               yield delta;
             }
           } catch {
             // Ignore parsing errors for partial JSON chunks
           }
         }
+      }
+    }
+  } finally {
+      if (signal) {
+        signal.removeEventListener("abort", onAbort);
       }
     }
   } catch (error) {
@@ -855,6 +871,7 @@ const FAILURE_PREFIXES = [
 
 export function isFailureChunk(chunk: string): boolean {
   if (!chunk || typeof chunk !== "string") return false;
+  if (chunk === STALL_SENTINEL) return false;
   const trimmed = chunk.trim();
   if (!trimmed) return false;
   if (/^HTTP \d{3}/i.test(trimmed)) return true;
@@ -993,6 +1010,10 @@ export async function* fetchAIResponse(params: {
       for await (const chunk of stream) {
         if (signal?.aborted) {
           return;
+        }
+        if (chunk === STALL_SENTINEL) {
+          yield chunk;
+          continue;
         }
 
         if (!yieldedRealContent) {

@@ -602,6 +602,15 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       askAIForTranscript={askAIForTranscript}
                       activeFiller={activeFiller}
                       pendingUtteranceId={pendingUtteranceId}
+                      isStalled={props.isStalled}
+                      stallNextId={props.stallNextId}
+                      onStallWait={props.stallWait}
+                      onStallRetry={props.stallRetry}
+                      onStallNext={props.stallNext}
+                      onOpenProviders={() => {
+                        window.dispatchEvent(new CustomEvent("open-providers"));
+                        setShowSettingsDrawer(true);
+                      }}
                     />
                   </>
                 )}
