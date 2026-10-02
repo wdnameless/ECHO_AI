@@ -10,8 +10,6 @@ import { Message, TYPE_PROVIDER } from "@/types";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import curl2Json from "@bany/curl-to-json";
-import { shouldUsePluelyAPI } from "./pluely.api";
-import { raceStall } from "./stall-guard";
 import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
 import { getSecret, secretKey } from "@/lib/storage/secret-store";
 import { getResponseSettings, LANGUAGES } from "@/lib";
@@ -38,6 +36,32 @@ import {
 import { getRagContext } from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { detectLanguage } from "@/lib/language-detect";
+import { getAIProviderVariables } from "@/lib/storage/ai-providers";
+
+export type AIStreamEvent =
+  | { type: "attempt"; providerId: string }
+  | { type: "restart"; providerId: string }
+  | { type: "stalled"; providerId: string };
+
+/** Cancellation settles our wait even when the native transport does not. */
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    if (signal.aborted) {
+      void promise.catch(() => {});
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
+}
 
 // Cache parsed curl configs: curl2Json is pure, so parsing the same provider
 // curl on every request is wasted CPU on the hot path.
@@ -272,117 +296,63 @@ async function buildEnhancedSystemPrompt(
   return prompts.join(" ");
 }
 
-// Echo AI AI streaming function
+// Hosted transport uses the same text/error contract as configured providers.
 async function* fetchPluelyAIResponse(params: {
   systemPrompt?: string;
   userMessage: string;
   imagesBase64?: string[];
   history?: Message[];
   signal?: AbortSignal;
+  onEvent?: (event: AIStreamEvent) => void;
 }): AsyncIterable<string> {
+  const { systemPrompt, userMessage, imagesBase64 = [], history = [], signal, onEvent } = params;
+  if (signal?.aborted) return;
+  const channel = new Channel<string>();
+  const pending: string[] = [];
+  let done = false;
+  let streamError: unknown;
+  let resolveNext: (() => void) | null = null;
+  const wake = () => { resolveNext?.(); resolveNext = null; };
+  channel.onmessage = (chunk) => {
+    if (signal?.aborted) return;
+    if (chunk === "\u{0}__DONE__\u{0}") done = true;
+    else pending.push(chunk);
+    wake();
+  };
+  void invoke("chat_stream_response", {
+    userMessage,
+    systemPrompt,
+    imageBase64: imagesBase64.length === 1 ? imagesBase64[0] : imagesBase64.length ? imagesBase64 : undefined,
+    history: history.length ? JSON.stringify([...history].reverse().map((msg) => ({
+      role: msg.role, content: [{ type: "text", text: msg.content }],
+    }))) : undefined,
+    onEvent: channel,
+  }).catch((error) => { streamError = error; }).finally(() => { done = true; wake(); });
+  let stalled = false;
   try {
-    const {
-      systemPrompt,
-      userMessage,
-      imagesBase64 = [],
-      history = [],
-      signal,
-    } = params;
-
-    // Check if already aborted before starting
-    if (signal?.aborted) {
-      return;
-    }
-
-    // Convert history to the expected format
-    let historyString: string | undefined;
-    if (history.length > 0) {
-      // Create a copy before reversing to avoid mutating the original array
-      const formattedHistory = [...history].reverse().map((msg) => ({
-        role: msg.role,
-        content: [{ type: "text", text: msg.content }],
-      }));
-      historyString = JSON.stringify(formattedHistory);
-    }
-
-    // Handle images - can be string or array
-    let imageBase64: any = undefined;
-    if (imagesBase64.length > 0) {
-      imageBase64 = imagesBase64.length === 1 ? imagesBase64[0] : imagesBase64;
-    }
-
-    // Stream chunks straight through a Tauri Channel - no event bus, no
-    // 16ms polling loop. The Rust side pushes each delta into the channel
-    // as it arrives, so the first token reaches the UI with zero added
-    // latency.
-    const channel = new Channel<string>();
-    let streamError: string | null = null;
-    let done = false;
-
-    // Fire-and-forget: the Rust side pushes deltas into the channel.
-    invoke("chat_stream_response", {
-      userMessage,
-      systemPrompt,
-      imageBase64,
-      history: historyString,
-      onEvent: channel,
-    })
-      .catch((err) => {
-        streamError = String(err);
-        done = true;
-      })
-      .finally(() => {
-        done = true;
-      });
-
-    // The channel is a pull-based queue: onmessage fires as chunks arrive.
-    // We bridge it into an async generator so the caller can `for await`.
-    const pending: string[] = [];
-    let resolveNext: (() => void) | null = null;
-
-    channel.onmessage = (chunk) => {
-      pending.push(chunk);
-      resolveNext?.();
-      resolveNext = null;
-    };
-
-    while (true) {
-      if (signal?.aborted) {
-        return;
+    while (!signal?.aborted) {
+      if (pending.length) { yield pending.shift()!; continue; }
+      if (done) break;
+      const timer = !stalled ? setTimeout(() => {
+        if (signal?.aborted) return;
+        stalled = true;
+        onEvent?.({ type: "stalled", providerId: "pluely" });
+      }, 25_000) : undefined;
+      try {
+        await abortable(new Promise<void>((resolve) => {
+          resolveNext = resolve;
+          if (pending.length || done) wake();
+        }), signal);
+      } finally {
+        clearTimeout(timer);
       }
-      if (pending.length > 0) {
-        const chunk = pending.shift()!;
-        if (chunk === "\u{0}__DONE__\u{0}") {
-          break;
-        }
-        yield chunk;
-        continue;
-      }
-      if (done) {
-        break;
-      }
-      // Wait for the next chunk. Re-check after registering the resolver to
-      // close the race where a chunk arrives between the checks above and
-      // the await below (otherwise the loop would hang forever).
-      await new Promise<void>((resolve) => {
-        resolveNext = resolve;
-        if (pending.length > 0 || done) {
-          resolveNext = null;
-          resolve();
-        }
-      });
     }
-
-    if (streamError) {
-      yield `Echo AI API Error: ${streamError}`;
-    }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    yield `Echo AI API Error: ${errorMessage}`;
+    if (!signal?.aborted && streamError) throw new Error(String(streamError));
+  } finally {
+    channel.onmessage = () => {};
+    resolveNext = null;
   }
 }
-
-export const STALL_SENTINEL = "__ECHO_STALL__";
 
 // Core streaming implementation (Echo AI API or configured provider).
 // Extracted so the parallel-search race can restart it with an enriched
@@ -398,6 +368,7 @@ async function* streamAIResponse(params: {
   userMessage: string;
   imagesBase64?: string[];
   signal?: AbortSignal;
+  onEvent?: (event: AIStreamEvent) => void;
 }): AsyncGenerator<string, void, unknown> {
   try {
     const {
@@ -415,20 +386,17 @@ async function* streamAIResponse(params: {
       return;
     }
 
-    // Check if we should use Echo AI API instead
-    const usePluelyAPI = await shouldUsePluelyAPI();
-    if (usePluelyAPI) {
+    // An absent provider explicitly selects the hosted transport.
+    if (!provider) {
       yield* fetchPluelyAIResponse({
         systemPrompt,
         userMessage,
         imagesBase64,
         history,
         signal,
+        onEvent: params.onEvent,
       });
       return;
-    }
-    if (!provider) {
-      throw new Error(`Provider not provided`);
     }
     if (!selectedProvider) {
       throw new Error(`Selected provider not provided`);
@@ -468,9 +436,9 @@ async function* streamAIResponse(params: {
         k.toLowerCase().includes("api_key") && !!v && v.trim() !== ""
     );
     if (!hasKeyInVariables && selectedProvider.provider) {
-      const storedKey = await getSecret(
+      const storedKey = await abortable(getSecret(
         secretKey.aiProvider(selectedProvider.provider)
-      );
+      ), signal);
       if (storedKey) {
         const apiKeyName =
           extractedVariables.find((v) =>
@@ -639,18 +607,19 @@ async function* streamAIResponse(params: {
     )) {
       if (typeof value === "string") outboundHeaders[name] = value;
     }
-    const trust = await resolveOutboundHeaders(url, outboundHeaders);
+    const body = curlJson.method === "GET" ? undefined : JSON.stringify(bodyObj);
+    const trust = await abortable(resolveOutboundHeaders(url, outboundHeaders, body), signal);
+    if (signal?.aborted) return;
     if (!trust.allowed) {
-      yield "Запрос отменён: хост не входит в список доверенных.";
-      return;
+      throw new Error("Запрос отменён: хост не входит в список доверенных.");
     }
 
     let response;
     try {
-      response = await fetchFunction(url, {
+      response = await abortable(fetchFunction(url, {
         method: curlJson.method || "POST",
         headers: trust.headers,
-        body: curlJson.method === "GET" ? undefined : JSON.stringify(bodyObj),
+        body,
         signal,
         // R13: redirects are disabled. The trust decision above was made for
         // THIS host; following a redirect would let a provider (or a proxy in
@@ -660,7 +629,7 @@ async function* streamAIResponse(params: {
         // cross-host hop, and this app can put keys in arbitrary header names,
         // so disabling the hop is the only reliable guarantee.
         maxRedirections: trust.maxRedirections,
-      });
+      }), signal);
     } catch (fetchError) {
       // Check if aborted
       if (
@@ -669,10 +638,9 @@ async function* streamAIResponse(params: {
       ) {
         return; // Silently return on abort
       }
-      yield `Network error during API request: ${
+      throw new Error(`Network error during API request: ${
         fetchError instanceof Error ? fetchError.message : "Unknown error"
-      }`;
-      return;
+      }`);
     }
 
     if (!response.ok) {
@@ -681,9 +649,9 @@ async function* streamAIResponse(params: {
       // answer should never be lost to a blip. 530 is Cloudflare's tunnel
       // failure, which also clears on its own once the tunnel reconnects.
       if ([502, 503, 429, 530].includes(response.status)) {
-        await new Promise((r) => setTimeout(r, 500));
+        await abortable(new Promise<void>((resolve) => setTimeout(resolve, 500)), signal);
         try {
-          response = await fetchFunction(url, {
+          response = await abortable(fetchFunction(url, {
             method: curlJson.method || "POST",
             // `trust.headers`, not the raw `headers`: on an untrusted host the
             // user may have chosen to proceed WITHOUT credentials, and the gate
@@ -691,125 +659,84 @@ async function* streamAIResponse(params: {
             // here re-attached the API key to the retry, so a single 502 leaked
             // the secret the user had just declined to send.
             headers: trust.headers,
-            body: curlJson.method === "GET" ? undefined : JSON.stringify(bodyObj),
+            body,
             signal,
             // R13: same guarantee as the first attempt — the retry must not
             // follow a redirect either. Omitting it here made the security
             // posture depend on whether the gateway happened to return a 502.
             maxRedirections: trust.maxRedirections,
-          });
-        } catch {
-          /* fall through to the error below */
+          }), signal);
+        } catch (error) {
+          if (signal?.aborted) return;
+          throw error;
         }
       }
 
       if (!response || !response.ok) {
         let errorText = "";
         try {
-          if (response) errorText = await response.text();
+          if (response) errorText = await abortable(response.text(), signal);
         } catch (bodyErr) {
           console.debug("[ai-response] failed to read error body:", bodyErr);
         }
-        yield describeHttpFailure(
+        if (signal?.aborted) return;
+        throw new Error(describeHttpFailure(
           response?.status ?? 0,
           response?.statusText ?? "error",
           errorText
-        );
-        return;
+        ));
       }
     }
 
     if (!provider?.streaming) {
       let json;
       try {
-        json = await response.json();
+        json = await abortable(response.json(), signal);
       } catch (parseError) {
-        yield `Failed to parse non-streaming response: ${
+        if (signal?.aborted) return;
+        throw new Error(`Failed to parse non-streaming response: ${
           parseError instanceof Error ? parseError.message : "Unknown error"
-        }`;
-        return;
+        }`);
       }
       const content =
         getByPath(json, provider?.responseContentPath || "") || "";
+      if (signal?.aborted) return;
+      if (typeof content !== "string") throw new Error("Invalid provider response content");
       yield content;
       return;
     }
 
     if (!response.body) {
-      yield "Streaming not supported or response body missing";
-      return;
+      throw new Error("Streaming not supported or response body missing");
     }
 
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
 
-    /**
-     * How long the stream may stay silent before the request is abandoned.
-     *
-     * A gateway can accept the request and then stop sending without closing the
-     * socket; the read below waits forever and the UI shows a spinner with no
-     * error (observed: 34s with no answer and no failure). The budget is
-     * generous because a slow model legitimately pauses between tokens, and it
-     * restarts on every chunk, so it only fires on a genuine stall.
-     */
-    const STALL_TIMEOUT_MS = 25_000;
-    let useUnboundedRead = false;
-
+    let stalled = false;
     const onAbort = () => {
       try {
-        void reader.cancel();
-      } catch {}
+        void reader.cancel().catch(() => { /* Native cancellation is best-effort. */ });
+      } catch { /* A released reader is already stopped. */ }
     };
-    if (signal) {
-      if (signal.aborted) {
-        onAbort();
-        return;
-      }
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-
-    /**
-     * The read races the stall budget; see `raceStall` for why cancelling the
-     * reader cannot unblock it over the Tauri transport.
-     */
-    const raceStallRead = <T,>(promise: Promise<T>) => raceStall(promise, STALL_TIMEOUT_MS);
-
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
-      while (true) {
-        // Check if aborted
-        if (signal?.aborted) {
-          onAbort();
-          return;
-        }
-
-        let readResult;
+      while (!signal?.aborted) {
+        // One read, one wait. A stall notification never abandons this promise.
+        const pendingRead = reader.read();
+        const timer = !stalled ? setTimeout(() => {
+          if (signal?.aborted) return;
+          stalled = true;
+          params.onEvent?.({ type: "stalled", providerId: provider.id ?? "unknown" });
+        }, 25_000) : undefined;
+        let readResult: ReadableStreamReadResult<Uint8Array>;
         try {
-          readResult = useUnboundedRead
-            ? await reader.read()
-            : await raceStallRead(reader.read());
-        } catch (readError) {
-          if (readError instanceof Error && readError.message === "STALL") {
-            useUnboundedRead = true;
-            yield STALL_SENTINEL;
-            continue;
-          }
-          // Check if aborted
-          if (
-            signal?.aborted ||
-            (readError instanceof Error && readError.name === "AbortError")
-          ) {
-            return; // Silently return on abort
-          }
-          yield `Error reading stream: ${
-            readError instanceof Error ? readError.message : "Unknown error"
-          }`;
-          return;
+          readResult = await abortable(pendingRead, signal);
+        } finally {
+          clearTimeout(timer);
         }
       const { done, value } = readResult;
-      if (done) {
-        break;
-      }
 
       // Check if aborted before processing
       if (signal?.aborted) {
@@ -817,67 +744,45 @@ async function* streamAIResponse(params: {
         return;
       }
 
-      buffer += decoder.decode(value, { stream: true });
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
 
       const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+      buffer = done ? "" : lines.pop() || "";
       for (const line of lines) {
+        if (signal?.aborted) return;
         if (line.startsWith("data:")) {
           const trimmed = line.substring(5).trim();
-          if (!trimmed || trimmed === "[DONE]") continue;
+          if (!trimmed) continue;
+          if (trimmed === "[DONE]") return;
+          let parsed;
           try {
-            const parsed = JSON.parse(trimmed);
-            const delta = getStreamingContent(
-              parsed,
-              provider?.responseContentPath || ""
-            );
-            if (delta) {
-              yield delta;
-            }
-          } catch {
-            // Ignore parsing errors for partial JSON chunks
+            parsed = JSON.parse(trimmed);
+          } catch (error) {
+            throw new Error(`Failed to parse streaming response: ${
+              error instanceof Error ? error.message : String(error)
+            }`);
           }
+          if (parsed.error) {
+            throw new Error(typeof parsed.error === "string"
+              ? parsed.error : parsed.error.message || JSON.stringify(parsed.error));
+          }
+          const delta = getStreamingContent(parsed, provider.responseContentPath || "");
+          if (typeof delta === "string" && delta) yield delta;
         }
       }
+      if (done) break;
     }
   } finally {
-      if (signal) {
-        signal.removeEventListener("abort", onAbort);
-      }
+      signal?.removeEventListener("abort", onAbort);
+      // Never await cancellation: native transports can leave its promise pending.
+      if (!signal?.aborted) onAbort();
     }
   } catch (error) {
-    const msg = error instanceof Error ? error.message : "Unknown error";
-    throw new Error(msg);
+    if (params.signal?.aborted) return;
+    throw error;
   }
 }
 
-const FAILURE_PREFIXES = [
-  "Network error",
-  "Запрос отменён",
-  "Failed to parse",
-  "Streaming not supported",
-  "Error reading stream",
-  "Провайдер не ответил",
-  "Провайдер недоступен",
-  "Провайдер отклонил",
-  "Провайдер ограничил",
-  "API request failed",
-  "Не настроен API-ключ",
-  "Не заполнена переменная",
-  "Provider not provided",
-  "User message is required",
-  "Failed to parse curl",
-];
-
-export function isFailureChunk(chunk: string): boolean {
-  if (!chunk || typeof chunk !== "string") return false;
-  if (chunk === STALL_SENTINEL) return false;
-  const trimmed = chunk.trim();
-  if (!trimmed) return false;
-  if (/^HTTP \d{3}/i.test(trimmed)) return true;
-  if (trimmed.includes("does not support image input")) return true;
-  return FAILURE_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
-}
 
 /**
  * Public entry point. Web search (when enabled) runs IN PARALLEL with the
@@ -894,6 +799,7 @@ export async function* fetchAIResponse(params: {
     variables: Record<string, string>;
   };
   allProviders?: TYPE_PROVIDER[];
+  onEvent?: (event: AIStreamEvent) => void;
   systemPrompt?: string;
   history?: Message[];
   userMessage: string;
@@ -901,6 +807,10 @@ export async function* fetchAIResponse(params: {
   signal?: AbortSignal;
 }): AsyncIterable<string> {
   const { userMessage, signal } = params;
+  if (signal?.aborted) return;
+  const emit = (event: AIStreamEvent) => {
+    if (!signal?.aborted) params.onEvent?.(event);
+  };
 
   // Web search with a HARD budget: await it for at most ~1.1s, then start
   // the stream either way. Single request (no abort+restart), predictable
@@ -913,11 +823,11 @@ export async function* fetchAIResponse(params: {
       if (cached) {
         searchResults = cached;
       } else {
-        searchResults = await Promise.race([
+        searchResults = await abortable(Promise.race([
           performWebSearch(userMessage).catch(() => null),
           new Promise<null>((r) => setTimeout(() => r(null), 1100)),
-        ]);
-        if (searchResults && searchResults.length > 0) {
+        ]), signal);
+        if (!signal?.aborted && searchResults && searchResults.length > 0) {
           cacheSearchResults(userMessage, searchResults);
         }
       }
@@ -927,19 +837,25 @@ export async function* fetchAIResponse(params: {
   }
 
   // Build the base prompt (RAG, humanizer, etc.) - no search inside.
-  const baseSystemPrompt = await buildEnhancedSystemPrompt(
-    params.systemPrompt,
-    userMessage
-  );
+  if (signal?.aborted) return;
+  let baseSystemPrompt: string;
+  try {
+    baseSystemPrompt = await abortable(buildEnhancedSystemPrompt(params.systemPrompt, userMessage), signal);
+  } catch (error) {
+    if (signal?.aborted) return;
+    throw error;
+  }
 
   const enrichedPrompt =
     searchResults && searchResults.length > 0
       ? `${baseSystemPrompt} ${buildSearchBlock(searchResults)}`
       : baseSystemPrompt;
-  if (!params.allProviders) {
+  if (!params.provider) {
+    emit({ type: "attempt", providerId: "pluely" });
     yield* streamAIResponse({
       ...params,
       systemPrompt: enrichedPrompt,
+      onEvent: emit,
       signal,
     });
     return;
@@ -980,92 +896,42 @@ export async function* fetchAIResponse(params: {
     const candidateId = candidate?.id ?? "unknown";
     triedIds.push(candidateId);
 
-    const candidateVariables = {
-      ...(params.selectedProvider?.variables ?? {}),
-    };
-    if (candidate?.id && candidate.id !== params.selectedProvider?.provider) {
-      for (const k of Object.keys(candidateVariables)) {
-        if (k.toLowerCase().includes("api_key")) {
-          delete candidateVariables[k];
-        }
-      }
-    }
     const candidateSelected = {
-      provider: candidate?.id ?? params.selectedProvider?.provider ?? "",
-      variables: candidateVariables,
+      provider: candidateId,
+      variables: candidateId === params.selectedProvider.provider
+        ? { ...params.selectedProvider.variables }
+        : getAIProviderVariables(candidateId),
     };
     let yieldedRealContent = false;
-    let candidateFailed = false;
     let candidateError = "";
-
+    if (i > 0) emit({ type: "restart", providerId: candidateId });
+    emit({ type: "attempt", providerId: candidateId });
     try {
-      const stream = streamAIResponse({
+      for await (const chunk of streamAIResponse({
         ...params,
         provider: candidate,
         selectedProvider: candidateSelected,
         systemPrompt: enrichedPrompt,
+        onEvent: emit,
         signal,
-      });
-
-      for await (const chunk of stream) {
-        if (signal?.aborted) {
-          return;
-        }
-        if (chunk === STALL_SENTINEL) {
-          yield chunk;
-          continue;
-        }
-
-        if (!yieldedRealContent) {
-          if (isFailureChunk(chunk)) {
-            candidateFailed = true;
-            candidateError = chunk;
-            break;
-          }
-          if (chunk.length > 0) {
-            yieldedRealContent = true;
-          }
-        }
-
+      })) {
+        if (signal?.aborted) return;
+        if (chunk.length > 0) yieldedRealContent = true;
         yield chunk;
       }
+      if (signal?.aborted) return;
+      if (yieldedRealContent) return;
+      candidateError = "Провайдер вернул пустой ответ";
     } catch (error) {
-      if (
-        signal?.aborted ||
-        (error instanceof Error && error.name === "AbortError")
-      ) {
-        return;
-      }
-
-      if (!yieldedRealContent) {
-        candidateFailed = true;
-        candidateError =
-          error instanceof Error ? error.message : String(error);
-      } else {
-        return;
-      }
+      if (signal?.aborted) return;
+      candidateError = error instanceof Error ? error.message : String(error);
     }
 
     if (signal?.aborted) {
       return;
     }
 
-    if (yieldedRealContent) {
-      return;
-    }
-
-    if (!candidateFailed && !yieldedRealContent) {
-      candidateFailed = true;
-      candidateError = "Провайдер вернул пустой ответ";
-    }
-
     lastError = candidateError;
-
-    if (i < candidates.length - 1) {
-      const nextCandidate = candidates[i + 1];
-      const nextId = nextCandidate?.id ?? "AI";
-      yield `(переключаю на ${nextId}…)`;
-    }
   }
 
   throw new Error(

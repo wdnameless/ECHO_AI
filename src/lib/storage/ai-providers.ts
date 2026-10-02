@@ -1,5 +1,48 @@
 import { STORAGE_KEYS } from "@/config";
 import { TYPE_PROVIDER } from "@/types";
+import { canonicalizeVariables } from "../functions/common.function";
+import { safeLocalStorage } from "./helper";
+
+/** Only configuration belongs in browser storage; credentials stay in the OS store. */
+export function nonSecretAIProviderVariables(
+  variables: Record<string, unknown> | undefined
+): Record<string, string> {
+  if (!variables || typeof variables !== "object" || Array.isArray(variables)) return {};
+  return canonicalizeVariables(Object.fromEntries(
+    Object.entries(variables ?? {}).filter(([key, value]) =>
+      typeof value === "string" &&
+      !/api[_-]?key|token|secret|password|credential|authorization|cookie/i.test(key)
+    )
+  ) as Record<string, string>);
+}
+
+export function getAIProviderVariables(providerId: string): Record<string, string> {
+  try {
+    const map = JSON.parse(safeLocalStorage.getItem(STORAGE_KEYS.AI_PROVIDER_VARIABLES) || "{}");
+    return nonSecretAIProviderVariables(map?.[providerId]);
+  } catch {
+    return {};
+  }
+}
+
+export function setAIProviderVariables(
+  providerId: string,
+  variables: Record<string, string>
+): void {
+  if (!providerId) return;
+  let map: Record<string, Record<string, string>> = {};
+  try {
+    const parsed = JSON.parse(safeLocalStorage.getItem(STORAGE_KEYS.AI_PROVIDER_VARIABLES) || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      map = Object.fromEntries(Object.entries(parsed).map(([id, vars]) =>
+        [id, nonSecretAIProviderVariables(vars as Record<string, unknown>)]
+      ));
+    }
+  } catch { /* Invalid storage is replaced by the next valid configuration. */ }
+  safeLocalStorage.setItem(STORAGE_KEYS.AI_PROVIDER_VARIABLES, JSON.stringify({
+    ...map, [providerId]: nonSecretAIProviderVariables(variables),
+  }));
+}
 
 export function getCustomAiProviders(): TYPE_PROVIDER[] {
   try {

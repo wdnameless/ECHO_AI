@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import { SubtitleFeed } from "./SubtitleFeed";
 import type { ChatConversation } from "@/hooks/useSystemAudio";
+const invokeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock, Channel: class {} }));
 
 vi.mock("@/contexts", () => ({
   useApp: () => ({
@@ -219,6 +221,39 @@ describe("R18: SubtitleFeed streaming isolation", () => {
       screen.getByText("Concurrency means multiple tasks making progress")
     ).toBeDefined();
     expect(screen.getByText("Hello from candidate")).toBeDefined();
+  });
+
+  it.each([false, true])("keeps recovery controls clickable with partial content (paused=%s)", async (feedPaused) => {
+    const onWait = vi.fn();
+    const onRetry = vi.fn();
+    const onNext = vi.fn();
+    render(<SubtitleFeed conversation={mockConversation} liveSegments={[]}
+      lastAIResponse="partial answer" isAIProcessing={true} isStalled={true}
+      aiStatusMessage="Переключаю на fallback…" stallNextId="fallback"
+      onStallWait={onWait} onStallRetry={onRetry} onStallNext={onNext}
+      theirLastTranscription="" micSpeaking={false} handyOnline={true} handyModel="base"
+      feedPaused={feedPaused} onTogglePause={vi.fn()} />);
+    expect(screen.getByRole("status").textContent).toBe("Переключаю на fallback…");
+    fireEvent.click(screen.getByRole("button", { name: "Ждать" }));
+    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    fireEvent.click(screen.getByRole("button", { name: "Другой (fallback)" }));
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Провайдеры" })); });
+    expect(onWait).toHaveBeenCalledTimes(1);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onNext).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("open_dashboard_page", { route: "/dev-space" });
+    if (!feedPaused) {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      const previous = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      try {
+        await act(async () => { fireEvent.click(screen.getByTitle("Скопировать ответ")); });
+        expect(writeText).toHaveBeenCalledWith("partial answer");
+      } finally {
+        if (previous) Object.defineProperty(navigator, "clipboard", previous);
+        else Reflect.deleteProperty(navigator, "clipboard");
+      }
+    }
   });
 });
 

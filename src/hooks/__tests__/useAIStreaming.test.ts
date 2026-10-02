@@ -9,7 +9,6 @@ import type { TYPE_PROVIDER } from "@/types";
 vi.mock("@/lib/functions", () => ({
   fetchAIResponse: vi.fn(),
   shouldUsePluelyAPI: vi.fn(),
-  STALL_SENTINEL: "__ECHO_STALL__",
 }));
 
 vi.mock("@/lib/metrics", () => ({
@@ -200,6 +199,7 @@ describe("useAIStreaming", () => {
       "Hello world, this is streaming AI.",
       "them"
     );
+    expect(result.current.lastAIResponse).toBe("Hello world, this is streaming AI.");
     expect(clearFiller).toHaveBeenCalled();
   });
 
@@ -309,131 +309,136 @@ describe("useAIStreaming", () => {
    * cleared `isAIProcessing` mid-answer and released held questions into an
    * answer that was still streaming.
    */
-  it("lets only the newest stream settle processing state", async () => {
-    vi.mocked(fetchAIResponse).mockReturnValue(
-      (async function* () {
-        yield "первый";
-      })() as never
-    );
+  it.each(["chunk", "error"])("rejects stale %s, events, history and completion callbacks", async (staleResult) => {
+    let releaseOld!: () => void;
+    let finishNew!: () => void;
+    const oldGate = new Promise<void>((resolve) => { releaseOld = resolve; });
+    const newGate = new Promise<void>((resolve) => { finishNew = resolve; });
+    vi.mocked(fetchAIResponse).mockImplementation((opts) => (async function* () {
+      if (opts.userMessage === "old") {
+        yield "old partial";
+        await oldGate;
+        opts.onEvent?.({ type: "restart", providerId: "stale" });
+        opts.onEvent?.({ type: "stalled", providerId: "stale" });
+        if (staleResult === "chunk") yield "stale token";
+        else throw new Error("stale failure");
+      }
+      yield "new partial";
+      await newGate;
+      yield " final";
+    })());
     const onProcessingComplete = vi.fn();
     const props = { ...createHookProps(), onProcessingComplete };
     const { result } = renderHook(() => useAIStreaming(props));
-
-    await act(async () => {
-      await result.current.processWithAI("вопрос", "prompt", [], [], "them");
-    });
-    expect(onProcessingComplete).toHaveBeenCalledTimes(1);
-
-    // A second, slower stream: the first one's completion must not speak for it.
-    onProcessingComplete.mockClear();
-    let release: (v: string) => void = () => {};
-    const slow = new Promise<string>((r) => (release = r));
-    vi.mocked(fetchAIResponse).mockReturnValue(
-      (async function* () {
-        yield await slow;
-      })() as never
-    );
-
-    const pending = result.current.processWithAI("второй", "prompt", [], [], "them");
-    // Abort it the way a new question does, then let it unwind.
-    act(() => {
-      result.current.abortAI();
-    });
-    release("поздно");
-    await act(async () => {
-      await pending.catch(() => {});
-    });
-
-    // The stale stream settled; the generation guard decides what that means.
-    expect(onProcessingComplete).toHaveBeenCalled();
-  });
-  it("handles STALL_SENTINEL: sets isStalled, does not append sentinel to answer, stallWait resets isStalled", async () => {
-    const props = createHookProps();
-    const { result } = renderHook(() => useAIStreaming(props));
-
-    let resumeStream!: () => void;
-    const pausePromise = new Promise<void>((resolve) => {
-      resumeStream = resolve;
-    });
-    async function* stallStream() {
-      yield "__ECHO_STALL__";
-      await pausePromise;
-      yield "Actual answer";
-    }
-    vi.mocked(fetchAIResponse).mockReturnValue(stallStream() as never);
-
-    let streamPromise: Promise<void> | null = null;
-    act(() => {
-      streamPromise = result.current.processWithAI("question", "prompt", [], [], "them");
-    });
-
-    // Wait microtask tick for first chunk (__ECHO_STALL__) to be processed
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    expect(result.current.isStalled).toBe(true);
-
-    // stallWait clears isStalled while stream is still paused
-    act(() => {
-      result.current.stallWait();
-    });
+    let old!: Promise<void>;
+    let newest!: Promise<void>;
+    await act(async () => { old = result.current.processWithAI("old", "prompt", []); });
+    await act(async () => { newest = result.current.processWithAI("new", "prompt", []); });
+    const fillerCalls = clearFiller.mock.calls.length;
+    await act(async () => { releaseOld(); await old; });
+    expect(result.current.isAIProcessing).toBe(true);
     expect(result.current.isStalled).toBe(false);
-
-    // Resume stream and complete
-    await act(async () => {
-      resumeStream();
-      await streamPromise;
-    });
-
-    expect(props.addInteraction).toHaveBeenCalledWith(
-      "question",
-      "Actual answer",
-      "them"
-    );
+    expect(result.current.aiStatusMessage).toBe("");
+    expect(addInteraction).not.toHaveBeenCalled();
+    expect(onProcessingComplete).not.toHaveBeenCalled();
+    expect(clearFiller).toHaveBeenCalledTimes(fillerCalls);
+    expect(onError.mock.calls).toEqual([[""], [""]]);
+    await act(async () => { finishNew(); await newest; });
+    expect(result.current.lastAIResponse).toBe("new partial final");
+    expect(addInteraction.mock.calls).toEqual([["new", "new partial final", undefined]]);
+    expect(onProcessingComplete).toHaveBeenCalledTimes(1);
   });
 
-  it("exposes stallNext, stallNextId, stallRetry and resets isStalled", async () => {
+  it("cannot consume a screenshot or start transport after superseded provider validation", async () => {
+    let release!: (value: boolean) => void;
+    vi.mocked(shouldUsePluelyAPI).mockReturnValueOnce(new Promise((resolve) => { release = resolve; }));
+    vi.mocked(fetchAIResponse).mockReturnValue((async function* () { yield "new answer"; })());
     const props = createHookProps();
-    props.allAiProviders = [
-      { id: "openai", name: "OpenAI" } as unknown as TYPE_PROVIDER,
-      { id: "anthropic", name: "Anthropic" } as unknown as TYPE_PROVIDER,
-    ];
-    props.selectedAIProvider = { provider: "openai", variables: {} };
-
     const { result } = renderHook(() => useAIStreaming(props));
+    let old!: Promise<void>;
+    act(() => { old = result.current.processWithAI("old", "prompt", []); });
+    await act(async () => { await result.current.processWithAI("new", "prompt", []); });
+    props.pendingScreenshotRef.current = "new screenshot";
+    await act(async () => { release(false); await old; });
+    expect(props.pendingScreenshotRef.current).toBe("new screenshot");
+    expect(fetchAIResponse).toHaveBeenCalledTimes(1);
+    expect(result.current.lastAIResponse).toBe("new answer");
+    expect(addInteraction.mock.calls).toEqual([["new", "new answer", undefined]]);
+  });
 
+  it("keeps partial content while waiting silently and replaces it on provider restart", async () => {
+    let resume!: () => void;
+    let resumeFallback!: () => void;
+    const pause = new Promise<void>((resolve) => { resume = resolve; });
+    const fallbackPause = new Promise<void>((resolve) => { resumeFallback = resolve; });
+    vi.mocked(fetchAIResponse).mockImplementation((opts) => (async function* () {
+      opts.onEvent?.({ type: "attempt", providerId: "openai" });
+      yield "broken partial";
+      opts.onEvent?.({ type: "stalled", providerId: "openai" });
+      await pause;
+      opts.onEvent?.({ type: "restart", providerId: "anthropic" });
+      opts.onEvent?.({ type: "attempt", providerId: "anthropic" });
+      await fallbackPause;
+      yield "replacement";
+    })());
+    const props = createHookProps();
+    const { result } = renderHook(() => useAIStreaming(props));
+    let stream!: Promise<void>;
+    await act(async () => { stream = result.current.processWithAI("question", "prompt", []); });
+    expect(result.current.lastAIResponse).toBe("broken partial");
+    expect(result.current.isStalled).toBe(true);
+    act(() => { result.current.stallWait(); });
+    expect(result.current.isStalled).toBe(false);
+    expect(result.current.aiStatusMessage).toBe("");
+    expect(result.current.isAIProcessing).toBe(true);
+    expect(result.current.lastAIResponse).toBe("broken partial");
+    expect(fetchAIResponse).toHaveBeenCalledTimes(1);
+    await act(async () => { resume(); });
+    expect(result.current.lastAIResponse).toBe("");
+    expect(result.current.aiStatusMessage).toContain("anthropic");
+    await act(async () => { resumeFallback(); await stream; });
+    expect(result.current.lastAIResponse).toBe("replacement");
+    expect(addInteraction.mock.calls).toEqual([["question", "replacement", undefined]]);
+  });
+
+  it("Retry repeats active fallback; repeated Other advances without changing global selection", async () => {
+    const gates: (() => void)[] = [];
+    vi.mocked(fetchAIResponse).mockImplementation((opts) => (async function* () {
+      const providerId = gates.length === 0 ? "anthropic" : opts.provider?.id || "";
+      opts.onEvent?.({ type: "attempt", providerId });
+      opts.onEvent?.({ type: "stalled", providerId });
+      await new Promise<void>((resolve) => { gates.push(resolve); });
+      if (!opts.signal?.aborted) yield providerId;
+    })());
+    const props = createHookProps();
+    props.allAiProviders = ["openai", "anthropic", "gemini"].map((id) => ({ id, curl: "" }));
+    const { result } = renderHook(() => useAIStreaming(props));
+    let initial!: Promise<void>;
+    await act(async () => { initial = result.current.processWithAI("question", "prompt", []); });
+    expect(result.current.stallNextId).toBe("gemini");
+    await act(async () => { result.current.stallRetry(); });
+    expect(vi.mocked(fetchAIResponse).mock.calls[1][0].provider?.id).toBe("anthropic");
+    await act(async () => { result.current.stallNext(); });
+    expect(vi.mocked(fetchAIResponse).mock.calls[2][0].provider?.id).toBe("gemini");
+    expect(result.current.stallNextId).toBe("openai");
+    await act(async () => { result.current.stallNext(); });
+    expect(vi.mocked(fetchAIResponse).mock.calls[3][0].provider?.id).toBe("openai");
     expect(result.current.stallNextId).toBe("anthropic");
+    expect(props.selectedAIProvider.provider).toBe("openai");
+    await act(async () => { result.current.abortAI(); gates.forEach((resolve) => resolve()); await initial; });
+    expect(addInteraction).not.toHaveBeenCalled();
+  });
 
-    async function* emptyStream() {
-      yield "done";
-    }
-    vi.mocked(fetchAIResponse).mockReturnValue(emptyStream() as never);
-
-    await act(async () => {
-      await result.current.processWithAI("test question", "test prompt", [], [], "them");
-    });
-
-    // Test stallRetry
-    vi.mocked(fetchAIResponse).mockClear();
-    vi.mocked(fetchAIResponse).mockReturnValue(emptyStream() as never);
-    await act(async () => {
-      result.current.stallRetry();
-      await Promise.resolve();
-    });
-    expect(fetchAIResponse).toHaveBeenCalled();
-
-    // Test stallNext
-    vi.mocked(fetchAIResponse).mockClear();
-    vi.mocked(fetchAIResponse).mockReturnValue(emptyStream() as never);
-    await act(async () => {
-      result.current.stallNext();
-      await Promise.resolve();
-    });
-    expect(fetchAIResponse).toHaveBeenCalledWith(
-      expect.objectContaining({
-        selectedProvider: expect.objectContaining({ provider: "anthropic" }),
-      })
-    );
+  it("does not commit a partial answer when the final provider fails", async () => {
+    vi.mocked(fetchAIResponse).mockReturnValue((async function* () {
+      yield "unfinished";
+      throw new Error("provider failed after partial");
+    })());
+    const props = createHookProps();
+    const { result } = renderHook(() => useAIStreaming(props));
+    await act(async () => { await result.current.processWithAI("question", "prompt", []); });
+    expect(result.current.lastAIResponse).toBe("unfinished");
+    expect(onError).toHaveBeenLastCalledWith("provider failed after partial");
+    expect(addInteraction).not.toHaveBeenCalled();
   });
 });

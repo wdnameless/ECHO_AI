@@ -603,13 +603,13 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       activeFiller={activeFiller}
                       pendingUtteranceId={pendingUtteranceId}
                       isStalled={props.isStalled}
+                      aiStatusMessage={props.aiStatusMessage}
                       stallNextId={props.stallNextId}
                       onStallWait={props.stallWait}
                       onStallRetry={props.stallRetry}
                       onStallNext={props.stallNext}
                       onOpenProviders={() => {
-                        window.dispatchEvent(new CustomEvent("open-providers"));
-                        setShowSettingsDrawer(true);
+                        void invoke("open_dashboard_page", { route: "/dev-space" }).catch(console.error);
                       }}
                     />
                   </>

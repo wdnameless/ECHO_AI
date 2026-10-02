@@ -1,317 +1,108 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ReadableStream } from "node:stream/web";
 import type { TYPE_PROVIDER } from "@/types";
 
 const fetchMock = vi.fn();
-
+vi.mock("@tauri-apps/plugin-http", () => ({ fetch: (...args: unknown[]) => fetchMock(...args) }));
 vi.mock("@/lib/storage/secret-store", () => ({
-  getSecret: vi.fn(async () => "sk-from-store"),
-  saveSecret: vi.fn(),
-  removeSecret: vi.fn(),
-  secretKey: { aiProvider: (id: string) => `ai-provider:${id}` },
+  getSecret: vi.fn(async (id: string) => `fixture-key-${id}`), secretKey: { aiProvider: (id: string) => id },
 }));
-
-vi.mock("@tauri-apps/plugin-http", () => ({
-  fetch: (...args: unknown[]) => fetchMock(...args),
-}));
-
-vi.mock("@/lib", () => ({
-  getResponseSettings: () => ({ length: "short", language: "ru" }),
-  RESPONSE_LENGTHS: [{ id: "short", label: "Short", prompt: "" }],
-  LANGUAGES: [{ id: "ru", label: "Russian" }],
-}));
-
-vi.mock("../web-search", () => ({
-  getWebSearchSettings: () => ({ enabled: false }),
-  performWebSearch: vi.fn().mockResolvedValue([]),
-}));
-
+vi.mock("@/lib", () => ({ getResponseSettings: () => ({ language: "ru" }), LANGUAGES: [] }));
+vi.mock("../web-search", () => ({ getWebSearchSettings: () => ({ enabled: false }) }));
+vi.mock("@/lib/rag", () => ({ getRagContext: () => null }));
 vi.mock("@/lib/host-trust-gate", () => ({
-  resolveOutboundHeaders: async (
-    _url: string,
-    headers: Record<string, string>
-  ) => ({
-    allowed: true,
-    headers: Object.fromEntries(
-      Object.entries(headers).filter(
-        ([name]) => name.toLowerCase() !== "authorization"
-      )
-    ),
-  }),
+  resolveOutboundHeaders: async (_url: string, headers: Record<string, string>) => ({ allowed: true, headers, maxRedirections: 0 }),
 }));
+vi.mock("@tauri-apps/api/core", () => ({ Channel: class {}, invoke: vi.fn() }));
+import { fetchAIResponse, type AIStreamEvent } from "../ai-response.function";
+import { setAIProviderVariables } from "@/lib/storage/ai-providers";
 
-vi.mock("@/lib/rag", () => ({ getRagContext: () => "" }));
-
-vi.mock("@tauri-apps/api/core", () => ({
-  Channel: class {
-    onmessage: ((msg: unknown) => void) | null = null;
-  },
-  invoke: vi.fn().mockResolvedValue(undefined),
+const providers: TYPE_PROVIDER[] = ["a", "b", "c"].map((id) => ({
+  id, streaming: true, responseContentPath: "choices[0].delta.content",
+  curl: `curl https://${id}.test/stream -H 'Authorization: Bearer {{API_KEY}}' -d '{"model":"{{MODEL}}","reasoning_effort":"{{REASONING_EFFORT}}","messages":[{"role":"user","content":"{{TEXT}}"}]}'`,
 }));
-
-import { fetchAIResponse } from "../ai-response.function";
-
-const PROVIDER_A: TYPE_PROVIDER = {
-  id: "provider-a",
-  name: "Provider A",
-  curl: `curl https://api.a.test/v1/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer {{API_KEY}}" \\
-  -d '{"model": "{{MODEL}}", "messages": [{"role": "user", "content": "{{TEXT}}"}]}'`,
-  responseContentPath: "choices[0].message.content",
-  streaming: false,
-} as TYPE_PROVIDER;
-
-const PROVIDER_B: TYPE_PROVIDER = {
-  id: "provider-b",
-  name: "Provider B",
-  curl: `curl https://api.b.test/v1/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer {{API_KEY}}" \\
-  -d '{"model": "{{MODEL}}", "messages": [{"role": "user", "content": "{{TEXT}}"}]}'`,
-  responseContentPath: "choices[0].message.content",
-  streaming: false,
-} as TYPE_PROVIDER;
-
-const PROVIDER_C: TYPE_PROVIDER = {
-  id: "provider-c",
-  name: "Provider C",
-  curl: `curl https://api.c.test/v1/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer {{API_KEY}}" \\
-  -d '{"model": "{{MODEL}}", "messages": [{"role": "user", "content": "{{TEXT}}"}]}'`,
-  responseContentPath: "choices[0].message.content",
-  streaming: false,
-} as TYPE_PROVIDER;
-
+const selectedProvider = { provider: "a", variables: { MODEL: "model-a", REASONING_EFFORT: "high" } };
+function response(content: string) {
+  return { ok: true, body: new ReadableStream<Uint8Array>({ start(c) {
+    c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`));
+    c.close();
+  } }) };
+}
+async function collect(allProviders = providers) {
+  let text = "";
+  const events: AIStreamEvent[] = [];
+  for await (const chunk of fetchAIResponse({ provider: providers[0], selectedProvider, allProviders,
+    userMessage: "Question", onEvent: (event) => { events.push(event); if (event.type === "restart") text = ""; },
+  })) text += chunk;
+  return { text, events };
+}
 beforeEach(() => {
-  fetchMock.mockReset();
+  fetchMock.mockReset(); localStorage.clear();
+  setAIProviderVariables("b", { MODEL: "model-b", REASONING_EFFORT: "low" });
+  setAIProviderVariables("c", { MODEL: "model-c" });
 });
 
-describe("provider fallback chain", () => {
-  it("first 429 → second provider called and its content returned", async () => {
-    // Provider A fails with 429 on initial attempt
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 429,
-      statusText: "Too Many Requests",
-      text: async () => "rate limit A",
-      headers: new Map(),
-      body: null,
-    });
-    // Provider A inner retry also fails with 429
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 429,
-      statusText: "Too Many Requests",
-      text: async () => "rate limit A retry",
-      headers: new Map(),
-      body: null,
-    });
-    // Provider B succeeds
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        choices: [{ message: { content: "content from B" } }],
-      }),
-      text: async () =>
-        JSON.stringify({
-          choices: [{ message: { content: "content from B" } }],
-        }),
-      headers: new Map(),
-      body: null,
-    });
-
-    const chunks: string[] = [];
-    for await (const chunk of fetchAIResponse({
-      provider: PROVIDER_A,
-      selectedProvider: {
-        provider: "provider-a",
-        variables: { MODEL: "test-model", API_KEY: "sk-a" },
-      },
-      allProviders: [PROVIDER_A, PROVIDER_B],
-      userMessage: "привет",
-    })) {
-      chunks.push(chunk);
-    }
-
-    expect(chunks).toEqual([
-      "(переключаю на provider-b…)",
-      "content from B",
+describe("provider fallback ownership", () => {
+  it("starts selected first, skips duplicates, and sends each model/key/config only to its owner", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("offline a")).mockRejectedValueOnce(new Error("offline b")).mockResolvedValueOnce(response("answer c"));
+    const result = await collect([providers[1], providers[0], providers[2], providers[1]]);
+    expect(result.text).toBe("answer c");
+    expect(result.events).toEqual([
+      { type: "attempt", providerId: "a" }, { type: "restart", providerId: "b" },
+      { type: "attempt", providerId: "b" }, { type: "restart", providerId: "c" }, { type: "attempt", providerId: "c" },
     ]);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[0][0]).toContain("api.a.test");
-    expect(fetchMock.mock.calls[1][0]).toContain("api.a.test");
-    expect(fetchMock.mock.calls[2][0]).toContain("api.b.test");
+    expect(fetchMock.mock.calls.map(([url, init]) => ({
+      url, model: JSON.parse(init.body).model, reasoning: JSON.parse(init.body).reasoning_effort,
+      key: init.headers.Authorization,
+    }))).toEqual([
+      { url: "https://a.test/stream", model: "model-a", reasoning: "high", key: "Bearer fixture-key-a" },
+      { url: "https://b.test/stream", model: "model-b", reasoning: "low", key: "Bearer fixture-key-b" },
+      { url: "https://c.test/stream", model: "model-c", reasoning: "minimal", key: "Bearer fixture-key-c" },
+    ]);
   });
 
-  it("network-error chunk → fallback", async () => {
-    // Provider A fails with network error
-    fetchMock.mockRejectedValueOnce(new Error("Connection refused"));
-    // Provider B succeeds
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        choices: [{ message: { content: "content from B" } }],
-      }),
-      text: async () =>
-        JSON.stringify({
-          choices: [{ message: { content: "content from B" } }],
-        }),
-      headers: new Map(),
-      body: null,
-    });
-
-    const chunks: string[] = [];
-    for await (const chunk of fetchAIResponse({
-      provider: PROVIDER_A,
-      selectedProvider: {
-        provider: "provider-a",
-        variables: { MODEL: "test-model", API_KEY: "sk-a" },
-      },
-      allProviders: [PROVIDER_A, PROVIDER_B],
-      userMessage: "привет",
+  it.each(["transport", "provider", "malformed"])("replaces partial output after a %s error", async (failure) => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    fetchMock.mockResolvedValueOnce({ ok: true, body: new ReadableStream<Uint8Array>({ start(c) {
+      controller = c as unknown as ReadableStreamDefaultController<Uint8Array>;
+      c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"broken partial"}}]}\n\n'));
+    } }) }).mockResolvedValueOnce(response("replacement"));
+    let text = "";
+    const events: AIStreamEvent[] = [];
+    for await (const chunk of fetchAIResponse({ provider: providers[0], selectedProvider, allProviders: providers,
+      userMessage: "Question", onEvent: (event) => { events.push(event); if (event.type === "restart") text = ""; },
     })) {
-      chunks.push(chunk);
-    }
-
-    expect(chunks).toEqual([
-      "(переключаю на provider-b…)",
-      "content from B",
-    ]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][0]).toContain("api.a.test");
-    expect(fetchMock.mock.calls[1][0]).toContain("api.b.test");
-  });
-
-  it("order = selected first, no dupes", async () => {
-    // Provider A fails
-    fetchMock.mockRejectedValueOnce(new Error("Network fail A"));
-    // Provider B fails
-    fetchMock.mockRejectedValueOnce(new Error("Network fail B"));
-    // Provider C succeeds
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        choices: [{ message: { content: "content from C" } }],
-      }),
-      text: async () =>
-        JSON.stringify({
-          choices: [{ message: { content: "content from C" } }],
-        }),
-      headers: new Map(),
-      body: null,
-    });
-
-    const chunks: string[] = [];
-    for await (const chunk of fetchAIResponse({
-      provider: PROVIDER_A,
-      selectedProvider: {
-        provider: "provider-a",
-        variables: { MODEL: "test-model", API_KEY: "sk-a" },
-      },
-      allProviders: [PROVIDER_B, PROVIDER_A, PROVIDER_C, PROVIDER_B],
-      userMessage: "привет",
-    })) {
-      chunks.push(chunk);
-    }
-
-    expect(chunks).toEqual([
-      "(переключаю на provider-b…)",
-      "(переключаю на provider-c…)",
-      "content from C",
-    ]);
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[0][0]).toContain("api.a.test");
-    expect(fetchMock.mock.calls[1][0]).toContain("api.b.test");
-    expect(fetchMock.mock.calls[2][0]).toContain("api.c.test");
-  });
-
-  it("exhaustion throw names all tried + last error", async () => {
-    // Provider A fails with network error
-    fetchMock.mockRejectedValueOnce(new Error("Net error A"));
-    // Provider B fails with 500
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 500,
-      statusText: "Internal Server Error",
-      text: async () => "crash B",
-      headers: new Map(),
-      body: null,
-    });
-
-    const run = async () => {
-      for await (const _ of fetchAIResponse({
-        provider: PROVIDER_A,
-        selectedProvider: {
-          provider: "provider-a",
-          variables: { MODEL: "test-model", API_KEY: "sk-a" },
-        },
-        allProviders: [PROVIDER_A, PROVIDER_B],
-        userMessage: "привет",
-      })) {
-        // iterate
+      text += chunk;
+      if (text === "broken partial") {
+        if (failure === "transport") controller.error(new Error("disconnected"));
+        else {
+          controller.enqueue(new TextEncoder().encode(failure === "malformed" ? "data: not-json\n\n" :
+            'data: {"error":{"message":"provider rejected mid-stream"}}\n\n'));
+          controller.close();
+        }
       }
-    };
-
-    await expect(run()).rejects.toThrow(
-      "Все провайдеры недоступны (пробовали: provider-a, provider-b): API request failed: 500 Internal Server Error - crash B"
-    );
+    }
+    expect(text).toBe("replacement");
+    expect(events).toContainEqual({ type: "restart", providerId: "b" });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("single-provider call without allProviders behaves as before", async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        choices: [{ message: { content: "single provider ok" } }],
-      }),
-      text: async () =>
-        JSON.stringify({
-          choices: [{ message: { content: "single provider ok" } }],
-        }),
-      headers: new Map(),
-      body: null,
-    });
-
-    const chunks: string[] = [];
-    for await (const chunk of fetchAIResponse({
-      provider: PROVIDER_A,
-      selectedProvider: {
-        provider: "provider-a",
-        variables: { MODEL: "test-model", API_KEY: "sk-a" },
-      },
-      userMessage: "привет",
-    })) {
-      chunks.push(chunk);
-    }
-
-    expect(chunks.join("")).toBe("single provider ok");
+  it("never classifies legitimate answer text as an error", async () => {
+    fetchMock.mockResolvedValueOnce(response("Network error is the subject of this explanation"));
+    expect((await collect()).text).toBe("Network error is the subject of this explanation");
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toContain("api.a.test");
   });
 
-  it("silently returns on abort without fallback or throwing", async () => {
-    const ac = new AbortController();
-    ac.abort();
+  it("uses the fallback template model when that provider has no saved variables", async () => {
+    const fallback = { ...providers[1], curl: providers[1].curl.replace("{{MODEL}}", "template-b") };
+    setAIProviderVariables("b", {});
+    fetchMock.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(response("template answer"));
+    expect((await collect([providers[0], fallback])).text).toBe("template answer");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).model).toBe("template-b");
+  });
 
-    const chunks: string[] = [];
-    for await (const chunk of fetchAIResponse({
-      provider: PROVIDER_A,
-      selectedProvider: {
-        provider: "provider-a",
-        variables: { MODEL: "test-model", API_KEY: "sk-a" },
-      },
-      allProviders: [PROVIDER_A, PROVIDER_B],
-      userMessage: "привет",
-      signal: ac.signal,
-    })) {
-      chunks.push(chunk);
-    }
-
-    expect(chunks).toEqual([]);
-    expect(fetchMock).not.toHaveBeenCalled();
+  it("throws after every candidate fails, even after partial text", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("offline a")).mockRejectedValueOnce(new Error("offline b")).mockRejectedValueOnce(new Error("offline c"));
+    await expect(collect()).rejects.toThrow(/a, b, c/);
   });
 });

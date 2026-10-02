@@ -10,6 +10,7 @@ import {
 import { fetchProviderModels } from "@/lib/functions/models.function";
 import { gatedFetch } from "@/lib/host-trust-gate";
 import { getSecret, secretKey, SequentialSecretWriter } from "@/lib/storage/secret-store";
+import { getAIProviderVariables, setAIProviderVariables } from "@/lib/storage/ai-providers";
 
 export const Providers = ({
   allAiProviders,
@@ -34,27 +35,12 @@ export const Providers = ({
   const providerId = selectedAIProvider?.provider || "";
   const apiKeyVar = variables?.find((v) => v?.key === "api_key");
 
-  /**
-   * Values typed for each provider, keyed by provider id.
-   *
-   * Switching the provider used to reset `variables` to `{}`, so the model and
-   * reasoning effort the user had entered were silently lost the moment they
-   * looked at another provider and switched back.
-   */
-  const [variablesByProvider, setVariablesByProvider] = useState<
-    Record<string, Record<string, string>>
-  >({});
-
   const selectProvider = useCallback(
     (value: string) => {
-      setVariablesByProvider((prev) => ({
-        ...prev,
-        [providerId]: selectedAIProvider?.variables ?? {},
-      }));
-      const remembered = variablesByProvider[value] ?? {};
-      onSetSelectedAIProvider({ provider: value, variables: { ...remembered } });
+      setAIProviderVariables(providerId, selectedAIProvider?.variables ?? {});
+      onSetSelectedAIProvider({ provider: value, variables: getAIProviderVariables(value) });
     },
-    [onSetSelectedAIProvider, providerId, selectedAIProvider?.variables, variablesByProvider]
+    [onSetSelectedAIProvider, providerId, selectedAIProvider?.variables]
   );
 
   /**

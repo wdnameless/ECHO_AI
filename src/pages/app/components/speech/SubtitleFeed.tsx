@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import {
   CaptionsIcon,
   CheckIcon,
@@ -127,6 +128,7 @@ interface SubtitleFeedProps {
   pendingUtteranceId?: string | null;
   onCorrectWord?: (id: string, newText: string) => void;
   isStalled?: boolean;
+  aiStatusMessage?: string;
   stallNextId?: string;
   onStallWait?: () => void;
   onStallRetry?: () => void;
@@ -770,6 +772,7 @@ export const SubtitleFeed = ({
   pendingUtteranceId,
   onCorrectWord,
   isStalled = false,
+  aiStatusMessage,
   stallNextId,
   onStallWait,
   onStallRetry,
@@ -1434,34 +1437,13 @@ export const SubtitleFeed = ({
           </span>
         </div>
       )}
-
-      {/* Feed (inverted: newest on top) */}
-      <div
-        ref={scrollRef}
-        className="relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 py-1 space-y-1"
-      >
-        {visible.length === 0 && !isAIProcessing && (
-          <div className="h-full flex items-center justify-center text-muted-foreground/60 text-[0.75em] text-center px-4">
-            Нажмите запись и говорите — реплики, ответы ИИ и их перевод будут
-            появляться здесь.
-          </div>
-        )}
-
-        {/* Immediate filler/thinking row or streaming AI answer (isolated cheap subtree) */}
-        {!paused && isAIProcessing && (
-          !lastAIResponse?.trim() ? (
-            <div className="space-y-1.5 my-1.5">
-              <div className="p-3 rounded-lg border border-violet-500/30 bg-violet-500/5 text-violet-600 dark:text-violet-300 shadow-sm transition-all animate-in fade-in">
-                <div className="flex items-center gap-1.5 mb-1 text-[0.72em] font-medium text-violet-500/90 tracking-wide uppercase">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Заполните паузу (зачитайте вслух):</span>
-                </div>
-                <div className="text-[0.95em] font-medium leading-snug tracking-normal select-text text-foreground/90 pl-1 border-l-2 border-violet-500/60">
-                  «{activeFiller || fallbackFiller}»
-                </div>
-              </div>
-
-              {/* Quiet control row under filler card; prominent when stalled */}
+      {aiStatusMessage && (
+        <div role="status" aria-live="polite" className="px-2 py-1 text-[0.75em] text-amber-700 dark:text-amber-300 shrink-0">
+          {aiStatusMessage}
+        </div>
+      )}
+      {(isAIProcessing || isStalled) && (
+              /* Recovery stays outside answer/filler and paused-feed conditions. */
               <div
                 className={cn(
                   "p-2 rounded-lg transition-all animate-in fade-in",
@@ -1520,7 +1502,7 @@ export const SubtitleFeed = ({
                       if (onOpenProviders) {
                         onOpenProviders();
                       } else {
-                        window.dispatchEvent(new CustomEvent("open-providers"));
+                        void invoke("open_dashboard_page", { route: "/dev-space" }).catch(console.error);
                       }
                     }}
                     className="underline text-[0.9em] text-muted-foreground hover:text-foreground cursor-pointer transition-colors"
@@ -1529,6 +1511,34 @@ export const SubtitleFeed = ({
                   </button>
                 </div>
               </div>
+      )}
+
+      {/* Feed (inverted: newest on top) */}
+      <div
+        ref={scrollRef}
+        className="relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-2 py-1 space-y-1"
+      >
+        {visible.length === 0 && !isAIProcessing && (
+          <div className="h-full flex items-center justify-center text-muted-foreground/60 text-[0.75em] text-center px-4">
+            Нажмите запись и говорите — реплики, ответы ИИ и их перевод будут
+            появляться здесь.
+          </div>
+        )}
+
+        {/* Immediate filler/thinking row or streaming AI answer (isolated cheap subtree) */}
+        {!paused && isAIProcessing && (
+          !lastAIResponse?.trim() ? (
+            <div className="space-y-1.5 my-1.5">
+              <div className="p-3 rounded-lg border border-violet-500/30 bg-violet-500/5 text-violet-600 dark:text-violet-300 shadow-sm transition-all animate-in fade-in">
+                <div className="flex items-center gap-1.5 mb-1 text-[0.72em] font-medium text-violet-500/90 tracking-wide uppercase">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Заполните паузу (зачитайте вслух):</span>
+                </div>
+                <div className="text-[0.95em] font-medium leading-snug tracking-normal select-text text-foreground/90 pl-1 border-l-2 border-violet-500/60">
+                  «{activeFiller || fallbackFiller}»
+                </div>
+              </div>
+
             </div>
           ) : (
             <StreamingAiRow

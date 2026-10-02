@@ -177,11 +177,11 @@ export const useCompletion = () => {
           imagesBase64,
           signal,
           isCurrent: () => isCurrent(requestId, signal),
-          onChunk: (chunk) => {
-            setState((prev) => ({
+          onChunk: (_chunk, accumulated) => {
+            setState((prev) => isCurrent(requestId, signal) ? ({
               ...prev,
-              response: prev.response + chunk,
-            }));
+              response: accumulated,
+            }) : prev);
           },
           onError: (errorMessage) => {
             setError(errorMessage, true);

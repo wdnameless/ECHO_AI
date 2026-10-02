@@ -29,6 +29,7 @@ type Props = {
   activeFiller?: string | null;
   pendingUtteranceId?: string | null;
   isStalled?: boolean;
+  aiStatusMessage?: string;
   stallNextId?: string;
   onStallWait?: () => void;
   onStallRetry?: () => void;
@@ -59,6 +60,7 @@ export const ResultsSection = ({
   activeFiller,
   pendingUtteranceId,
   isStalled,
+  aiStatusMessage,
   stallNextId,
   onStallWait,
   onStallRetry,
@@ -100,6 +102,7 @@ export const ResultsSection = ({
         activeFiller={activeFiller}
         pendingUtteranceId={pendingUtteranceId}
         isStalled={isStalled}
+        aiStatusMessage={aiStatusMessage}
         stallNextId={stallNextId}
         onStallWait={onStallWait}
         onStallRetry={onStallRetry}

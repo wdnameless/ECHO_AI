@@ -82,6 +82,7 @@ beforeEach(() => {
     ok: true,
     status: 200,
     text: async () => JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+    json: async () => ({ choices: [{ message: { content: "ok" } }] }),
     headers: new Map(),
     body: null,
   });
@@ -89,7 +90,8 @@ beforeEach(() => {
 
 describe("fetchAIResponse API key resolution", () => {
   it("uses the key from the secure store when provider variables hold none", async () => {
-    getSecretMock.mockResolvedValue("sk-from-secure-store");
+    const storedFixtureKey = "fixture-secure-store";
+    getSecretMock.mockResolvedValue(storedFixtureKey);
 
     await expect(
       run({
@@ -97,14 +99,14 @@ describe("fetchAIResponse API key resolution", () => {
         selectedProvider: { provider: "custom-test", variables: { MODEL: "test-model" } },
         userMessage: "привет",
       })
-    ).resolves.toBeDefined();
+    ).resolves.toEqual({ value: "ok", done: false });
 
     const [, init] = fetchMock.mock.calls[0] as [string, { headers?: Record<string, string> }];
     const headers = init?.headers ?? {};
     const auth = Object.entries(headers).find(
       ([k]) => k.toLowerCase() === "authorization"
     )?.[1];
-    expect(auth).toBe("Bearer sk-from-secure-store");
+    expect(auth).toBe(`Bearer ${storedFixtureKey}`);
   });
 
   it("still reports a missing key when neither variables nor the store have one", async () => {

@@ -10,7 +10,8 @@
  */
 
 import { useState, useRef, useCallback } from "react";
-import { fetchAIResponse, shouldUsePluelyAPI, STALL_SENTINEL } from "@/lib/functions";
+import { fetchAIResponse, shouldUsePluelyAPI } from "@/lib/functions";
+import { getAIProviderVariables } from "@/lib/storage/ai-providers";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
 import { startQuestion, recordFirstToken } from "@/lib/metrics";
 import { DEFAULT_SYSTEM_PROMPT } from "@/config";
@@ -82,6 +83,9 @@ export function useAIStreaming({
   const [isAIProcessing, setIsAIProcessing] = useState(false);
   const [lastAIResponse, setLastAIResponse] = useState<string>("");
   const [isStalled, setIsStalled] = useState(false);
+  const [aiStatusMessage, setAIStatusMessage] = useState("");
+  const [activeProviderId, setActiveProviderId] = useState(selectedAIProvider.provider);
+  const activeProviderIdRef = useRef(selectedAIProvider.provider);
   const lastRequestRef = useRef<{
     transcription: string;
     prompt: string;
@@ -96,27 +100,20 @@ export function useAIStreaming({
    * something new cannot make the old stream clear the new one's flags.
    */
   const generationRef = useRef(0);
-  const streamBufferRef = useRef<string>("");
-  const streamFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const streamFlushTimerRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const lastAIResponseAtRef = useRef<number>(0);
 
   const abortAI = useCallback(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
+    generationRef.current += 1;
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    clearTimeout(streamFlushTimerRef.current);
+    streamFlushTimerRef.current = undefined;
+    setIsAIProcessing(false);
     setIsStalled(false);
+    setAIStatusMessage("");
     clearFiller();
-    // Deliberately does NOT release a held question.
-    //
-    // `abortAI` is the SHUTDOWN signal, not "user cancelled one answer": the
-    // lifecycle hook calls it on `stopCapture` and on unmount, right before it
-    // tears the capture down and resets the question assembler. Releasing here
-    // would dispatch a question into a session that is closing — the AI would
-    // answer text the user just stopped listening for. A question held when the
-    // session ends is meant to be dropped with it.
-    // (The genuine "answer finished, ask the held question" path is
-    // `onProcessingComplete` in the stream's `finally`.)
+    // Shutdown never releases held questions into a session that is closing.
   }, [clearFiller]);
 
   const processWithAI = useCallback(
@@ -126,156 +123,141 @@ export function useAIStreaming({
       previousMessages: Message[],
       imagesBase64: string[] = [],
       source?: "me" | "them",
-      overrideProvider?: TYPE_PROVIDER
+      overrideProvider?: TYPE_PROVIDER | "pluely"
     ) => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-
-      abortControllerRef.current = new AbortController();
-      // Generation token: an aborted stream's `finally` must not touch the state
-      // of the stream that replaced it. Without this, starting a new question
-      // mid-answer let the OLD stream's `finally` run `setIsAIProcessing(false)`
-      // and `onProcessingComplete()` while the new stream was still streaming —
-      // which released held questions into an answer that had not finished.
       generationRef.current += 1;
       const generation = generationRef.current;
-
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const signal = controller.signal;
+      const isCurrent = () => generationRef.current === generation && !signal.aborted;
+      clearTimeout(streamFlushTimerRef.current);
+      streamFlushTimerRef.current = undefined;
+      let buffer = "";
+      let fullResponse = "";
+      let firstChunk = true;
+      let timer: NodeJS.Timeout | undefined;
+      const clearFlush = () => {
+        clearTimeout(timer);
+        if (isCurrent() && streamFlushTimerRef.current === timer) streamFlushTimerRef.current = undefined;
+        timer = undefined;
+        buffer = "";
+      };
+      const flush = () => {
+        const snapshot = buffer;
+        buffer = "";
+        if (!isCurrent() || !snapshot) return;
+        setLastAIResponse((prev) => isCurrent() ? prev + snapshot : prev);
+      };
+      setIsAIProcessing(true);
+      setIsStalled(false);
+      setAIStatusMessage("");
+      setLastAIResponse("");
+      onError("");
+      const initialId = overrideProvider === "pluely" ? "pluely" : overrideProvider?.id ?? selectedAIProvider.provider;
+      activeProviderIdRef.current = initialId;
+      setActiveProviderId(initialId);
+      lastRequestRef.current = { transcription, prompt, previousMessages, imagesBase64, source };
       try {
-        setIsAIProcessing(true);
-        setIsStalled(false);
-        setLastAIResponse("");
-        onError("");
-        let fullResponse = "";
-
-        lastRequestRef.current = {
-          transcription,
-          prompt,
-          previousMessages,
-          imagesBase64,
-          source,
-        };
-
-        const usePluelyAPI = await shouldUsePluelyAPI();
+        const usePluelyAPI = overrideProvider === "pluely" ||
+          (!overrideProvider && await shouldUsePluelyAPI());
+        if (!isCurrent()) return;
         if (!selectedAIProvider.provider && !usePluelyAPI && !overrideProvider) {
           onError("No AI provider selected.");
           return;
         }
-
-        const provider = overrideProvider || allAiProviders.find(
-          (p) => p.id === selectedAIProvider.provider
-        );
+        const provider = overrideProvider === "pluely" ? undefined :
+          overrideProvider || allAiProviders.find((p) => p.id === selectedAIProvider.provider);
         if (!provider && !usePluelyAPI) {
           onError("AI provider config not found.");
           return;
         }
-
-        // The pending screenshot is now part of this request
         if (pendingScreenshotRef.current) {
           pendingScreenshotRef.current = null;
           setPendingScreenshot(null);
         }
-
-        try {
-          let isFirstChunk = true;
-          for await (const chunk of fetchAIResponse({
-            provider: usePluelyAPI && !overrideProvider ? undefined : provider,
-            selectedProvider: overrideProvider
-              ? {
-                  provider: overrideProvider.id ?? selectedAIProvider.provider,
-                  variables:
-                    overrideProvider.id === selectedAIProvider.provider
-                      ? selectedAIProvider.variables
-                      : {},
-                }
-              : selectedAIProvider,
-            allProviders: allAiProviders,
-            systemPrompt: prompt,
-            history: previousMessages,
-            userMessage: transcription,
-            imagesBase64,
-            signal: abortControllerRef.current.signal,
-          })) {
-            if (chunk === STALL_SENTINEL) {
+        for await (const chunk of fetchAIResponse({
+          provider: usePluelyAPI ? undefined : provider,
+          selectedProvider: overrideProvider ? {
+            provider: initialId,
+            variables: initialId === selectedAIProvider.provider
+              ? selectedAIProvider.variables : getAIProviderVariables(initialId),
+          } : selectedAIProvider,
+          allProviders: allAiProviders,
+          systemPrompt: prompt,
+          history: previousMessages,
+          userMessage: transcription,
+          imagesBase64,
+          signal,
+          onEvent: (event) => {
+            if (!isCurrent()) return;
+            activeProviderIdRef.current = event.providerId;
+            setActiveProviderId(event.providerId);
+            if (event.type === "restart") {
+              clearFlush();
+              fullResponse = "";
+              firstChunk = true;
+              setLastAIResponse("");
+              setIsStalled(false);
+              setAIStatusMessage(`Переключаю на ${event.providerId}…`);
+            } else if (event.type === "stalled") {
+              flush();
               setIsStalled(true);
-              continue;
+              setAIStatusMessage(`Провайдер ${event.providerId} молчит`);
             }
-            if (isFirstChunk) {
-              isFirstChunk = false;
-              recordFirstToken();
-              // Persistent filler (R02): the stall phrase becomes the FIRST
-              // LINE of the answer body instead of vanishing. clearFiller only
-              // drops the STATE (pending id/anchor); the stitched text stays.
-              const fillerSnapshot = typeof getActiveFiller === "function" ? getActiveFiller() : null;
-              const stitched = fillerSnapshot && String(fillerSnapshot).trim() ? String(fillerSnapshot).trim() + "\n\n" : "";
-              if (stitched) {
-                fullResponse += stitched;
-                streamBufferRef.current += stitched;
-              }
-              clearFiller();
-            }
-            fullResponse += chunk;
-            // Throttled flush: buffer chunks, update React state at most
-            // every 80ms to keep the UI smooth on long answers.
-            streamBufferRef.current += chunk;
-            if (!streamFlushTimerRef.current) {
-              streamFlushTimerRef.current = setTimeout(() => {
-                streamFlushTimerRef.current = null;
-                const buffered = streamBufferRef.current;
-                streamBufferRef.current = "";
-                if (buffered) {
-                  setLastAIResponse((prev) => prev + buffered);
-                }
-              }, 80);
-            }
+          },
+        })) {
+          if (!isCurrent()) return;
+          if (!chunk) continue;
+          setIsStalled(false);
+          setAIStatusMessage("");
+          if (firstChunk) {
+            firstChunk = false;
+            recordFirstToken();
+            const filler = typeof getActiveFiller === "function" ? getActiveFiller() : null;
+            const stitched = filler?.trim() ? filler.trim() + "\n\n" : "";
+            fullResponse += stitched;
+            buffer += stitched;
+            clearFiller();
           }
-          // Final flush of any remaining buffered chunks.
-          if (streamFlushTimerRef.current) {
-            clearTimeout(streamFlushTimerRef.current);
-            streamFlushTimerRef.current = null;
+          fullResponse += chunk;
+          buffer += chunk;
+          if (!timer) {
+            timer = setTimeout(() => {
+              if (!isCurrent()) { timer = undefined; buffer = ""; return; }
+              if (streamFlushTimerRef.current === timer) streamFlushTimerRef.current = undefined;
+              timer = undefined;
+              flush();
+            }, 80);
+            streamFlushTimerRef.current = timer;
           }
-          if (streamBufferRef.current) {
-            setLastAIResponse((prev) => prev + streamBufferRef.current);
-            streamBufferRef.current = "";
-          }
-        } catch (aiError: unknown) {
-          console.warn("[ai-stream]", aiError);
-          clearFiller();
-          const err = aiError as { message?: string };
-          onError(err?.message || "Failed to get AI response");
         }
+        if (!isCurrent()) return;
+        flush();
         if (fullResponse) {
           lastAIResponseAtRef.current = Date.now();
           addInteraction(transcription, fullResponse, source);
         }
-      } catch (err: unknown) {
-        console.warn("[ai-stream]", err);
+      } catch (error) {
+        if (!isCurrent()) return;
+        flush();
         clearFiller();
+        onError(error instanceof Error ? error.message : "Failed to get AI response");
       } finally {
-        // Only the newest stream may settle the shared state: an aborted one
-        // finishes later and would otherwise clear the flag and release held
-        // questions while its successor is still answering.
-        if (generationRef.current === generation) {
+        clearFlush();
+        if (isCurrent()) {
+          abortControllerRef.current = null;
           setIsAIProcessing(false);
           setIsStalled(false);
+          setAIStatusMessage("");
           clearFiller();
-          // After the flag is cleared, so a question held during the answer sees
-          // `isAIProcessing === false` and goes out immediately.
           onProcessingComplete?.();
         }
       }
     },
-    [
-      selectedAIProvider,
-      allAiProviders,
-      onError,
-      onProcessingComplete,
-      pendingScreenshotRef,
-      setPendingScreenshot,
-      clearFiller,
-      getActiveFiller,
-      addInteraction,
-    ]
+    [selectedAIProvider, allAiProviders, onError, onProcessingComplete,
+      pendingScreenshotRef, setPendingScreenshot, clearFiller, getActiveFiller, addInteraction]
   );
 
   // Runs all the guards (filler/cooldown) and starts the AI response.
@@ -322,17 +304,13 @@ export function useAIStreaming({
 
       const previousMessages = buildHistory(conversation.messages);
 
-      try {
-        await processWithAI(
-          question,
-          effectiveSystemPrompt,
-          previousMessages,
-          pendingScreenshotRef.current ? [pendingScreenshotRef.current] : [],
-          source
-        );
-      } finally {
-        clearFiller();
-      }
+      await processWithAI(
+        question,
+        effectiveSystemPrompt,
+        previousMessages,
+        pendingScreenshotRef.current ? [pendingScreenshotRef.current] : [],
+        source
+      );
     },
     [
       setFillerForInterviewer,
@@ -358,6 +336,7 @@ export function useAIStreaming({
       source: "me" | "them" = "them"
     ) => {
       startQuestion();
+      abortAI();
       const previousMessages = buildHistory(conversation.messages);
       if (stage === "plan") {
         const answer = buildCodePlan(question);
@@ -387,6 +366,7 @@ export function useAIStreaming({
     },
     [
       buildHistory,
+      abortAI,
       conversation,
       processWithAI,
       pendingScreenshotRef,
@@ -395,6 +375,7 @@ export function useAIStreaming({
   );
   const stallWait = useCallback(() => {
     setIsStalled(false);
+    setAIStatusMessage("");
   }, []);
 
   const stallRetry = useCallback(() => {
@@ -402,21 +383,20 @@ export function useAIStreaming({
     if (lastRequestRef.current) {
       const { transcription, prompt, previousMessages, imagesBase64, source } =
         lastRequestRef.current;
+      const activeId = activeProviderIdRef.current;
+      const active = activeId === "pluely" ? "pluely" :
+        allAiProviders.find((p) => p.id === activeId);
       void processWithAI(
-        transcription,
-        prompt,
-        previousMessages,
-        imagesBase64,
-        source
+        transcription, prompt, previousMessages, imagesBase64, source, active
       );
     }
-  }, [processWithAI]);
+  }, [processWithAI, allAiProviders]);
 
   const stallNext = useCallback(() => {
     setIsStalled(false);
     if (!lastRequestRef.current || allAiProviders.length === 0) return;
     const currentIndex = allAiProviders.findIndex(
-      (p) => p.id === selectedAIProvider.provider
+      (p) => p.id === activeProviderIdRef.current
     );
     const nextIndex =
       (currentIndex >= 0 ? currentIndex + 1 : 0) % allAiProviders.length;
@@ -431,10 +411,10 @@ export function useAIStreaming({
       source,
       nextProvider
     );
-  }, [allAiProviders, selectedAIProvider, processWithAI]);
+  }, [allAiProviders, processWithAI]);
 
   const selectedIndex = allAiProviders.findIndex(
-    (p) => p.id === selectedAIProvider.provider
+    (p) => p.id === activeProviderId
   );
   const nextIndex =
     allAiProviders.length > 0
@@ -455,6 +435,7 @@ export function useAIStreaming({
     abortControllerRef,
     lastAIResponseAtRef,
     isStalled,
+    aiStatusMessage,
     stallWait,
     stallRetry,
     stallNext,

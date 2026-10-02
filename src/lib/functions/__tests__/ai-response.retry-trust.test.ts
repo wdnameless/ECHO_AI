@@ -99,6 +99,7 @@ describe("transient-gateway retry and the host-trust gate", () => {
       ok: true,
       status: 200,
       text: async () => JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+      json: async () => ({ choices: [{ message: { content: "ok" } }] }),
       headers: new Map(),
       body: null,
     });
