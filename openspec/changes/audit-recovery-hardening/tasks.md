@@ -25,4 +25,4 @@
 ## 6. Acceptance
 - [x] 6.1 full TS and Rust validation plus focused runtime smoke
 - [x] 6.2 R15 accurate privacy/storage docs after smoke
-- [ ] 6.3 one simplification pass and independent blind acceptance
+- [x] 6.3 one simplification pass and independent blind acceptance
