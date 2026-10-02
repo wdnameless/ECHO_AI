@@ -5,6 +5,7 @@ import { getAsrBaseUrl } from "@/lib/asr-discovery";
 import { getAsrLanguage } from "@/lib/asr-language";
 import * as asrGate from "@/lib/asr-gate";
 import { resetAsrGateForTests } from "@/lib/asr-gate";
+import { getAsrCapabilities } from "@/lib/asr-capabilities";
 
 vi.mock("@/lib/asr-discovery", () => ({
   getAsrBaseUrl: vi.fn(),
@@ -85,6 +86,7 @@ describe("useMicWsStreaming", () => {
     global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
     vi.mocked(getAsrBaseUrl).mockResolvedValue("http://127.0.0.1:8765");
     vi.mocked(getAsrLanguage).mockReturnValue("ru");
+    vi.mocked(getAsrCapabilities).mockResolvedValue({ streaming: true, variant: "test" });
     resetAsrGateForTests();
   });
 
@@ -698,8 +700,7 @@ describe("useMicWsStreaming", () => {
    * banner, while the batch endpoint transcribed the same audio in ~76ms.
    */
   it("does not open a socket when the loaded model cannot stream", async () => {
-    const caps = await import("@/lib/asr-capabilities");
-    vi.mocked(caps.getAsrCapabilities).mockResolvedValue({
+    vi.mocked(getAsrCapabilities).mockResolvedValue({
       streaming: false,
       variant: "tdt-0.6b-v3",
     });
@@ -722,5 +723,72 @@ describe("useMicWsStreaming", () => {
     expect(MockWebSocket.instances).toHaveLength(0);
     // The slot must be handed back so the batch path can run.
     expect(asrGate.tryAcquireStream("them")).toBe(true);
+  });
+  it("R06 cancels an already scheduled reconnect at utterance stop", async () => {
+    const { result } = renderHook(() =>
+      useMicWsStreaming({ capturingRef: { current: true }, onPartialTranscript: vi.fn() })
+    );
+    await act(async () => { result.current.micWsConnect(); });
+    const first = MockWebSocket.instances[0];
+    act(() => first.close());
+    act(() => result.current.micWsFinalizeAndClose());
+    await act(async () => { vi.advanceTimersByTime(60_000); });
+    expect(MockWebSocket.instances).toEqual([first]);
+    expect(asrGate.tryAcquireStream("them")).toBe(true);
+  });
+
+  it.each(["base", "capabilities"] as const)(
+    "R06 invalidates an in-flight %s lookup without releasing the successor",
+    async (lookup) => {
+      let resolve!: (value: never) => void;
+      const pending = new Promise<never>((done) => { resolve = done; });
+      if (lookup === "base") vi.mocked(getAsrBaseUrl).mockReturnValueOnce(pending);
+      else vi.mocked(getAsrCapabilities).mockReturnValueOnce(pending);
+      const { result } = renderHook(() =>
+        useMicWsStreaming({ capturingRef: { current: true }, onPartialTranscript: vi.fn() })
+      );
+      await act(async () => { result.current.micWsConnect(); });
+      act(() => result.current.micWsFinalizeAndClose());
+      await act(async () => {
+        result.current.micBeginUtterance();
+        result.current.micWsConnect();
+      });
+      const successor = MockWebSocket.instances[0];
+      act(() => successor.triggerOpen());
+      await act(async () => {
+        resolve((lookup === "base" ? "http://127.0.0.1:8765" : { streaming: true, variant: "test" }) as never);
+      });
+      expect(MockWebSocket.instances).toEqual([successor]);
+      expect(asrGate.tryAcquireStream("them")).toBe(false);
+      act(() => result.current.cleanupMicWs());
+      expect(asrGate.tryAcquireStream("them")).toBe(true);
+    }
+  );
+
+  it("R06 keeps rapid next utterance safe from the previous finalization", async () => {
+    const onPartialTranscript = vi.fn();
+    const { result } = renderHook(() =>
+      useMicWsStreaming({ capturingRef: { current: true }, onPartialTranscript })
+    );
+    await act(async () => { result.current.micWsConnect(); });
+    const first = MockWebSocket.instances[0];
+    act(() => first.triggerOpen());
+    const staleClose = first.onclose!;
+    const staleMessage = first.onmessage!;
+    act(() => result.current.micWsFinalizeAndClose());
+    await act(async () => {
+      result.current.micBeginUtterance();
+      result.current.micWsConnect();
+    });
+    const next = MockWebSocket.instances[1];
+    act(() => next.triggerOpen());
+    act(() => {
+      staleClose(new CloseEvent("close"));
+      staleMessage(new MessageEvent("message", { data: '{"type":"partial","text":"old"}' }));
+      vi.advanceTimersByTime(1000);
+    });
+    expect(onPartialTranscript).not.toHaveBeenCalled();
+    expect(next.readyState).toBe(MockWebSocket.OPEN);
+    expect(asrGate.tryAcquireStream("them")).toBe(false);
   });
 });

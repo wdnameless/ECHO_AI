@@ -45,22 +45,29 @@ export function useThemWsStreaming({
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Consecutive failed reconnect attempts, for the exponential backoff. */
   const reconnectAttemptsRef = useRef(0);
-  const stoppedByUsRef = useRef(false);
   const producedTextRef = useRef(false);
-  /**
-   * Frames actually handed to the engine on the current socket.
-   *
-   * The microphone channel uses the same counter to tell an engine refusal from
-   * a socket that died before carrying anything; this channel only had
-   * `producedTextRef`, so it could not make that distinction at all.
-   */
-  const framesSentRef = useRef(0);
-  /**
-   * A finalize-driven close asked for a reopen, but no speech has arrived yet.
-   * The socket is opened on the next frame instead of immediately, so an idle
-   * capture session does not hold an engine session (the pool is finite).
-   */
-  const pendingReconnectRef = useRef(false);
+  const socketStateRef = useRef<{
+    stoppedByUs: boolean;
+    framesSent: number;
+    producedText: boolean;
+  } | null>(null);
+  const wantRef = useRef(false);
+  const connectEpochRef = useRef(0);
+  const ownerEpochRef = useRef<number | null>(null);
+
+  const releaseOwner = useCallback((epoch = ownerEpochRef.current) => {
+    if (epoch === null || ownerEpochRef.current !== epoch) return;
+    ownerEpochRef.current = null;
+    releaseStream("them");
+  }, []);
+
+  const cancelConnect = useCallback(() => {
+    connectEpochRef.current += 1;
+    if (reconnectTimerRef.current !== null) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }, []);
   /**
    * The delayed close after a finalize, held so the next connection can cancel
    * it. See `finalizeAndClose` for why an unheld timer is dangerous.
@@ -68,64 +75,44 @@ export function useThemWsStreaming({
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const close = useCallback(() => {
+    cancelConnect();
+    wantRef.current = false;
     frameBufferRef.current = [];
-    pendingReconnectRef.current = false;
     if (closeTimerRef.current !== null) {
       clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
     }
     const ws = wsRef.current;
     wsRef.current = null;
-    releaseStream("them");
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
+    socketStateRef.current = null;
+    releaseOwner();
     // Shared with the microphone channel: detach handlers, then close whatever
     // state the socket is in.
     closeSocketDetached(ws);
-  }, []);
+  }, [cancelConnect, releaseOwner]);
 
   const scheduleReconnect = useCallback(() => {
-    if (!capturingRef.current || stoppedByUsRef.current) return;
+    if (!capturingRef.current || !wantRef.current || socketStateRef.current?.stoppedByUs) return;
     if (reconnectTimerRef.current) return;
     // Back off while the retries keep failing (see WS_RECONNECT_MAX_MS). The
     // delay resets on a served connection, below in `onopen`.
     const delay = nextReconnectDelay(reconnectAttemptsRef.current, WS_BACKOFF);
     reconnectAttemptsRef.current += 1;
+    const epoch = connectEpochRef.current;
     reconnectTimerRef.current = setTimeout(() => {
       reconnectTimerRef.current = null;
+      if (epoch !== connectEpochRef.current || !wantRef.current || !capturingRef.current) return;
       recordWsReconnect();
       void connectRef.current();
     }, delay);
   }, [capturingRef]);
 
-  /**
-   * Reopens after a finalize-driven close, but only when speech is actually
-   * arriving.
-   *
-   * The sidecar closes the socket as soon as it answers a finalize, and the
-   * next utterance starts within a second, so a socket was reopened at once to
-   * keep the handshake out of the speech. That eager reopen is what exhausted
-   * the engine: it grants a fixed number of concurrent sessions (3), holds a
-   * session for as long as a socket is open, and the reopened socket sat idle
-   * between utterances. After three utterances no stream could be opened at all
-   * ("stream begin failed: model busy: a stream is already active on this
-   * model", measured with `active_streams: 3` at rest) and recognition stopped
-   * for the rest of the session.
-   *
-   * The connect itself measures ~3ms and frames arriving before it completes
-   * are buffered, so waiting for real speech costs nothing measurable.
-   */
-  const reopenSoon = useCallback(() => {
-    if (!capturingRef.current || stoppedByUsRef.current) return;
-    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-    pendingReconnectRef.current = true;
-  }, [capturingRef]);
 
   const connectRef = useRef<() => Promise<void>>(async () => {});
   connectRef.current = async () => {
-    if (!capturingRef.current) return;
+    if (!capturingRef.current || !wantRef.current) return;
+    if (ownerEpochRef.current !== null ||
+        (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN)) return;
 
     // One stream at a time: while the candidate's microphone streams, this
     // channel waits instead of collecting "model busy" for every frame.
@@ -133,6 +120,8 @@ export function useThemWsStreaming({
       scheduleReconnect();
       return;
     }
+    const epoch = ++connectEpochRef.current;
+    ownerEpochRef.current = epoch;
 
     let base: string;
     try {
@@ -140,18 +129,22 @@ export function useThemWsStreaming({
     } catch {
       base = "";
     }
+    if (epoch !== connectEpochRef.current) return;
+    if (!capturingRef.current || !wantRef.current) {
+      releaseOwner(epoch);
+      return;
+    }
     if (!base) {
-      releaseStream("them");
+      releaseOwner(epoch);
       scheduleReconnect();
       return;
     }
-    if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) return;
 
     let ws: WebSocket;
     try {
       ws = new WebSocket(`${base.replace(/^http/, "ws")}/v1/asr/stream`);
     } catch {
-      releaseStream("them");
+      releaseOwner(epoch);
       scheduleReconnect();
       return;
     }
@@ -165,14 +158,21 @@ export function useThemWsStreaming({
     // available this is exactly how recognition stopped — `active_streams` sat
     // at a non-zero value while the app believed it had closed everything.
     wsRef.current = ws;
+    const state = { stoppedByUs: false, framesSent: 0, producedText: false };
+    socketStateRef.current = state;
     ws.onopen = () => {
+      if (wsRef.current !== ws || epoch !== connectEpochRef.current ||
+          !capturingRef.current || !wantRef.current) {
+        if (wsRef.current === ws) close();
+        else closeSocketDetached(ws);
+        return;
+      }
       // Recognition language comes from the ASR language setting, not from the
       // answer language: the answer setting defaults to English and pinning the
       // recogniser with it transcribed Russian speech as English words.
       ws.send(
         JSON.stringify({ type: "config", language: getAsrLanguage() })
       );
-      stoppedByUsRef.current = false;
       // A served connection means the retries were worth it: start the next
       // backoff from the base delay again.
       reconnectAttemptsRef.current = 0;
@@ -182,6 +182,7 @@ export function useThemWsStreaming({
         if (buffered && ws.readyState === WebSocket.OPEN) {
           try {
             ws.send(buffered);
+            state.framesSent += 1;
           } catch (sendErr) {
             // The socket can die between the state check and the send; the
             // remaining buffered frames are dropped with it on close.
@@ -191,8 +192,12 @@ export function useThemWsStreaming({
       }
     };
     ws.onmessage = (ev) => {
+      if (wsRef.current !== ws) return;
       const hadText = typeof ev.data === "string" && /"text"\s*:/.test(ev.data);
-      if (hadText) producedTextRef.current = true;
+      if (hadText) {
+        producedTextRef.current = true;
+        state.producedText = true;
+      }
       // The engine can refuse the stream even though /health advertised it:
       // remember the refusal so the rest of the session uses the batch path
       // instead of losing every utterance to a socket it will not serve.
@@ -224,7 +229,8 @@ export function useThemWsStreaming({
         // slot and must not schedule a competing reconnect.
         return;
       }
-      releaseStream("them");
+      socketStateRef.current = null;
+      releaseOwner(epoch);
       // A model that cannot stream is refused the moment real audio reaches it:
       // the engine accepts the handshake, answers a status frame, and then drops
       // the socket on the first audio frame WITHOUT sending error text — so the
@@ -236,23 +242,19 @@ export function useThemWsStreaming({
       // batch-only model it reopened a socket per utterance forever.
       if (
         looksLikeStreamRefusal({
-          stoppedByUs: stoppedByUsRef.current,
-          framesSent: framesSentRef.current,
-          producedText: producedTextRef.current,
+          stoppedByUs: state.stoppedByUs,
+          framesSent: state.framesSent,
+          producedText: state.producedText,
         })
       ) {
         noteStreamingUnsupported();
       }
-      // A close we triggered with `finalize` is the protocol working: reopen
-      // at once so the handshake never lands inside the next utterance.
-      if (stoppedByUsRef.current) {
-        stoppedByUsRef.current = false;
-        reopenSoon();
-        return;
-      }
+      // Finalized sockets are done; fresh speech, not silence, reopens them.
+      if (state.stoppedByUs) return;
       scheduleReconnect();
     };
     ws.onerror = () => {
+      if (wsRef.current !== ws) return;
       // A refused connection means the cached base URL is stale — the engine
       // rebounds to another port and the renderer must re-resolve it, otherwise
       // every later utterance is streamed into a dead port and never appears.
@@ -269,31 +271,24 @@ export function useThemWsStreaming({
 
   /** Opens the stream for the current capture session. */
   const start = useCallback(() => {
-    // A new utterance cancels the delayed close left by the previous one: that
-    // timer would otherwise fire during this utterance and close the socket this
-    // call is about to open.
-    if (closeTimerRef.current !== null) {
-      clearTimeout(closeTimerRef.current);
-      closeTimerRef.current = null;
-    }
-    stoppedByUsRef.current = false;
+    if (socketStateRef.current?.stoppedByUs ||
+        (wsRef.current && wsRef.current.readyState > WebSocket.OPEN)) close();
+    wantRef.current = true;
     void connectRef.current();
-  }, []);
+  }, [close]);
 
   /** Sends one PCM frame (f32 LE @16 kHz), dropping it if the socket is not up. */
   const feedFrame = useCallback((pcm: ArrayBuffer) => {
+    if (!wantRef.current) return;
     const ws = wsRef.current;
-    // `stoppedByUsRef` marks a socket that already answered a finalize: the
-    // utterance it served is over, so this frame belongs to the next one.
-    const belongsToFinishedUtterance = stoppedByUsRef.current;
+    // A finalized socket cannot accept audio for the next utterance.
+    const belongsToFinishedUtterance = socketStateRef.current?.stoppedByUs;
 
     if (ws && ws.readyState === WebSocket.OPEN && !belongsToFinishedUtterance) {
       try {
         ws.send(pcm);
-        // Audio really reached the engine: this, not the socket state, is what
-        // distinguishes "the model refused the stream" from "the socket never
-        // carried anything". Paired with `producedTextRef` in `onclose`.
-        framesSentRef.current += 1;
+        // Refusal detection compares audio and text on this socket only.
+        if (socketStateRef.current) socketStateRef.current.framesSent += 1;
       } catch {
         // socket died between the check and the send
       }
@@ -303,21 +298,9 @@ export function useThemWsStreaming({
     if (!capturingRef.current) return;
 
     if (belongsToFinishedUtterance) {
-      // Audio is arriving, so the previous utterance is over.
-      //
-      // A frame used to be dropped outright while this flag was set, and the
-      // flag is only cleared by the socket's own `onclose` — so a socket that
-      // answered a finalize and then never closed left this channel permanently
-      // deaf. Every partial was discarded and the interviewer's text appeared
-      // only once, from the end-of-speech batch pass: "стало лучше, но я не вижу
-      // стриминг текстовый когда собеседник говорит".
-      stoppedByUsRef.current = false;
-      pendingReconnectRef.current = false;
-      // `connectRef` refuses to open while `wsRef` holds a socket
-      // (`readyState <= OPEN`), so the finished one has to go first. Closing
-      // clears the frame buffer, hence the order below: close, queue the frame,
-      // then open the socket that will flush it.
+      // Close before buffering: close clears the old utterance's frames.
       if (ws) close();
+      wantRef.current = true;
 
       if (frameBufferRef.current.length >= 24) {
         frameBufferRef.current.shift();
@@ -333,7 +316,6 @@ export function useThemWsStreaming({
       // arrive ~33 times a second, so the socket would never finish opening and
       // no live text would ever appear.
     } else if (!ws) {
-      pendingReconnectRef.current = false;
       void connectRef.current();
     }
 
@@ -354,8 +336,9 @@ export function useThemWsStreaming({
    */
   const finalizeUtterance = useCallback(() => {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    stoppedByUsRef.current = true;
+    if (!ws || ws.readyState !== WebSocket.OPEN || socketStateRef.current?.stoppedByUs) return;
+    cancelConnect();
+    if (socketStateRef.current) socketStateRef.current.stoppedByUs = true;
     try {
       ws.send(JSON.stringify({ type: "finalize" }));
     } catch {
@@ -370,11 +353,13 @@ export function useThemWsStreaming({
     // made the HTTP path fail for the whole close window — `withNoStream` only
     // waits 300ms, while the socket stayed open past that, and the user saw the
     // 500 verbatim.
-    releaseStream("them");
-  }, []);
+    releaseOwner();
+  }, [cancelConnect, releaseOwner]);
 
   const finalizeAndClose = useCallback(() => {
-    stoppedByUsRef.current = true;
+    cancelConnect();
+    wantRef.current = false;
+    if (socketStateRef.current) socketStateRef.current.stoppedByUs = true;
     frameBufferRef.current = [];
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -393,20 +378,21 @@ export function useThemWsStreaming({
       // did not exist yet. The socket itself stays open for the 200ms the server
       // needs to flush its `final`; the slot, which is what the other channel
       // competes for, is released immediately.
-      releaseStream("them");
+      releaseOwner();
       if (closeTimerRef.current !== null) clearTimeout(closeTimerRef.current);
       closeTimerRef.current = setTimeout(() => {
         closeTimerRef.current = null;
-        close();
+        if (wsRef.current === ws) close();
       }, 200);
     } else {
       close();
     }
-  }, [close]);
+  }, [cancelConnect, close, releaseOwner]);
 
   /** True while the streaming socket is open (it owns the model). */
   const isStreaming = useCallback(
-    () => wsRef.current?.readyState === WebSocket.OPEN,
+    () => wsRef.current?.readyState === WebSocket.OPEN &&
+      !socketStateRef.current?.stoppedByUs && ownerEpochRef.current !== null,
     []
   );
 
@@ -416,9 +402,6 @@ export function useThemWsStreaming({
   /** Called at the start of an utterance. */
   const beginUtterance = useCallback(() => {
     producedTextRef.current = false;
-    // Reset with the text flag: both describe the CURRENT utterance, and the
-    // refusal check compares them against each other on close.
-    framesSentRef.current = 0;
   }, []);
 
   return {

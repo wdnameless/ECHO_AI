@@ -181,6 +181,29 @@ pub async fn start_system_audio_capture(
     Ok(())
 }
 
+// Borrow only the suffix; periodic frames and the final drain share one cursor.
+fn flush_pending_speech_frame(
+    samples: &[f32],
+    emitted_len: &mut usize,
+    emit: impl FnOnce(&[f32]),
+) {
+    let start = (*emitted_len).min(samples.len());
+    *emitted_len = samples.len();
+    if start < samples.len() {
+        emit(&samples[start..]);
+    }
+}
+
+fn finish_speech_segment(
+    samples: &[f32],
+    emitted_len: &mut usize,
+    emit_frame: impl FnOnce(&[f32]),
+    emit_final: impl FnOnce(&[f32]),
+) {
+    flush_pending_speech_frame(samples, emitted_len, emit_frame);
+    emit_final(samples);
+}
+
 // VAD-enabled capture - OPTIMIZED for real-time speech detection
 async fn run_vad_capture(
     app: AppHandle,
@@ -211,6 +234,33 @@ async fn run_vad_capture(
     let mut input_gain: f32 = 1.0;
     let mut gain_cooldown: u32 = 0;
 
+    let emit_frame = |samples: &[f32]| {
+        let pcm = if sr == 16000 {
+            std::borrow::Cow::Borrowed(samples)
+        } else {
+            std::borrow::Cow::Owned(resample_to_16k(samples, sr))
+        };
+        let mut bytes = Vec::with_capacity(pcm.len() * 4);
+        for sample in pcm.iter() {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        let _ = app.emit("speech-frame", B64.encode(&bytes));
+    };
+    let emit_final = |samples: &[f32]| {
+        let normalized = normalize_audio_level(samples, 0.1);
+        let resampled = if sr == 16000 {
+            std::borrow::Cow::Borrowed(normalized.as_slice())
+        } else {
+            std::borrow::Cow::Owned(resample_to_16k(&normalized, sr))
+        };
+        match samples_to_wav_b64(16000, &resampled) {
+            Ok(b64) => { let _ = app.emit("speech-detected", b64); }
+            Err(_) => {
+                error!("Failed to encode speech to WAV");
+                let _ = app.emit("audio-encoding-error", "Failed to encode speech");
+            }
+        }
+    };
     while let Some(sample) = stream.next().await {
         buffer.push_back(sample);
 
@@ -321,26 +371,18 @@ async fn run_vad_capture(
                 // base64 hop only added a decode per frame.
                 frames_since_frame += mono.len();
                 if frames_since_frame >= sr as usize / 4 {
-                    let new_slice = &speech_buffer[frame_emitted_len..];
-                    let resampled = resample_to_16k(new_slice, sr);
-                    let mut bytes = Vec::with_capacity(resampled.len() * 4);
-                    for f in &resampled {
-                        bytes.extend_from_slice(&f.to_le_bytes());
-                    }
-                    let _ = app.emit("speech-frame", B64.encode(&bytes));
-                    frame_emitted_len = speech_buffer.len();
+                    flush_pending_speech_frame(
+                        &speech_buffer, &mut frame_emitted_len, &emit_frame,
+                    );
                     frames_since_frame = 0;
                 }
 
 
                 // Safety cap: force emit if exceeds 30s
                 if speech_buffer.len() > max_samples {
-                    let normalized_buffer = normalize_audio_level(&speech_buffer, 0.1);
-                    let resampled = resample_to_16k(&normalized_buffer, sr);
-                    if let Ok(b64) = samples_to_wav_b64(16000, &resampled) {
-                        // let duration = speech_buffer.len() as f32 / sr as f32;
-                        let _ = app.emit("speech-detected", b64);
-                    }
+                    finish_speech_segment(
+                        &speech_buffer, &mut frame_emitted_len, &emit_frame, &emit_final,
+                    );
                     speech_buffer.clear();
                     in_speech = false;
                     speech_chunks = 0;
@@ -369,16 +411,9 @@ async fn run_vad_capture(
                                 speech_buffer.truncate(speech_buffer.len() - trim_amount);
                             }
 
-                            // Emit complete speech segment
-                            let normalized_buffer = normalize_audio_level(&speech_buffer, 0.1);
-                            let resampled = resample_to_16k(&normalized_buffer, sr);
-                            if let Ok(b64) = samples_to_wav_b64(16000, &resampled) {
-                                // let duration = speech_buffer.len() as f32 / sr as f32;
-                                let _ = app.emit("speech-detected", b64);
-                            } else {
-                                error!("Failed to encode speech to WAV");
-                                let _ = app.emit("audio-encoding-error", "Failed to encode speech");
-                            }
+                            finish_speech_segment(
+                                &speech_buffer, &mut frame_emitted_len, &emit_frame, &emit_final,
+                            );
                         } else {
                             let _ = app.emit(
                                 "speech-discarded",
@@ -391,8 +426,8 @@ async fn run_vad_capture(
                         in_speech = false;
                         silence_chunks = 0;
                         speech_chunks = 0;
-                    frame_emitted_len = 0;
-                    frames_since_frame = 0;
+                        frame_emitted_len = 0;
+                        frames_since_frame = 0;
                     }
                 } else {
                     // Not in speech yet - maintain rolling pre-speech buffer
@@ -854,5 +889,56 @@ mod tests {
         let eff_capped =
             sensitivity_rms.max((floor_very_noisy * 3.0 + 0.004).min(sensitivity_rms * 1.8));
         assert!((eff_capped - 0.0216).abs() < 1e-6);
+    }
+}
+
+#[cfg(test)]
+mod audio_tail_tests {
+    use super::{finish_speech_segment, flush_pending_speech_frame};
+    use std::cell::RefCell;
+
+    #[test]
+    fn r11_tail_once_before_final_for_silence_and_cap() {
+        for (samples, emitted) in [
+            (vec![0.1, 0.2, 0.3, 0.4], 2),
+            (vec![0.5, 0.6], 0),
+            (vec![0.7, 0.8, 0.9], 3),
+            (vec![0.7, 0.8], 3), // Silence trimming can remove already sent samples.
+        ] {
+            let events = RefCell::new(Vec::new());
+            let mut cursor = emitted;
+            let frame = |tail: &[f32]| {
+                assert_eq!(tail.as_ptr(), samples[emitted.min(samples.len())..].as_ptr());
+                events.borrow_mut().push(("frame", tail.to_vec()));
+            };
+            finish_speech_segment(&samples, &mut cursor, frame, |whole| {
+                events.borrow_mut().push(("final", whole.to_vec()));
+            });
+            flush_pending_speech_frame(&samples, &mut cursor, |_| panic!("duplicate tail"));
+            let mut expected = Vec::new();
+            if emitted < samples.len() {
+                expected.push(("frame", samples[emitted..].to_vec()));
+            }
+            expected.push(("final", samples.clone()));
+            assert_eq!(*events.borrow(), expected);
+            assert_eq!(cursor, samples.len());
+        }
+    }
+
+    #[test]
+    fn r11_periodic_prefix_and_final_tail_have_no_overlap() {
+        let mut samples = vec![0.1, 0.2];
+        let frames = RefCell::new(Vec::new());
+        let mut cursor = 0;
+        flush_pending_speech_frame(&samples, &mut cursor, |pcm| {
+            frames.borrow_mut().extend_from_slice(pcm);
+        });
+        samples.extend_from_slice(&[0.3, 0.4]);
+        finish_speech_segment(&samples, &mut cursor, |pcm| {
+            frames.borrow_mut().extend_from_slice(pcm);
+        }, |whole| {
+            assert_eq!(*frames.borrow(), whole);
+        });
+        assert_eq!(*frames.borrow(), samples);
     }
 }

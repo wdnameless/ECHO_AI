@@ -1,15 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
-vi.mock("@/lib/asr-discovery", () => ({ getAsrBaseUrl: vi.fn(async () => "http://127.0.0.1:9877") }));
-vi.mock("@/lib/asr-language", () => ({ getAsrLanguage: vi.fn(() => "en") }));
-vi.mock("@/lib/asr-gate", () => ({
-  tryAcquireStream: vi.fn(() => true),
-  releaseStream: vi.fn(),
-  withNoStream: vi.fn((fn: () => Promise<unknown>) => fn()),
+vi.mock("@/lib/asr-discovery", () => ({
+  getAsrBaseUrl: vi.fn(async () => "http://127.0.0.1:9877"),
+  resetAsrBaseUrlCache: vi.fn(),
 }));
+vi.mock("@/lib/asr-language", () => ({ getAsrLanguage: vi.fn(() => "en") }));
+vi.mock("@/lib/asr-capabilities", () => ({ noteStreamingUnsupported: vi.fn() }));
 
 import { useThemWsStreaming } from "../useThemWsStreaming";
+import * as asrGate from "@/lib/asr-gate";
+import { getAsrBaseUrl } from "@/lib/asr-discovery";
+import { noteStreamingUnsupported } from "@/lib/asr-capabilities";
 
 class MockWebSocket {
   static CONNECTING = 0;
@@ -53,12 +55,15 @@ describe("useThemWsStreaming session usage", () => {
     vi.useFakeTimers();
     MockWebSocket.instances = [];
     global.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    asrGate.resetAsrGateForTests();
+    vi.mocked(getAsrBaseUrl).mockResolvedValue("http://127.0.0.1:9877");
   });
 
   afterEach(() => {
     vi.useRealTimers();
     global.WebSocket = originalWebSocket;
     vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   /**
@@ -165,8 +170,7 @@ describe("useThemWsStreaming session usage", () => {
     // held it, the mic's tryAcquireStream("me") was refused and it fell into the
     // reconnect backoff, so the candidate's first words went nowhere. The socket
     // still stays open briefly so the server can flush its final frame.
-    const { releaseStream } = await import("@/lib/asr-gate");
-    const releaseSpy = vi.mocked(releaseStream);
+    const releaseSpy = vi.spyOn(asrGate, "releaseStream");
     releaseSpy.mockClear();
 
     const capturingRef = { current: true };
@@ -225,5 +229,66 @@ describe("useThemWsStreaming session usage", () => {
     act(() => result.current.close());
 
     expect(connecting.readyState).toBe(MockWebSocket.CLOSED);
+  });
+  it("R11 start replaces a finalizing socket without releasing its successor", async () => {
+    const { result } = renderHook(() =>
+      useThemWsStreaming({ capturingRef: { current: true }, onPartialTranscript: vi.fn() })
+    );
+    await act(async () => { result.current.start(); });
+    const first = MockWebSocket.instances[0];
+    act(() => first.triggerOpen());
+    const staleClose = first.onclose!;
+    act(() => {
+      result.current.feedFrame(frame());
+      result.current.finalizeAndClose();
+    });
+    expect(result.current.isStreaming()).toBe(false);
+    await act(async () => {
+      result.current.beginUtterance();
+      result.current.start();
+    });
+    const next = MockWebSocket.instances[1];
+    act(() => {
+      next.triggerOpen();
+      result.current.feedFrame(frame());
+      staleClose(new CloseEvent("close"));
+      vi.advanceTimersByTime(1000);
+    });
+    expect(first.sent.filter((item) => item instanceof ArrayBuffer)).toHaveLength(1);
+    expect(next.sent.filter((item) => item instanceof ArrayBuffer)).toHaveLength(1);
+    expect(next.readyState).toBe(MockWebSocket.OPEN);
+    expect(asrGate.tryAcquireStream("me")).toBe(false);
+    expect(noteStreamingUnsupported).not.toHaveBeenCalled();
+  });
+
+  it("R11 deliberate finalization remains socket-local after beginUtterance", async () => {
+    const { result } = renderHook(() =>
+      useThemWsStreaming({ capturingRef: { current: true }, onPartialTranscript: vi.fn() })
+    );
+    await act(async () => { result.current.start(); });
+    const ws = MockWebSocket.instances[0];
+    act(() => {
+      ws.triggerOpen();
+      result.current.feedFrame(frame());
+      result.current.finalizeUtterance();
+      result.current.beginUtterance();
+      ws.serverClose();
+    });
+    expect(noteStreamingUnsupported).not.toHaveBeenCalled();
+    expect(asrGate.tryAcquireStream("me")).toBe(true);
+  });
+
+  it("R11 handoff invalidates pending interviewer discovery", async () => {
+    let resolve!: (url: string) => void;
+    vi.mocked(getAsrBaseUrl).mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    const { result } = renderHook(() =>
+      useThemWsStreaming({ capturingRef: { current: true }, onPartialTranscript: vi.fn() })
+    );
+    act(() => result.current.start());
+    act(() => result.current.finalizeAndClose());
+    expect(asrGate.tryAcquireStream("me")).toBe(true);
+    await act(async () => { resolve("http://127.0.0.1:9877"); });
+    expect(MockWebSocket.instances).toEqual([]);
+    expect(asrGate.tryAcquireStream("them")).toBe(false);
   });
 });

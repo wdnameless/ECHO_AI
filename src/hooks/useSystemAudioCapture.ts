@@ -190,6 +190,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
    * the sidecar answers "model busy: a stream is active on this model".
    */
   const micStreamOwnsModelRef = useRef(false);
+  const speechEpochRef = useRef(0);
   /** Text accumulated from streamed chunks, awaiting the real end of speech. */
   const rolledTextRef = useRef("");
   /** True when the last final came from the end-of-speech flush, not a roll. */
@@ -304,13 +305,14 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
         // A stream holds the model; the sidecar answers 500 "model busy" for
         // HTTP transcription while one is open, so wait for it to finish.
-        const sttPromise = withNoStream(() =>
-          transcribeWithFallback({
+        const sttPromise = withNoStream(
+          () => transcribeWithFallback({
             selectedProvider: selectedSttProvider,
             audio: audioBlob,
             priority: "high",
             prompt: buildInitialPrompt(),
-          })
+          }),
+          source === "them" ? 45000 : 300
         );
 
         // Sidecar waits for the GPU lease up to 30s (busy-retry) and the
@@ -600,6 +602,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
 
       if (streamingModelRef.current) {
+        if (micStreamOwnsModelRef.current) return;
         themWsRef.current.feedFrame(bytes.buffer as ArrayBuffer);
         return;
       }
@@ -651,6 +654,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
     listen("speech-start", () => {
       if (!capturingRef.current) return;
+      const epoch = ++speechEpochRef.current;
       // A new utterance starts empty: the previous monologue was already
       // dispatched (or dropped) when its speech ended.
       //
@@ -691,8 +695,9 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       utteranceStartedAtRef.current = Date.now();
       void (async () => {
         const caps = await getAsrCapabilities();
+        if (epoch !== speechEpochRef.current || !capturingRef.current) return;
         streamingModelRef.current = caps.streaming;
-        if (!caps.streaming || !capturingRef.current) return;
+        if (!caps.streaming || micStreamOwnsModelRef.current) return;
         themWsRef.current.beginUtterance();
         themWsRef.current.start();
       })();
@@ -717,6 +722,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   useEffect(() => {
     if (!capturing) {
       themWsRef.current.finalizeAndClose();
+      speechEpochRef.current += 1;
       // Stop the live cadence with the capture: a pending timer used to fire
       // once more after leaving meeting mode and post a transcription for audio
       // that was no longer being recorded.
@@ -752,11 +758,11 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       // before the next utterance is measured from here rather than from the
       // text that this transcription will produce much later.
       lastAudioSpeechEndRef.current = Date.now();
+      speechEpochRef.current += 1;
       if (
+        !micStreamOwnsModelRef.current &&
         streamingModelRef.current &&
-        (themWsRef.current.isStreaming() ||
-          themWsRef.current.hasProducedText() ||
-          micStreamOwnsModelRef.current)
+        themWsRef.current.isStreaming()
       ) {
         onInterviewerSpeechActivity?.();
         utteranceEndedRef.current = true;
@@ -791,7 +797,15 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       // where `speech-start` opened a socket that is still CONNECTING. A socket
       // left in that state holds an engine session forever, so it is released
       // here; the batch path below does not need it.
-      themWsRef.current.finalizeAndClose();
+      // No usable stream owns the full utterance. Its WAV is authoritative,
+      // including when the microphone preempted a partial interviewer stream.
+      if (flushSafetyTimerRef.current !== null) {
+        clearTimeout(flushSafetyTimerRef.current);
+        flushSafetyTimerRef.current = null;
+      }
+      rolledTextRef.current = "";
+      utteranceEndedRef.current = false;
+      themWsRef.current.close();
       handleSpeechDetectedRef.current(event.payload as string);
     })
       .then((unlisten) => {
@@ -986,6 +1000,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     /** Hands the single-model stream to the microphone channel. */
     yieldThemToMic: useCallback(() => {
       micStreamOwnsModelRef.current = true;
+      speechEpochRef.current += 1;
       themWsRef.current.finalizeAndClose();
     }, []),
     /** Takes the stream back once the microphone utterance ended. */
