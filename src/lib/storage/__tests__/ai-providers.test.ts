@@ -18,6 +18,18 @@ describe("provider configuration persistence", () => {
     expect(getAIProviderVariables("second").MODEL).toBe("second-model");
     expect(getAIProviderVariables("first").MODEL).toBe("updated-first");
   });
+  it("persists token budgets but excludes normalized credential field names", () => {
+    const budgets = { MAX_TOKENS: "512", MAX_OUTPUT_TOKENS: "1024", TOKEN_BUDGET: "64" };
+    const credentials = Object.fromEntries([
+      "API_KEY", "apiKey", "access-token", "refresh_token", "client.secret",
+      "password", "passwd", "pwd", "authorization", "authentication",
+      "clientCredentials", "signature", "KEY", "auth", "session-id", "Cookie",
+    ].map((name) => [name, "fixture-credential"]));
+    setAIProviderVariables("budget-provider", { ...budgets, ...credentials });
+    setAIProviderVariables("another-provider", { MODEL: "another-model" });
+    expect(getAIProviderVariables("budget-provider")).toEqual(budgets);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.AI_PROVIDER_VARIABLES)!)["budget-provider"]).toEqual(budgets);
+  });
   it("ignores malformed persisted config and removes historical credentials on the next map write", () => {
     localStorage.setItem(STORAGE_KEYS.AI_PROVIDER_VARIABLES, JSON.stringify({ first: { MODEL: "saved", apiKey: "fixture" }, invalid: ["not variables"] }));
     expect(getAIProviderVariables("first")).toEqual({ MODEL: "saved" });

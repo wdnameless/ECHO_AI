@@ -1454,7 +1454,9 @@ export const SubtitleFeed = ({
               >
                 {isStalled && (
                   <div className="mb-1.5 text-[0.8em] font-medium text-amber-700 dark:text-amber-300">
-                    {`Провайдер молчит ${stalledSeconds}с — решайте: ждать, повторить или взять ${stallNextId || "следующий"}`}
+                    {`Провайдер молчит ${stalledSeconds}с — решайте: ${
+                      stallNextId ? `ждать, повторить или взять ${stallNextId}` : "ждать или повторить"
+                    }`}
                   </div>
                 )}
                 <div className="flex items-center justify-between gap-2 text-[0.78em]">
@@ -1486,8 +1488,9 @@ export const SubtitleFeed = ({
                     <button
                       type="button"
                       onClick={onStallNext}
+                      disabled={!stallNextId}
                       className={cn(
-                        "px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer",
+                        "px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
                         isStalled
                           ? "border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-950 dark:text-amber-100 font-medium"
                           : "text-muted-foreground hover:text-foreground hover:bg-muted/40"

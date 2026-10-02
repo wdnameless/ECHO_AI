@@ -9,10 +9,12 @@ export function nonSecretAIProviderVariables(
 ): Record<string, string> {
   if (!variables || typeof variables !== "object" || Array.isArray(variables)) return {};
   return canonicalizeVariables(Object.fromEntries(
-    Object.entries(variables ?? {}).filter(([key, value]) =>
-      typeof value === "string" &&
-      !/api[_-]?key|token|secret|password|credential|authorization|cookie/i.test(key)
-    )
+    Object.entries(variables).filter(([key, value]) => {
+      if (typeof value !== "string") return false;
+      const normalized = key.replace(/[^a-z0-9]/gi, "");
+      return !/(?:apikey|token|secret|password|passwd|pwd|authorization|authentication|credentials?|signature)$/i.test(normalized) &&
+        !/^(key|auth|sessionid|cookie2?)$/i.test(normalized);
+    })
   ) as Record<string, string>);
 }
 

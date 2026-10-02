@@ -429,6 +429,39 @@ describe("useAIStreaming", () => {
     expect(addInteraction).not.toHaveBeenCalled();
   });
 
+  it.each(["openai", "pluely"])("offers only a different provider when active=%s and one BYO provider is configured", async (activeId) => {
+    vi.mocked(shouldUsePluelyAPI).mockResolvedValue(activeId === "pluely");
+    const gates: (() => void)[] = [];
+    vi.mocked(fetchAIResponse).mockImplementation((opts) => (async function* () {
+      const providerId = opts.provider?.id ?? "pluely";
+      opts.onEvent?.({ type: "attempt", providerId });
+      opts.onEvent?.({ type: "stalled", providerId });
+      await new Promise<void>((resolve) => { gates.push(resolve); });
+    })());
+    const props = createHookProps();
+    const { result } = renderHook(() => useAIStreaming(props));
+    let initial!: Promise<void>;
+    await act(async () => { initial = result.current.processWithAI("question", "prompt", []); });
+    const activeSignal = result.current.abortControllerRef.current!.signal;
+    const status = result.current.aiStatusMessage;
+    expect(result.current.stallNextId).toBe(activeId === "pluely" ? "openai" : undefined);
+    await act(async () => { result.current.stallNext(); });
+    if (activeId === "openai") {
+      expect(fetchAIResponse).toHaveBeenCalledTimes(1);
+      expect(activeSignal.aborted).toBe(false);
+      expect(result.current.isStalled).toBe(true);
+      expect(result.current.aiStatusMessage).toBe(status);
+    } else {
+      expect(fetchAIResponse).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(fetchAIResponse).mock.calls[1][0].provider?.id).toBe("openai");
+      expect(activeSignal.aborted).toBe(true);
+      expect(result.current.stallNextId).toBeUndefined();
+    }
+    expect(props.selectedAIProvider.provider).toBe("openai");
+    await act(async () => { result.current.abortAI(); gates.forEach((resolve) => resolve()); await initial; });
+    expect(addInteraction).not.toHaveBeenCalled();
+  });
+
   it("does not commit a partial answer when the final provider fails", async () => {
     vi.mocked(fetchAIResponse).mockReturnValue((async function* () {
       yield "unfinished";

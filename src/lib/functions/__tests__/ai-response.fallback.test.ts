@@ -101,6 +101,24 @@ describe("provider fallback ownership", () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body).model).toBe("template-b");
   });
 
+  it("uses the fallback's persisted token budgets and secure key instead of discarded credentials", async () => {
+    const fallback = {
+      ...providers[1],
+      curl: providers[1].curl.replace('"reasoning_effort":"{{REASONING_EFFORT}}"',
+        '"reasoning_effort":"{{REASONING_EFFORT}}","max_tokens":"{{MAX_TOKENS}}","max_output_tokens":"{{MAX_OUTPUT_TOKENS}}","token_budget":"{{TOKEN_BUDGET}}"'),
+    };
+    setAIProviderVariables("b", {
+      MODEL: "budget-model", MAX_TOKENS: "512", MAX_OUTPUT_TOKENS: "1024", TOKEN_BUDGET: "64",
+      API_KEY: "discarded-credential", KEY: "discarded-credential", AUTH: "discarded-credential", SESSION_ID: "discarded-credential",
+    });
+    fetchMock.mockRejectedValueOnce(new Error("primary offline")).mockResolvedValueOnce(response("budget answer"));
+    expect((await collect([providers[0], fallback])).text).toBe("budget answer");
+    const request = fetchMock.mock.calls[1][1];
+    expect(JSON.parse(request.body)).toMatchObject({
+      model: "budget-model", max_tokens: "512", max_output_tokens: "1024", token_budget: "64",
+    });
+    expect(request.headers.Authorization).toBe("Bearer fixture-key-b");
+  });
   it("throws after every candidate fails, even after partial text", async () => {
     fetchMock.mockRejectedValueOnce(new Error("offline a")).mockRejectedValueOnce(new Error("offline b")).mockRejectedValueOnce(new Error("offline c"));
     await expect(collect()).rejects.toThrow(/a, b, c/);

@@ -121,6 +121,7 @@ describe("R18: SubtitleFeed streaming isolation", () => {
 
     expect(screen.getByText("«Hold on, thinking...»")).toBeDefined();
     expect(screen.getByText("Заполните паузу (зачитайте вслух):")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Другой" })).toBeDisabled();
   });
   it("renders quiet stall control row while AI is processing and prominent banner when stalled", () => {
     const onWait = vi.fn();

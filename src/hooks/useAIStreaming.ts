@@ -393,7 +393,6 @@ export function useAIStreaming({
   }, [processWithAI, allAiProviders]);
 
   const stallNext = useCallback(() => {
-    setIsStalled(false);
     if (!lastRequestRef.current || allAiProviders.length === 0) return;
     const currentIndex = allAiProviders.findIndex(
       (p) => p.id === activeProviderIdRef.current
@@ -401,6 +400,8 @@ export function useAIStreaming({
     const nextIndex =
       (currentIndex >= 0 ? currentIndex + 1 : 0) % allAiProviders.length;
     const nextProvider = allAiProviders[nextIndex];
+    if (!nextProvider.id || nextProvider.id === activeProviderIdRef.current) return;
+    setIsStalled(false);
     const { transcription, prompt, previousMessages, imagesBase64, source } =
       lastRequestRef.current;
     void processWithAI(
@@ -420,7 +421,8 @@ export function useAIStreaming({
     allAiProviders.length > 0
       ? (selectedIndex >= 0 ? selectedIndex + 1 : 0) % allAiProviders.length
       : -1;
-  const stallNextId = nextIndex >= 0 ? allAiProviders[nextIndex]?.id : undefined;
+  const nextProviderId = nextIndex >= 0 ? allAiProviders[nextIndex]?.id : undefined;
+  const stallNextId = nextProviderId !== activeProviderId ? nextProviderId : undefined;
 
 
   return {
