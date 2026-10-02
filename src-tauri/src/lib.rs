@@ -79,7 +79,7 @@ pub fn run() {
             }
         }))
         .plugin(
-            tauri::plugin::Builder::new("storage")
+            tauri::plugin::Builder::<_, ()>::new("storage")
                 .setup(move |_app, _api| {
                     let path = settings::initialize_database_path()
                         .map_err(std::io::Error::other)?;
