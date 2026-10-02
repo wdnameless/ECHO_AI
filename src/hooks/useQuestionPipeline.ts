@@ -9,7 +9,7 @@
  * - Provides reset and question-assembler coordination.
  */
 import { useState, useRef, useCallback, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { warmProviderConnection } from "@/lib/host-trust-gate";
 import {
   QuestionAssembler,
   ACTIVE_ASR_MODE,
@@ -189,7 +189,7 @@ export function useQuestionPipeline({
         }
         const warmUrl = activeProviderUrlRef.current;
         if (warmUrl) {
-          void invoke("warm_llm_connection", { url: warmUrl }).catch(() => {});
+          void warmProviderConnection(warmUrl).catch(() => {});
         }
         cancelGapTimerRef.current = setUnthrottledTimeout(() => {
           cancelGapTimerRef.current = null;

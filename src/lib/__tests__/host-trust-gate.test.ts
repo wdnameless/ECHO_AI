@@ -167,6 +167,65 @@ describe("host-trust-gate", () => {
         expect(res.headers["Content-Type"]).toBe("application/json");
       });
     });
+
+    it.each([
+      ["query", "https://evil.example/collect?%61pi_key=dummy-query", null, "query:api_key"],
+      ["userinfo", "https://dummy-user:dummy-password@evil.example/collect", null, "URL password"],
+      ["JSON", untrusted, '{"options":{"apiKey":"dummy-body"}}', "body:apiKey"],
+      ["JSON array", untrusted, '[{"access_token":"dummy-array"}]', "body:access_token"],
+      ["encoded form", untrusted, "api_key=dummy-form&message=hello", "body:api_key"],
+    ])("denies %s credentials without-secrets and prompts with names only", async (_kind, url, body, name) => {
+      let prompt: unknown;
+      setHostTrustPrompt(async (request) => {
+        prompt = request;
+        return "without-secrets";
+      });
+      const result = await resolveOutboundHeaders(url!, headers, body);
+      expect(result).toEqual({ allowed: false, headers: {}, maxRedirections: 0 });
+      expect(prompt).toMatchObject({ host: "evil.example", secrets: expect.arrayContaining([name]) });
+      expect(JSON.stringify(prompt)).not.toContain("dummy-");
+      expect(isTrustedHost(untrusted)).toBe(false);
+    });
+
+    it("denies multipart credential fields without reading file/message text into the prompt", async () => {
+      const form = new FormData();
+      form.append("file", new Blob(["dummy-audio"]), "audio.wav");
+      form.append("client_secret", "dummy-form-secret");
+      form.append("prompt", "Explain api_key and access_token");
+      let names: string[] = [];
+      setHostTrustPrompt(async (request) => {
+        names = request.secrets;
+        return "without-secrets";
+      });
+      const result = await resolveOutboundHeaders(untrusted, headers, form);
+      expect(result.allowed).toBe(false);
+      expect(result.headers).toEqual({});
+      expect(names).toEqual(["Authorization", "form:client_secret"]);
+    });
+
+    it("allows benign message text and generation options while stripping header credentials", async () => {
+      setHostTrustPrompt(async () => "without-secrets");
+      const body = JSON.stringify({
+        messages: [{ content: 'Explain api_key, including {"api_key":"example"}' }],
+        max_tokens: 100,
+      });
+      const result = await resolveOutboundHeaders(`${untrusted}?q=api_key`, headers, body);
+      expect(result.allowed).toBe(true);
+      expect(result.headers).toEqual({ "Content-Type": "application/json" });
+      const text = await resolveOutboundHeaders(untrusted, headers, "Explain api_key=dummy in documentation");
+      expect(text.allowed).toBe(true);
+    });
+
+    it("allows authenticated URL and body on a trusted host without a handler", async () => {
+      const result = await resolveOutboundHeaders(
+        "https://dummy-user:dummy-password@api.openai.com/v1?api_key=dummy-query",
+        headers,
+        '{"api_key":"dummy-body"}'
+      );
+      expect(result.allowed).toBe(true);
+      expect(result.headers).toEqual(headers);
+      expect(result.maxRedirections).toBe(0);
+    });
   });
 
   /**
@@ -234,6 +293,17 @@ describe("host-trust-gate", () => {
         {}
       );
       expect(res.allowed).toBe(true);
+    });
+
+    it("denies a malformed absolute URL without prompting", async () => {
+      let prompted = false;
+      setHostTrustPrompt(async () => {
+        prompted = true;
+        return "trust";
+      });
+      const result = await resolveOutboundHeaders("https://[broken/collect", {});
+      expect(result.allowed).toBe(false);
+      expect(prompted).toBe(false);
     });
   });
 });

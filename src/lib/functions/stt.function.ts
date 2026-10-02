@@ -393,7 +393,11 @@ export async function fetchSTT(params: STTParams): Promise<string> {
     )) {
       if (typeof value === "string") outboundHeaders[name] = value;
     }
-    const trust = await resolveOutboundHeaders(url, outboundHeaders);
+    const trust = await resolveOutboundHeaders(
+      url,
+      outboundHeaders,
+      curlJson.method === "GET" || body instanceof Blob ? null : body
+    );
     if (!trust.allowed) {
       throw new Error("STT request cancelled: host is not in the trusted list.");
     }

@@ -46,18 +46,53 @@ export function listSecretHeaders(headers: Record<string, string>): string[] {
   return Object.keys(headers).filter((name) => SECRET_HEADER_PATTERN.test(name.trim()));
 }
 
+function isCredentialField(name: string): boolean {
+  const normalized = name.replace(/[^a-z0-9]/gi, "");
+  return /(?:apikey|token|secret|password|passwd|pwd|authorization|authentication|credentials?|signature)$/i.test(normalized) ||
+    /^(key|auth|sessionid)$/i.test(normalized);
+}
+
+function listPayloadSecrets(body: string | FormData | null | undefined): string[] {
+  const names = new Set<string>();
+  const inspect = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    for (const [name, child] of Object.entries(value)) {
+      if (isCredentialField(name)) names.add(`body:${name}`);
+      inspect(child);
+    }
+  };
+  if (typeof FormData !== "undefined" && body instanceof FormData) {
+    body.forEach((_value, name) => {
+      if (isCredentialField(name)) names.add(`form:${name}`);
+    });
+  } else if (typeof body === "string") {
+    try {
+      inspect(JSON.parse(body));
+    } catch {
+      // Inspect form field names, never credential words inside message text.
+      if (/^[^\s=&]+=[\s\S]*$/.test(body)) {
+        new URLSearchParams(body).forEach((_value, name) => {
+          if (isCredentialField(name)) names.add(`body:${name}`);
+        });
+      }
+    }
+  }
+  return [...names];
+}
+
 /**
  * Проверяет хост перед отправкой и возвращает заголовки, допустимые к отправке.
  *
  * - хост доверенный → заголовки без изменений;
  * - недоверенный + подтверждение → заголовки без изменений, хост запоминается;
- * - недоверенный + отказ от ключа → секретные заголовки удалены;
+ * - недоверенный + отказ от ключа → секретные заголовки удалены; URL/тело с ключом запрещены;
  * - недоверенный + отмена/нет диалога → запрос запрещён (пустой результат
  *   отличает запрет от «отправки без ключа»).
  */
 export async function resolveOutboundHeaders(
   url: string,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  body?: string | FormData | null
 ): Promise<{ allowed: boolean; headers: Record<string, string>; maxRedirections: number }> {
   // A URL that is not absolute http(s) has no host we could trust, and asking
   // about it is how a garbage entry got into the trust list: a request URL that
@@ -74,6 +109,19 @@ export async function resolveOutboundHeaders(
     return { allowed: false, headers: {}, maxRedirections: 0 };
   }
 
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { allowed: false, headers: {}, maxRedirections: 0 };
+  }
+  const payloadSecrets = listPayloadSecrets(body);
+  if (parsed.username) payloadSecrets.push("URL username");
+  if (parsed.password) payloadSecrets.push("URL password");
+  parsed.searchParams.forEach((_value, name) => {
+    if (isCredentialField(name)) payloadSecrets.push(`query:${name}`);
+  });
+
   if (isTrustedHost(url)) {
     return { allowed: true, headers, maxRedirections: 0 };
   }
@@ -83,7 +131,7 @@ export async function resolveOutboundHeaders(
     return { allowed: false, headers: {}, maxRedirections: 0 };
   }
 
-  const secrets = listSecretHeaders(headers);
+  const secrets = [...new Set([...listSecretHeaders(headers), ...payloadSecrets])];
 
   if (!promptHandler) {
     return { allowed: false, headers: {}, maxRedirections: 0 };
@@ -97,6 +145,9 @@ export async function resolveOutboundHeaders(
   }
 
   if (decision === "without-secrets") {
+    if (payloadSecrets.length > 0) {
+      return { allowed: false, headers: {}, maxRedirections: 0 };
+    }
     const sanitized: Record<string, string> = {};
     for (const [name, value] of Object.entries(headers)) {
       if (!SECRET_HEADER_PATTERN.test(name.trim())) {
@@ -177,13 +228,13 @@ export async function gatedFetch(
   init: {
     method?: string;
     headers?: Record<string, string>;
-    body?: string;
+    body?: string | FormData | null;
     signal?: AbortSignal;
   } = {},
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>
 ): Promise<Response> {
   const headers = init.headers ?? {};
-  const trust = await resolveOutboundHeaders(url, headers);
+  const trust = await resolveOutboundHeaders(url, headers, init.body);
   if (!trust.allowed) {
     throw new Error("Запрос отменён: хост не входит в список доверенных.");
   }
@@ -193,12 +244,33 @@ export async function gatedFetch(
   const doFetch =
     fetchImpl ??
     (await import("@tauri-apps/plugin-http")).fetch;
+  init.signal?.throwIfAborted();
   return doFetch(url, {
     method: init.method ?? "GET",
     headers: trust.headers,
     body: init.body,
     signal: init.signal,
+    redirect: "error",
     // Плагин читает эту опцию; браузерный fetch её игнорирует.
     maxRedirections: trust.maxRedirections,
   } as RequestInit);
+}
+
+/** Warm only the origin: provider paths, userinfo, query and body never leave. */
+export async function warmProviderConnection(
+  providerUrl: string,
+  fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>
+): Promise<void> {
+  const parsed = new URL(providerUrl);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("Provider warmup requires an HTTP(S) origin.");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1500);
+  try {
+    const response = await gatedFetch(`${parsed.origin}/`, { signal: controller.signal }, fetchImpl);
+    await response.body?.cancel();
+  } finally {
+    clearTimeout(timeout);
+  }
 }

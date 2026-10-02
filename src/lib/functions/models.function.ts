@@ -206,7 +206,7 @@ export async function fetchProviderModels(
   }
 
   // S2: ключ не уходит на хост вне реестра доверенных.
-  const trust = await resolveOutboundHeaders(modelsUrl, headers);
+  const trust = await resolveOutboundHeaders(modelsUrl, headers, null);
   if (!trust.allowed) {
     throw new Error("Запрос списка моделей отменён: хост не входит в список доверенных.");
   }

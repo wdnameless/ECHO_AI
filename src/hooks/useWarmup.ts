@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getRagContext } from "@/lib/rag/context.storage";
+import { warmProviderConnection } from "@/lib/host-trust-gate";
 
 /**
  * Pre-interview warmup: engine + model + provider + RAG before the first
@@ -10,8 +11,8 @@ import { getRagContext } from "@/lib/rag/context.storage";
  * 1. Engine: `start_handy_server` (already running = no-op, START_LOCK holds).
  * 2. Model: `stt_readiness` tells whether the selected model is on disk;
  *    the engine loads it on demand, not here.
- * 3. Provider: `warm_llm_connection` opens the TLS socket to the active
- *    provider URL (the 1.5s GET the first answer used to pay).
+ * 3. Provider: a gated, credential-free origin GET opens the TLS socket
+ *    (aborted after 1.5s).
  * 4. RAG: `getRagContext("resume"/"job")` — primes the 30s in-memory cache.
  *    The TTL is short on purpose (context can be edited); a warmup that runs
  *    minutes before the question would expire, so the prompt build re-reads
@@ -66,7 +67,7 @@ export function useWarmup({ providerUrl, modelKey }: UseWarmupOptions) {
       // Provider socket: the first answer used to pay the TLS handshake.
       let providerWarmed = false;
       if (providerUrl) {
-        await invoke("warm_llm_connection", { url: providerUrl })
+        await warmProviderConnection(providerUrl)
           .then(() => {
             providerWarmed = true;
           })

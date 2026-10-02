@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import { gatedFetch, setHostTrustPrompt, resetHostTrustPromptForTests } from "../host-trust-gate";
+import { gatedFetch, warmProviderConnection, setHostTrustPrompt, resetHostTrustPromptForTests } from "../host-trust-gate";
 import { STORAGE_KEYS } from "@/config/constants";
 import { isBuiltInServiceHost } from "../trusted-hosts";
 
@@ -89,5 +89,67 @@ describe("gatedFetch", () => {
     // The important half: this list must not become a blanket bypass.
     expect(isBuiltInServiceHost("https://evil.example/x")).toBe(false);
     expect(isBuiltInServiceHost("https://api.openai.com.evil.example/x")).toBe(false);
+  });
+
+  it.each(["query", "body", "form"])("never invokes transport for %s credentials declined without-secrets", async (kind) => {
+    setHostTrustPrompt(async () => "without-secrets");
+    const spy = vi.fn().mockResolvedValue(okResponse);
+    const form = new FormData();
+    form.append("api_key", "dummy-form");
+    const url = `https://unknown.example/v1${kind === "query" ? "?api_key=dummy-query" : ""}`;
+    const body = kind === "form" ? form : kind === "body" ? '{"api_key":"dummy-body"}' : null;
+    await expect(gatedFetch(url, { method: "POST", body }, spy)).rejects.toThrow();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("sends benign message text unchanged, without header credentials", async () => {
+    setHostTrustPrompt(async () => "without-secrets");
+    const spy = vi.fn().mockResolvedValue(okResponse);
+    const body = '{"messages":[{"content":"Explain api_key"}],"max_tokens":20}';
+    await gatedFetch("https://unknown.example/v1", {
+      method: "POST", body, headers: { Authorization: "Bearer dummy", Accept: "application/json" },
+    }, spy);
+    expect(spy).toHaveBeenCalledWith("https://unknown.example/v1", expect.objectContaining({
+      body, headers: { Accept: "application/json" }, maxRedirections: 0, redirect: "error",
+    }));
+  });
+
+  it.each(["deny", "no-handler"])("makes no warmup network request on %s", async (decision) => {
+    if (decision === "deny") setHostTrustPrompt(async () => "deny");
+    const spy = vi.fn().mockResolvedValue(okResponse);
+    await expect(warmProviderConnection("https://unknown.example/v1?api_key=dummy", spy)).rejects.toThrow();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("warms an approved credential-free origin, not the configured credential URL", async () => {
+    const prompt = vi.fn(async () => "without-secrets" as const);
+    setHostTrustPrompt(prompt);
+    const spy = vi.fn().mockResolvedValue(okResponse);
+    await warmProviderConnection("https://dummy-user:dummy-password@unknown.example:8443/v1?api_key=dummy#fragment", spy);
+    expect(prompt).toHaveBeenCalledWith({ host: "unknown.example", secrets: [] });
+    expect(spy).toHaveBeenCalledWith("https://unknown.example:8443/", expect.objectContaining({
+      method: "GET", headers: {}, body: undefined, signal: expect.any(AbortSignal),
+      maxRedirections: 0, redirect: "error",
+    }));
+  });
+
+  it("aborts warmup transport at 1500ms", async () => {
+    vi.useFakeTimers();
+    try {
+      setHostTrustPrompt(async () => "without-secrets");
+      const spy = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init!.signal!.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      }));
+      const pending = warmProviderConnection("https://unknown.example/v1", spy);
+      const rejection = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+      await vi.advanceTimersByTimeAsync(1499);
+      expect(spy).toHaveBeenCalledOnce();
+      expect(spy.mock.calls[0][1]!.signal!.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await rejection;
+      expect(spy.mock.calls[0][1]!.signal!.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
