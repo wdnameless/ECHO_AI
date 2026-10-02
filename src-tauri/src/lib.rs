@@ -46,29 +46,20 @@ fn get_app_version() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Early migration checksum patch: tauri-plugin-sql panics on startup if migration
-    // checksums in _sqlx_migrations differ (e.g. CRLF vs LF on Windows builds).
-    // Patch existing checksums to LF sha384 before the SQL plugin initializes.
-    let identifier = "com.srikanthnani.pluely";
-    if let Some(config_dir) = dirs::config_dir() {
-        let db_path = config_dir.join(identifier).join("pluely.db");
-        db::patch_migration_checksums(&db_path);
-        db::apply_pragmas(&db_path);
-    }
-    if let Some(data_dir) = dirs::data_dir() {
-        let db_path = data_dir.join(identifier).join("pluely.db");
-        db::patch_migration_checksums(&db_path);
-        db::apply_pragmas(&db_path);
-    }
+    let planned_path = settings::planned_database_path()
+        .expect("Cannot resolve storage startup path");
+    let database_url = settings::database_url(&planned_path);
+    let expected_database_url = database_url.clone();
+    let mut context = tauri::generate_context!();
+    // Finish migrations before either webview can load the DB. The plugin consumes
+    // the migration map on its first load, so renderer-only initialization races.
+    context.config_mut().plugins.0.insert(
+        "sql".into(), serde_json::json!({ "preload": [database_url.clone()] }),
+    );
 
     // Get PostHog API key
     let posthog_api_key = option_env!("POSTHOG_API_KEY").unwrap_or("").to_string();
     let builder = tauri::Builder::default()
-        .plugin(
-            tauri_plugin_sql::Builder::default()
-                .add_migrations("sqlite:pluely.db", db::migrations())
-                .build(),
-        )
         .manage(AudioState::default())
         .manage(CaptureState::default())
         .manage(shortcuts::WindowVisibility {
@@ -87,6 +78,25 @@ pub fn run() {
                 let _ = main_win.set_focus();
             }
         }))
+        .plugin(
+            tauri::plugin::Builder::new("storage")
+                .setup(move |_app, _api| {
+                    let path = settings::initialize_database_path()
+                        .map_err(std::io::Error::other)?;
+                    if settings::database_url(&path) != expected_database_url {
+                        return Err(std::io::Error::other("Storage path changed during startup").into());
+                    }
+                    db::patch_migration_checksums(&path).map_err(std::io::Error::other)?;
+                    db::apply_pragmas(&path);
+                    Ok(())
+                })
+                .build(),
+        )
+        .plugin(
+            tauri_plugin_sql::Builder::default()
+                .add_migrations(&database_url, db::migrations())
+                .build(),
+        )
         .plugin(tauri_plugin_keychain::init())
         .plugin(tauri_plugin_shell::init()) // Add shell plugin
         .plugin(posthog_init(PostHogConfig {
@@ -204,7 +214,6 @@ pub fn run() {
             api::create_system_prompt,
             api::check_license_status,
             api::get_activity,
-            api::warm_llm_connection,
             speaker::start_system_audio_capture,
             speaker::stop_system_audio_capture,
             speaker::manual_stop_continuous,
@@ -219,6 +228,7 @@ pub fn run() {
             vocab::add_correction,
             vocab::delete_correction,
             settings::commands::get_paths,
+            settings::commands::get_database_url,
             settings::commands::set_paths,
             settings::commands::pick_directory,
             settings::commands::enable_portable,
@@ -278,7 +288,7 @@ pub fn run() {
     }
 
     builder
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|_app_handle, event| {
             // Reached on every exit path (tray quit, window close, a command

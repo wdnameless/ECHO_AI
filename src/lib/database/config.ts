@@ -1,15 +1,7 @@
 import Database from "@tauri-apps/plugin-sql";
+import { getDatabaseUrl } from "../storage/app-paths";
 
-
-/**
- * Database configuration
- *
- * The chat database stays in app data even in portable mode: the SQL plugin's
- * migrations are registered per URL and its `preload` opens that same URL, so
- * pointing a portable copy at its own file would open a database with no
- * migrations applied. Moving it needs the plugin's migration registration to
- * follow the runtime path first.
- */
+/** The native startup URL also owns migration registration and stays session-stable. */
 let dbInstance: Database | null = null;
 let dbLoading: Promise<Database> | null = null;
 
@@ -22,7 +14,7 @@ let dbLoading: Promise<Database> | null = null;
 export function getDatabase(): Promise<Database> {
   if (dbInstance) return Promise.resolve(dbInstance);
   if (!dbLoading) {
-    dbLoading = Database.load("sqlite:pluely.db")
+    dbLoading = getDatabaseUrl().then((url) => Database.load(url))
       .then(async (db) => {
         // Wait for a competing writer instead of failing instantly.
         //

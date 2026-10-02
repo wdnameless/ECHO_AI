@@ -21,6 +21,8 @@ export interface ResolvedPaths {
   /** Names of the files consolidated when portable mode was switched on. */
   moved?: string[];
   writable: boolean;
+  /** A queued mode switch needs restart; these are still the current paths. */
+  restart_required?: boolean;
 }
 
 /** Capabilities reported by the model card. */
@@ -80,6 +82,9 @@ export interface ModelDownloadProgress {
 
 export const getPaths = () => invoke<ResolvedPaths>("get_paths");
 
+/** Exact session-stable URL registered with native SQL migrations. */
+export const getDatabaseUrl = () => invoke<string>("get_database_url");
+
 /**
  * Applies user-chosen directories. Empty strings clear an override rather than
  * creating a directory whose name is whitespace.
@@ -102,10 +107,10 @@ export const setPaths = (paths: {
 export const pickDirectory = (title?: string) =>
   invoke<string | null>("pick_directory", { title: title ?? null });
 
-/** Switches to a directory next to the executable and returns the new layout. */
+/** Queues portable mode. Current paths/history remain active until restart. */
 export const enablePortable = () => invoke<ResolvedPaths>("enable_portable");
 
-/** Returns to the per-user application data layout. */
+/** Queues appdata mode. Restart required; existing host history is a conflict. */
 export const disablePortable = () => invoke<ResolvedPaths>("disable_portable");
 
 export const getStartMinimized = () => invoke<boolean>("get_start_minimized");

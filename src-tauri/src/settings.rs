@@ -13,12 +13,11 @@
 //! * **app-data root** — the historical default,
 //!   `%APPDATA%/com.srikanthnani.pluely`, used when no portable root applies.
 //!
-//! The database intentionally stays in app data. Chat history is user data
-//! protected by the upgrade contract (R23/R24): relocating it silently would
-//! look like data loss on the next launch. Only engine files, models, logs and
-//! this settings file follow the chosen root.
+//! Chat history follows the portable root. Mode switches are queued until restart;
+//! the live database path and frontend URL remain stable for the whole session.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +63,15 @@ pub struct AppSettings {
     pub selected_model: Option<String>,
     /// Start with only the tray icon — no visible window.
     pub start_minimized: bool,
+    /// Snapshot is taken at next startup, after the session's final writes.
+    pub pending_database_transition: Option<DatabaseTransition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseTransition {
+    source: PathBuf,
+    target_root: PathBuf,
+    portable: bool,
 }
 
 /// Which root is in effect for this process.
@@ -92,14 +100,27 @@ pub struct ResolvedPaths {
     /// Names of files consolidated during portable mode activation.
     #[serde(default)]
     pub moved: Vec<String>,
+    /// Current layout stays active until the queued mode change is applied.
+    #[serde(default)]
+    pub restart_required: bool,
 }
 
 /// Every test that reads or writes the machine's real settings file takes this
 #[cfg(test)]
 pub(crate) static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+std::thread_local! {
+    // Per-test roots, never process-wide environment mutation or real user files.
+    static TEST_PATHS: std::cell::RefCell<Option<(PathBuf, PathBuf)>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Directory of the running executable, if it can be determined.
 fn exe_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = TEST_PATHS.with(|paths| paths.borrow().as_ref().map(|paths| paths.0.clone())) {
+        return Some(dir);
+    }
     if let Ok(override_dir) = std::env::var("ECHO_AI_EXE_DIR") {
         let trimmed = override_dir.trim();
         if !trimmed.is_empty() {
@@ -127,6 +148,9 @@ fn exe_dir() -> Option<PathBuf> {
 pub fn app_data_root() -> PathBuf {
     #[cfg(test)]
     {
+        if let Some(dir) = TEST_PATHS.with(|paths| paths.borrow().as_ref().map(|paths| paths.1.clone())) {
+            return dir;
+        }
         // One directory per test process: parallel tests in the same binary
         // share it (they are serialised by SETTINGS_LOCK anyway), separate
         // binaries never collide.
@@ -144,17 +168,25 @@ pub fn app_data_root() -> PathBuf {
     }
 }
 
+fn portable_env_root() -> Option<PathBuf> {
+    #[cfg(test)]
+    if TEST_PATHS.with(|paths| paths.borrow().is_some()) {
+        return None;
+    }
+    std::env::var(PORTABLE_ENV).ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 /// The portable root implied by the environment or a marker file, if any.
 ///
 /// A marker file next to the executable is what makes a copied folder behave
 /// portably without the user editing any settings — the same trick portable
 /// builds of other desktop apps use.
 fn implied_portable_root() -> Option<PathBuf> {
-    if let Ok(value) = std::env::var(PORTABLE_ENV) {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Some(PathBuf::from(trimmed));
-        }
+    if let Some(root) = portable_env_root() {
+        return Some(root);
     }
     let dir = exe_dir()?;
     if dir.join(PORTABLE_MARKER).is_file() || dir.join(".echo-ai").is_dir() {
@@ -267,21 +299,24 @@ pub fn is_writable(dir: &Path) -> bool {
     }
 }
 
-/// Path to the secure storage file for the given root and portable state.
+/// Existing host files. Test builds never inspect the user's actual app data.
 fn find_existing_in_app_roots(filename: &str) -> Option<PathBuf> {
-    if let Some(data_dir) = dirs::data_dir() {
-        let p = data_dir.join(APP_IDENTIFIER).join(filename);
-        if p.is_file() {
-            return Some(p);
-        }
+    #[cfg(test)]
+    {
+        let path = app_data_root().join(filename);
+        path.is_file().then_some(path)
     }
-    if let Some(config_dir) = dirs::config_dir() {
-        let p = config_dir.join(APP_IDENTIFIER).join(filename);
-        if p.is_file() {
-            return Some(p);
+    #[cfg(not(test))]
+    {
+        // The SQL plugin historically loaded app_config_dir, not app_data_dir.
+        for dir in [dirs::config_dir(), dirs::data_dir()].into_iter().flatten() {
+            let path = dir.join(APP_IDENTIFIER).join(filename);
+            if path.is_file() {
+                return Some(path);
+            }
         }
+        None
     }
-    None
 }
 
 /// Path to the secure storage file for the given root and portable state.
@@ -302,12 +337,111 @@ pub fn secrets_path_for(root: &Path, is_portable: bool) -> PathBuf {
 /// Name of the SQLite database file.
 pub const DB_FILE: &str = "pluely.db";
 
-/// The canonical SQLite database file path.
-///
-/// Resolves `pluely.db` through the canonical root so that database access
-/// across modules does not drift between `app_config_dir` and `app_data_dir` (R15).
-pub fn database_path() -> PathBuf {
+static DATABASE_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+fn host_database_path() -> PathBuf {
     find_existing_in_app_roots(DB_FILE).unwrap_or_else(|| app_data_root().join(DB_FILE))
+}
+
+fn is_portable_root(settings: &AppSettings) -> bool {
+    implied_portable_root().is_some_and(|root| active_root(settings) == root)
+}
+
+/// Native callers and every renderer share the path frozen before SQL setup.
+pub fn database_path() -> PathBuf {
+    DATABASE_PATH.get().cloned().unwrap_or_else(|| {
+        let settings = load_settings();
+        if is_portable_root(&settings) {
+            active_root(&settings).join(DB_FILE)
+        } else {
+            host_database_path()
+        }
+    })
+}
+
+pub fn database_url(path: &Path) -> String {
+    format!("sqlite:{}", path.to_string_lossy().replace('\\', "/"))
+}
+
+/// Select the plugin URL without copying data. The single-instance guard runs
+/// before storage startup, so a second launch cannot apply a live mode change.
+pub fn planned_database_path() -> Result<PathBuf, String> {
+    let settings = load_settings();
+    let path = if let Some(transition) = &settings.pending_database_transition {
+        transition.target_root.join(DB_FILE)
+    } else {
+        database_path()
+    };
+    std::path::absolute(path).map_err(|e| format!("failed to resolve database path: {e}"))
+}
+
+/// Ordinary startup keeps its destination; explicit transitions reject collisions.
+fn prepare_database_path(source: &Path, destination: &Path, explicit: bool) -> Result<(), String> {
+    if source == destination {
+        return Ok(());
+    }
+    if explicit {
+        crate::db::ensure_snapshot_destination(destination)?;
+    } else if destination.try_exists()
+        .map_err(|e| format!("cannot inspect destination database {}: {e}", destination.display()))? {
+        return Ok(());
+    }
+    match std::fs::metadata(source) {
+        Ok(metadata) if metadata.is_file() => crate::db::snapshot_database(source, destination)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !explicit => {}
+        Err(error) => return Err(format!("cannot inspect source database {}: {error}", source.display())),
+        Ok(_) => return Err(format!("source database {} is not a regular file", source.display())),
+    }
+    Ok(())
+}
+
+fn startup_database_path() -> Result<PathBuf, String> {
+    let mut settings = load_settings();
+    if let Some(transition) = settings.pending_database_transition.clone() {
+        let destination = transition.target_root.join(DB_FILE);
+        prepare_database_path(&transition.source, &destination, true)?;
+        let copied = transition.source.is_file() && transition.source != destination;
+        let commit = (|| -> Result<(), String> {
+            if transition.portable {
+                let dir = exe_dir().ok_or("не удалось определить каталог приложения")?;
+                enable_portable_mode_in(&dir)?;
+                settings = load_settings();
+            }
+            // A retained .echo-ai directory must not silently re-enable portable mode.
+            settings.data_root = Some(transition.target_root.to_string_lossy().into_owned());
+            settings.pending_database_transition = None;
+            save_settings(&settings)?;
+            Ok(())
+        })();
+        if let Err(error) = commit {
+            if copied {
+                let _ = std::fs::remove_file(&destination);
+            }
+            return Err(error);
+        }
+    }
+    let path = if is_portable_root(&settings) {
+        let destination = active_root(&settings).join(DB_FILE);
+        prepare_database_path(&host_database_path(), &destination, false)?;
+        destination
+    } else {
+        host_database_path()
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create database directory: {e}"))?;
+    }
+    std::path::absolute(path).map_err(|e| format!("failed to resolve database path: {e}"))
+}
+
+pub fn initialize_database_path() -> Result<PathBuf, String> {
+    if let Some(path) = DATABASE_PATH.get() {
+        return Ok(path.clone());
+    }
+    let path = startup_database_path()?;
+    DATABASE_PATH.set(path.clone())
+        .map_err(|_| "database path already initialized".to_string())?;
+    Ok(path)
 }
 
 /// Returns the database path, ensuring its parent directory exists.
@@ -324,7 +458,7 @@ pub fn ensure_database_path() -> Result<PathBuf, String> {
 pub fn secure_storage_path() -> PathBuf {
     let settings = load_settings();
     let root = active_root(&settings);
-    let is_portable = implied_portable_root().is_some();
+    let is_portable = is_portable_root(&settings);
     secrets_path_for(&root, is_portable)
 }
 
@@ -341,7 +475,7 @@ pub fn ensure_secure_storage_path() -> Result<PathBuf, String> {
 /// Resolves every directory the app needs, creating them on demand.
 pub fn resolve(settings: &AppSettings) -> ResolvedPaths {
     let root = active_root(settings);
-    let is_portable = implied_portable_root().is_some();
+    let is_portable = is_portable_root(settings);
     resolve_internal(root, is_portable, settings)
 }
 
@@ -397,6 +531,7 @@ pub fn resolve_internal(root: PathBuf, is_portable: bool, settings: &AppSettings
             .to_string(),
         secrets_path: sec_path.to_string_lossy().to_string(),
         moved: Vec::new(),
+        restart_required: settings.pending_database_transition.is_some(),
     }
 }
 
@@ -661,29 +796,34 @@ pub fn enable_portable_mode_in(dir: &Path) -> Result<ResolvedPaths, String> {
     Ok(resolved)
 }
 
-/// Ensures the portable layout exists next to the executable.
-pub fn enable_portable_mode() -> Result<ResolvedPaths, String> {
-    let dir = exe_dir().ok_or("не удалось определить каталог приложения")?;
-    enable_portable_mode_in(&dir)
-}
-
-/// Removes the portable marker in the given directory and clears data_root override.
-pub fn disable_portable_mode_in(dir: &Path) -> Result<(), String> {
-    let marker = dir.join(PORTABLE_MARKER);
-    if marker.is_file() {
-        std::fs::remove_file(&marker)
-            .map_err(|e| format!("не удалось удалить {}: {e}", marker.display()))?;
+/// Queue only: snapshot final committed writes at restart, never at button click.
+fn queue_database_transition(
+    settings: &mut AppSettings,
+    source: PathBuf,
+    target_root: PathBuf,
+    portable: bool,
+) -> Result<(), String> {
+    if source == target_root.join(DB_FILE) {
+        settings.pending_database_transition = None;
+    } else {
+        crate::db::ensure_snapshot_destination(&target_root.join(DB_FILE))?;
+        settings.pending_database_transition = Some(DatabaseTransition { source, target_root, portable });
     }
-    let mut settings = load_settings();
-    settings.data_root = None;
-    save_settings(&settings)?;
     Ok(())
 }
 
-/// Removes the portable marker and the settings override, returning to app data.
-pub fn disable_portable_mode() -> Result<(), String> {
+fn request_portable_mode(portable: bool) -> Result<ResolvedPaths, String> {
+    if portable_env_root().is_some() {
+        return Err("Режим задан ECHO_AI_HOME; измените переменную и перезапустите приложение".into());
+    }
     let dir = exe_dir().ok_or("не удалось определить каталог приложения")?;
-    disable_portable_mode_in(&dir)
+    let target_root = if portable { dir.join(".echo-ai") } else { app_data_root() };
+    let mut settings = load_settings();
+    // Pin the current root while a destination directory is prepared at restart.
+    settings.data_root = Some(active_root(&settings).to_string_lossy().into_owned());
+    queue_database_transition(&mut settings, database_path(), target_root, portable)?;
+    save_settings(&settings)?;
+    Ok(resolve(&settings))
 }
 
 /// Tauri commands exposing the resolved layout to the UI.
@@ -695,6 +835,12 @@ pub mod commands {
     #[tauri::command]
     pub fn get_paths() -> ResolvedPaths {
         resolved_paths()
+    }
+
+    #[tauri::command]
+    pub fn get_database_url() -> Result<String, String> {
+        DATABASE_PATH.get().map(|path| database_url(path))
+            .ok_or_else(|| "database startup path is not initialized".into())
     }
 
     /// Applies user-chosen directories and reports the resulting layout.
@@ -709,6 +855,9 @@ pub mod commands {
         logs_dir: Option<String>,
     ) -> Result<ResolvedPaths, String> {
         let mut settings = load_settings();
+        if data_root.is_some() && is_portable_root(&settings) {
+            return Err("Для смены корня портативного хранилища используйте смену режима и перезапуск".into());
+        }
         apply_path_override(&mut settings.data_root, data_root);
         apply_path_override(&mut settings.engine_dir, engine_dir);
         apply_path_override(&mut settings.models_dir, models_dir);
@@ -755,20 +904,16 @@ pub mod commands {
         })
     }
 
-    /// Switches the app into portable mode next to its executable.
+    /// Queues portable mode; the current layout remains active until restart.
     #[tauri::command]
     pub fn enable_portable() -> Result<ResolvedPaths, String> {
-        // The layout the consolidation produced, not a fresh resolution: a
-        // second resolution could name a different root (an `ECHO_AI_HOME`
-        // override outranks the marker) and hide what actually happened.
-        enable_portable_mode()
+        request_portable_mode(true)
     }
 
-    /// Returns to the default per-user layout.
+    /// Queues appdata mode; existing host history is a conflict, never overwritten.
     #[tauri::command]
     pub fn disable_portable() -> Result<ResolvedPaths, String> {
-        disable_portable_mode()?;
-        Ok(resolved_paths())
+        request_portable_mode(false)
     }
 
     /// Whether the app should start with only the tray icon visible.
@@ -786,6 +931,10 @@ pub mod commands {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "storage_regressions.rs"]
+mod storage_regressions;
 
 #[cfg(test)]
 mod tests {

@@ -99,75 +99,110 @@ pub fn migrations() -> Vec<Migration> {
     ]
 }
 
-/// Fixes migration checksums in an existing SQLite database file if it has CRLF/mismatched checksums.
-///
-/// tauri-plugin-sql and sqlx-core calculate checksum = sha384(sql.as_bytes()) without EOL normalization.
-/// If a previous build stored sha384(CRLF-bytes), running against LF-normalized migrations would trigger
-/// a VersionMismatch panic on startup.
-/// This helper inspects `_sqlx_migrations` and updates checksums to sha384(LF-bytes) before the plugin runs.
-pub fn patch_migration_checksums(db_path: &Path) {
+/// Repairs only the bundled migration's recognized CRLF checksum to its LF checksum.
+/// Unknown hashes remain untouched so SQLx still rejects schema/migration drift.
+pub fn patch_migration_checksums(db_path: &Path) -> Result<(), String> {
+    use rusqlite::OptionalExtension;
     if !db_path.exists() {
-        return;
+        return Ok(());
     }
-
-    let conn = match rusqlite::Connection::open(db_path) {
-        Ok(conn) => conn,
-        Err(e) => {
-            log::warn!("Could not open db at {:?} to check migration checksums: {e}", db_path);
-            return;
-        }
-    };
-
-    // Check if _sqlx_migrations table exists
-    let table_exists: bool = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
-            [],
-            |_| Ok(true),
-        )
-        .unwrap_or(false);
-
+    let mut conn = rusqlite::Connection::open(db_path)
+        .map_err(|e| format!("cannot inspect database checksums: {e}"))?;
+    let transaction = conn.transaction()
+        .map_err(|e| format!("cannot begin checksum repair: {e}"))?;
+    let table_exists = transaction.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+        [], |_| Ok(()),
+    ).optional().map_err(|e| format!("cannot inspect migration table: {e}"))?.is_some();
     if !table_exists {
-        return;
+        return Ok(());
     }
+    for migration in migrations() {
+        let existing: Option<Vec<u8>> = transaction.query_row(
+            "SELECT checksum FROM _sqlx_migrations WHERE version = ?1",
+            [migration.version], |row| row.get(0),
+        ).optional().map_err(|e| format!("cannot read migration checksum: {e}"))?;
+        let Some(existing) = existing else { continue };
+        let expected = compute_migration_checksum(migration.sql);
+        if existing == expected {
+            continue;
+        }
+        let crlf = Sha384::digest(migration.sql.replace('\n', "\r\n").as_bytes()).to_vec();
+        if existing != crlf {
+            return Err(format!("Migration {} checksum drift: not a bundled LF/CRLF equivalent; database unchanged", migration.version));
+        }
+        transaction.execute(
+            "UPDATE _sqlx_migrations SET checksum = ?1 WHERE version = ?2",
+            rusqlite::params![expected, migration.version],
+        ).map_err(|e| format!("cannot repair EOL checksum: {e}"))?;
+    }
+    transaction.commit().map_err(|e| format!("cannot commit EOL checksum repair: {e}"))
+}
 
-    let current_migrations = migrations();
-    for m in current_migrations {
-        let expected_checksum = compute_migration_checksum(m.sql);
+/// Never replace either a database or its journal sidecars, even during startup races.
+pub fn ensure_snapshot_destination(destination: &Path) -> Result<(), String> {
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let mut name = destination.as_os_str().to_os_string();
+        name.push(suffix);
+        let path = std::path::PathBuf::from(name);
+        if path.try_exists().map_err(|e| format!("cannot inspect {}: {e}", path.display()))? {
+            return Err(format!(
+                "Database transition conflict: {} already exists. Both histories are retained; move the destination and its sidecars to a backup before retrying.",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
 
-        let existing_checksum: Option<Vec<u8>> = conn
-            .query_row(
-                "SELECT checksum FROM _sqlx_migrations WHERE version = ?1",
-                [m.version],
-                |row| row.get(0),
-            )
-            .ok();
-
-        if let Some(existing) = existing_checksum {
-            if existing != expected_checksum {
-                match conn.execute(
-                    "UPDATE _sqlx_migrations SET checksum = ?1 WHERE version = ?2",
-                    rusqlite::params![expected_checksum, m.version],
-                ) {
-                    Ok(_) => {
-                        log::info!(
-                            "Patched migration checksum for version {} ({}) to match LF content (was {:02x?}... now {:02x?}...)",
-                            m.version,
-                            m.description,
-                            &existing[..existing.len().min(8)],
-                            &expected_checksum[..expected_checksum.len().min(8)],
-                        );
-                    }
-                    Err(e) => {
-                        log::error!(
-                            "Failed to update migration checksum for version {}: {e}",
-                            m.version
-                        );
-                    }
-                }
+/// VACUUM reads committed WAL rows. Publish the finished snapshot without clobbering
+/// a destination created by another process; the original database is never removed.
+pub fn snapshot_database(source: &Path, destination: &Path) -> Result<(), String> {
+    ensure_snapshot_destination(destination)?;
+    let parent = destination.parent().ok_or("database destination has no parent")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    let temporary = parent.join(format!(".pluely-snapshot-{}.db", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<(), String> {
+        let connection = rusqlite::Connection::open_with_flags(
+            source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ).map_err(|e| format!("cannot open source database {}: {e}", source.display()))?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| format!("cannot configure database snapshot: {e}"))?;
+        let temporary_name = temporary.to_str().ok_or("snapshot path is not valid Unicode")?;
+        connection.execute("VACUUM INTO ?1", [temporary_name])
+            .map_err(|e| format!("cannot snapshot {}: {e}", source.display()))?;
+        std::fs::OpenOptions::new().write(true).open(&temporary).and_then(|file| file.sync_all())
+            .map_err(|e| format!("cannot sync database snapshot: {e}"))?;
+        ensure_snapshot_destination(destination)?;
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            #[link(name = "kernel32")]
+            extern "system" {
+                fn MoveFileExW(source: *const u16, destination: *const u16, flags: u32) -> i32;
+            }
+            let from: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+            let to: Vec<u16> = destination.as_os_str().encode_wide().chain(Some(0)).collect();
+            // No REPLACE_EXISTING or COPY_ALLOWED: same-directory, no-clobber
+            // publication also works on FAT/exFAT portable drives.
+            const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+            // SAFETY: both paths are NUL-terminated and live throughout the call.
+            if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
+                return Err(format!("cannot publish database snapshot without overwriting {}: {}", destination.display(), std::io::Error::last_os_error()));
             }
         }
-    }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // ponytail: requires hard-link support; use native no-replace rename
+            // if portable deployment on a non-Windows FAT filesystem is needed.
+            std::fs::hard_link(&temporary, destination)
+                .map_err(|e| format!("cannot publish database snapshot without overwriting {}: {e}", destination.display()))?;
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&temporary);
+    result
 }
 
 /// Applies performance and integrity pragmas to the SQLite database.
@@ -213,86 +248,32 @@ mod tests {
     }
 
     #[test]
-    fn test_migration_4_lf_bytes_and_exact_content() {
-        let all_migrations = migrations();
-        let migration_4 = all_migrations
-            .iter()
-            .find(|m| m.version == 4)
-            .expect("Migration 4 must exist");
-
-        let raw_sql = migration_4.sql;
-
-        // Ensure line endings are LF only (\n without \r)
-        assert!(
-            !raw_sql.contains('\r'),
-            "Migration 4 SQL contains CRLF carriage return bytes. Must use LF only."
-        );
-
-        // Verify exact historical SQL content
-        let expected_sql = "-- Migration 4: Self-Evolution persistence (survives WebView storage clears)\n\nCREATE TABLE IF NOT EXISTS se_style (\n    id INTEGER PRIMARY KEY CHECK (id = 1),\n    tone TEXT NOT NULL,\n    preferred_length TEXT NOT NULL DEFAULT 'concise',\n    favorite_patterns TEXT NOT NULL DEFAULT '[]',\n    avoid_patterns TEXT NOT NULL DEFAULT '[]',\n    custom_rules TEXT NOT NULL DEFAULT '[]',\n    updated_at INTEGER NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS se_feedback_log (\n    id TEXT PRIMARY KEY,\n    question TEXT NOT NULL,\n    response TEXT NOT NULL,\n    rating TEXT NOT NULL CHECK (rating IN ('like', 'dislike')),\n    reason TEXT,\n    topic TEXT,\n    timestamp INTEGER NOT NULL\n);\n\nCREATE INDEX IF NOT EXISTS idx_se_feedback_ts ON se_feedback_log (timestamp DESC);\n\nINSERT OR IGNORE INTO se_style (id, tone, preferred_length, updated_at)\nVALUES (1, 'живой, естественный', 'concise', strftime('%s','now') * 1000);";
-
-        assert_eq!(
-            raw_sql, expected_sql,
-            "Migration 4 SQL does not match the immutable historical published migration definition."
-        );
-
-        // Verify sha384(LF-bytes of migration 4) matches the known checksum 06420b4c...
-        let checksum = compute_migration_checksum(raw_sql);
-        let hex_checksum: String = checksum.iter().map(|b| format!("{:02x}", b)).collect();
-        assert_eq!(
-            hex_checksum,
-            "06420b4c1a3e3e1459b2cf3c943313945d4510163899348e6fed15e95356678912d9e73bcd175c82a73458de7d466d75"
-        );
-    }
-
-    #[test]
-    fn test_patch_migration_checksums_with_crlf_hash() {
-        let temp_dir = std::env::temp_dir().join(format!("pluely_test_{}", uuid::Uuid::new_v4()));
+    fn storage_checksum_accepts_only_eol_equivalence() {
+        let temp_dir = std::env::temp_dir().join(format!("pluely-checksum-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("test.db");
-
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute(
-            "CREATE TABLE _sqlx_migrations (
-                version BIGINT PRIMARY KEY,
-                description TEXT NOT NULL,
-                installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                success BOOLEAN NOT NULL,
-                checksum BLOB NOT NULL,
-                execution_time BIGINT NOT NULL
-            )",
-            [],
-        )
-        .unwrap();
-
-        // Insert fake CRLF checksum for version 1
-        let fake_crlf_checksum = vec![0xAB; 48];
-        conn.execute(
-            "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (1, 'create_system_prompts_table', 1, ?1, 10)",
-            [&fake_crlf_checksum],
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE _sqlx_migrations (version INTEGER PRIMARY KEY, checksum BLOB NOT NULL)").unwrap();
+        let all = migrations();
+        let lf = compute_migration_checksum(all[0].sql);
+        let crlf = Sha384::digest(all[1].sql.replace('\n', "\r\n").as_bytes()).to_vec();
+        let drift = Sha384::digest(format!("{}\n-- changed schema", all[2].sql).as_bytes()).to_vec();
+        for (version, checksum) in [(1, &lf), (2, &crlf)] {
+            conn.execute("INSERT INTO _sqlx_migrations VALUES (?1, ?2)", rusqlite::params![version, checksum]).unwrap();
+        }
+        patch_migration_checksums(&db_path).unwrap();
+        let checksum = |version| conn.query_row("SELECT checksum FROM _sqlx_migrations WHERE version = ?1", [version], |row| row.get::<_, Vec<u8>>(0)).unwrap();
+        assert_eq!(checksum(1), lf);
+        assert_eq!(checksum(2), compute_migration_checksum(all[1].sql));
+        conn.execute("INSERT INTO _sqlx_migrations VALUES (3, ?1)", [&drift]).unwrap();
+        conn.execute("UPDATE _sqlx_migrations SET checksum=?1 WHERE version=2", [&crlf]).unwrap();
+        assert!(patch_migration_checksums(&db_path).unwrap_err().contains("checksum drift"));
+        assert_eq!(checksum(3), drift);
+        assert_eq!(checksum(2), crlf, "a later drift error must roll back all checksum repairs");
         drop(conn);
-
-        // Run patch
-        patch_migration_checksums(&db_path);
-
-        // Re-read checksum from DB
-        let conn = rusqlite::Connection::open(&db_path).unwrap();
-        let updated_checksum: Vec<u8> = conn
-            .query_row(
-                "SELECT checksum FROM _sqlx_migrations WHERE version = 1",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-
-        let expected_checksum = compute_migration_checksum(include_str!("migrations/system-prompts.sql"));
-        assert_eq!(updated_checksum, expected_checksum);
-        assert_ne!(updated_checksum, fake_crlf_checksum);
-
-        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::remove_dir_all(temp_dir).unwrap();
     }
+
 
     #[test]
     fn test_apply_pragmas() {

@@ -60,7 +60,7 @@ export async function checkForUpdateForLayout(
  * Warning shown before an update is installed from a portable copy.
  *
  * The update replaces the app files in place; `.echo-ai/` (settings, engine,
- * downloaded models) is preserved. No manual zip juggling, no fresh data dir.
+ * models and chat history) is preserved.
  */
 export const PortableUpdateNotice = () => (
   <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-3 space-y-1.5">
@@ -69,8 +69,9 @@ export const PortableUpdateNotice = () => (
     </p>
     <p className="text-xs text-muted-foreground leading-relaxed">
       Обновление заменит файлы приложения на месте. Настройки, движок и
-      скачанные модели в папке `.echo-ai` сохранятся — ничего указывать заново
-      не придётся.
+      скачанные модели и история чатов в папке `.echo-ai` сохранятся.
+      Смена режима хранения требует перезапуска: до него история записывается
+      в текущую базу; перенос выполняется при следующем запуске.
     </p>
   </div>
 );

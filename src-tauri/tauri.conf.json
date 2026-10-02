@@ -56,11 +56,6 @@
     }
   },
   "plugins": {
-    "sql": {
-      "preload": [
-        "sqlite:pluely.db"
-      ]
-    },
     "updater": {
       "endpoints": [
         "https://github.com/wdnameless/ECHO_AI/releases/latest/download/latest.json"
