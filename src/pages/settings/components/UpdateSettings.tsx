@@ -2,7 +2,12 @@ import { useState } from "react";
 import { type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Button, Header } from "@/components";
-import { PortableUpdateNotice, useIsPortable, checkForUpdateForLayout } from "@/components/updater/PortableUpdateNotice";
+import {
+  PortableUpdateNotice,
+  useIsPortable,
+  checkForUpdateForLayout,
+  installUpdateForLayout,
+} from "@/components/updater/PortableUpdateNotice";
 import { CheckCircle2Icon, DownloadIcon, Loader2Icon, RefreshCwIcon, AlertCircleIcon } from "lucide-react";
 export const UpdateSettings = () => {
   const [checking, setChecking] = useState(false);
@@ -16,7 +21,7 @@ export const UpdateSettings = () => {
     setError(null);
     setStatus(null);
     try {
-      const found = await checkForUpdateForLayout(isPortable);
+      const found = await checkForUpdateForLayout();
       if (found) {
         setUpdate(found);
         setStatus(`Доступно обновление: v${found.version}`);
@@ -24,9 +29,10 @@ export const UpdateSettings = () => {
         setUpdate(null);
         setStatus("У вас установлена актуальная версия приложения.");
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("Update check failed:", err);
-      setError(`Ошибка проверки: ${err?.message || String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      setError(`Ошибка проверки: ${message}`);
     } finally {
       setChecking(false);
     }
@@ -37,11 +43,14 @@ export const UpdateSettings = () => {
     setInstalling(true);
     setError(null);
     try {
-      await update.downloadAndInstall();
-      await relaunch();
-    } catch (err: any) {
+      const shouldRelaunch = await installUpdateForLayout(update);
+      if (shouldRelaunch) {
+        await relaunch();
+      }
+    } catch (err: unknown) {
       console.error("Install update failed:", err);
-      setError(`Ошибка установки: ${err?.message || String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      setError(`Ошибка установки: ${message}`);
       setInstalling(false);
     }
   };
