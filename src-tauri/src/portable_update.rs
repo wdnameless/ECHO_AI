@@ -423,7 +423,6 @@ pub fn run_helper_logic(
 pub fn maybe_run_helper() -> Option<i32> {
     let args: Vec<String> = std::env::args().collect();
 
-
     if !args.iter().any(|a| a == "--portable-update-helper") {
         return None;
     }

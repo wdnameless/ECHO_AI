@@ -1,9 +1,9 @@
-use std::fs::{self, File};
-use std::io::{Cursor, Read, Write};
+use std::fs;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
-use tauri::Url;
+use tauri::{Manager, Url};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
@@ -106,7 +106,17 @@ fn generate_ephemeral_signing_keys_and_sign(
     let key_file = temp_dir.join("ephemeral_test.key");
     let key_file_str = key_file.to_str().unwrap();
 
-    let gen_status = Command::new("npx")
+    let (program, base_args): (&str, &[&str]) = if cfg!(windows) {
+        ("cmd.exe", &["/C", "npx"])
+    } else {
+        ("npx", &[])
+    };
+
+    let mut gen_cmd = Command::new(program);
+    for arg in base_args {
+        gen_cmd.arg(arg);
+    }
+    gen_cmd
         .arg("tauri")
         .arg("signer")
         .arg("generate")
@@ -115,9 +125,8 @@ fn generate_ephemeral_signing_keys_and_sign(
         .arg("-w")
         .arg(key_file_str)
         .arg("-f")
-        .arg("--ci")
-        .status()
-        .expect("Failed to execute tauri signer generate");
+        .arg("--ci");
+    let gen_status = gen_cmd.status().expect("Failed to execute tauri signer generate");
     assert!(gen_status.success(), "tauri signer generate must succeed");
 
     let priv_key = fs::read_to_string(&key_file)
@@ -130,7 +139,11 @@ fn generate_ephemeral_signing_keys_and_sign(
         .trim()
         .to_string();
 
-    let sign_status = Command::new("npx")
+    let mut sign_cmd = Command::new(program);
+    for arg in base_args {
+        sign_cmd.arg(arg);
+    }
+    sign_cmd
         .arg("tauri")
         .arg("signer")
         .arg("sign")
@@ -138,9 +151,8 @@ fn generate_ephemeral_signing_keys_and_sign(
         .arg("")
         .arg("-k")
         .arg(&priv_key)
-        .arg(archive_path.to_str().unwrap())
-        .status()
-        .expect("Failed to execute tauri signer sign");
+        .arg(archive_path.to_str().unwrap());
+    let sign_status = sign_cmd.status().expect("Failed to execute tauri signer sign");
     assert!(sign_status.success(), "tauri signer sign must succeed");
 
     let sig_path = format!("{}.sig", archive_path.to_str().unwrap());
@@ -274,7 +286,6 @@ fn test_smoke_production_helper_subprocess_swap_and_relaunch() {
         .arg("--target-exe-name")
         .arg("Echo AI.exe")
         .arg("--relaunch-arg")
-
         .arg("--marker")
         .arg("--relaunch-arg")
         .arg(&relaunch_marker)
@@ -373,7 +384,6 @@ fn test_smoke_production_helper_subprocess_rollback() {
         .arg("--target-exe-name")
         .arg("Echo AI.exe")
         .arg("--rollback-arg")
-
         .arg("--marker")
         .arg("--rollback-arg")
         .arg(&rollback_marker)
@@ -509,7 +519,10 @@ async fn test_smoke_real_local_http_signed_staging_and_tampered_rejection() {
             "pubkey": pubkey_envelope
         }),
     );
-    let pos_app = tauri::test::mock_builder().build(pos_context).unwrap();
+    let pos_app = tauri::test::mock_builder()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .build(pos_context)
+        .unwrap();
 
     let pos_updater = pos_app
         .updater_builder()
@@ -523,7 +536,7 @@ async fn test_smoke_real_local_http_signed_staging_and_tampered_rejection() {
     let channel = tauri::ipc::Channel::new(|_body| Ok(()));
 
     let pos_res = verify_and_stage_portable_update(
-        &pos_app.app_handle(),
+        pos_app.handle(),
         "1.2.31",
         &channel,
         Some(pos_updater),
@@ -578,7 +591,10 @@ async fn test_smoke_real_local_http_signed_staging_and_tampered_rejection() {
             "pubkey": pubkey_envelope
         }),
     );
-    let neg_app = tauri::test::mock_builder().build(neg_context).unwrap();
+    let neg_app = tauri::test::mock_builder()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .build(neg_context)
+        .unwrap();
 
     let neg_updater = neg_app
         .updater_builder()
@@ -590,7 +606,7 @@ async fn test_smoke_real_local_http_signed_staging_and_tampered_rejection() {
         .unwrap();
 
     let neg_res = verify_and_stage_portable_update(
-        &neg_app.app_handle(),
+        neg_app.handle(),
         "1.2.31",
         &channel,
         Some(neg_updater),
