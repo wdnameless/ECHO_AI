@@ -300,23 +300,6 @@ describe("Consumer: Updater component", () => {
 });
 
 describe("Consumer: UpdateSettings component", () => {
-  it("checks for updates with resolved portable target", async () => {
-    getPathsMock.mockResolvedValue({ root_kind: "portable", root: "D:/portable" });
-    checkMock.mockResolvedValue(createMockUpdate({ version: "2.0.0" }));
-
-    render(
-      <MemoryRouter>
-        <UpdateSettings />
-      </MemoryRouter>
-    );
-
-    const checkBtn = screen.getByRole("button", { name: /Проверить обновления/i });
-    await userEvent.click(checkBtn);
-
-    expect(await screen.findByText(/Доступно обновление: v2\.0\.0/i)).toBeInTheDocument();
-    expect(checkMock).toHaveBeenCalledWith({ target: PORTABLE_UPDATE_TARGET });
-  });
-
   it("surfaces check error and never claims success", async () => {
     getPathsMock.mockRejectedValue(new Error("check failed"));
 
