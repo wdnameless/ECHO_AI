@@ -17,12 +17,67 @@ pub const HELPER_EXE_NAME: &str = "updater-helper.exe";
 
 static UPDATE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-struct UpdateLockGuard;
-impl Drop for UpdateLockGuard {
-    fn drop(&mut self) {
-        UPDATE_IN_PROGRESS.store(false, Ordering::SeqCst);
+pub struct UpdateLockGuard<'a> {
+    lock: &'a AtomicBool,
+    disarmed: bool,
+}
+
+impl<'a> UpdateLockGuard<'a> {
+    pub fn acquire(lock: &'a AtomicBool) -> Result<Self, ()> {
+        if lock
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            Ok(Self {
+                lock,
+                disarmed: false,
+            })
+        } else {
+            Err(())
+        }
+    }
+
+    /// Irreversibly retains the lock across process handoff until exit.
+    pub fn disarm(&mut self) {
+        self.disarmed = true;
     }
 }
+
+impl<'a> Drop for UpdateLockGuard<'a> {
+    fn drop(&mut self) {
+        if !self.disarmed {
+            self.lock.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn show_native_error_dialog(title: &str, message: &str) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let wide_title: Vec<u16> = std::ffi::OsStr::new(title)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let wide_msg: Vec<u16> = std::ffi::OsStr::new(message)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            PCWSTR(wide_msg.as_ptr()),
+            PCWSTR(wide_title.as_ptr()),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn show_native_error_dialog(_title: &str, _message: &str) {}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", content = "data")]
@@ -356,8 +411,21 @@ pub fn run_helper_logic(
         ));
     }
 
-    rename_with_retry(&target_exe, &backup_exe, 25, 100)
-        .map_err(|e| format!("Failed to move target executable to backup: {e}"))?;
+    if let Err(e) = rename_with_retry(&target_exe, &backup_exe, 25, 100) {
+        let mut fallback_cmd = std::process::Command::new(&target_exe);
+        fallback_cmd.current_dir(target_dir);
+        for arg in rollback_args {
+            fallback_cmd.arg(arg);
+        }
+        return match fallback_cmd.spawn() {
+            Ok(_) => Err(format!(
+                "Failed to move target executable to backup: {e}. Relaunched intact original executable."
+            )),
+            Err(spawn_err) => Err(format!(
+                "Failed to move target executable to backup: {e}. Intact original executable could not be relaunched: {spawn_err}."
+            )),
+        };
+    }
 
     if let Err(e) = fs::rename(&replacement_exe, &target_exe) {
         let restore_res = rename_with_retry(&backup_exe, &target_exe, 25, 100);
@@ -437,6 +505,7 @@ pub fn maybe_run_helper() -> Option<i32> {
     let mut target_exe_name: Option<String> = None;
     let mut relaunch_args: Vec<String> = Vec::new();
     let mut rollback_args: Vec<String> = Vec::new();
+    let mut show_update_error = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -464,6 +533,9 @@ pub fn maybe_run_helper() -> Option<i32> {
                     rollback_args.push(args[i + 1].clone());
                     i += 1;
                 }
+            }
+            "--show-update-error" => {
+                show_update_error = true;
             }
             _ => {}
         }
@@ -497,6 +569,9 @@ pub fn maybe_run_helper() -> Option<i32> {
         Ok(()) => Some(0),
         Err(e) => {
             eprintln!("[portable_update helper] Helper failed: {e}");
+            if show_update_error {
+                show_native_error_dialog("Echo AI Update Error", &format!("Portable update failed: {e}"));
+            }
             Some(2)
         }
     }
@@ -606,13 +681,8 @@ pub async fn install_portable_update<R: tauri::Runtime>(
         return Err("Current layout is not portable; portable update rejected".to_string());
     }
 
-    if UPDATE_IN_PROGRESS
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("A portable update is already in progress".to_string());
-    }
-    let _guard = UpdateLockGuard;
+    let mut guard = UpdateLockGuard::acquire(&UPDATE_IN_PROGRESS)
+        .map_err(|_| "A portable update is already in progress".to_string())?;
 
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Failed to resolve current executable path: {e}"))?;
@@ -641,11 +711,14 @@ pub async fn install_portable_update<R: tauri::Runtime>(
         .arg("--parent-pid")
         .arg(current_pid.to_string())
         .arg("--target-exe-name")
-        .arg(target_exe_name);
+        .arg(target_exe_name)
+        .arg("--show-update-error");
     cmd.current_dir(target_dir);
 
     cmd.spawn()
         .map_err(|e| format!("Failed to spawn updater helper: {e}"))?;
+
+    guard.disarm();
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -764,17 +837,27 @@ mod tests {
     }
 
     #[test]
-    fn test_single_flight_lock() {
-        assert!(!UPDATE_IN_PROGRESS.load(Ordering::SeqCst));
-        {
-            let acquired = UPDATE_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok();
-            assert!(acquired);
-            let _guard = UpdateLockGuard;
+    fn test_single_flight_lock_and_disarm_handoff() {
+        let lock = AtomicBool::new(false);
 
-            let second = UPDATE_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok();
-            assert!(!second);
+        // 1. Normal pre-handoff failure: drop resets lock
+        {
+            let guard = UpdateLockGuard::acquire(&lock).expect("First acquire succeeds");
+            assert!(lock.load(Ordering::SeqCst));
+            assert!(UpdateLockGuard::acquire(&lock).is_err(), "Concurrent acquire fails");
+            drop(guard);
         }
-        assert!(!UPDATE_IN_PROGRESS.load(Ordering::SeqCst));
+        assert!(!lock.load(Ordering::SeqCst), "Drop without disarm releases lock");
+
+        // 2. Successful handoff: disarm retains lock permanently across handoff
+        {
+            let mut guard = UpdateLockGuard::acquire(&lock).expect("Acquire succeeds after release");
+            assert!(lock.load(Ordering::SeqCst));
+            guard.disarm();
+            drop(guard);
+        }
+        assert!(lock.load(Ordering::SeqCst), "Disarmed guard retains lock after drop");
+        assert!(UpdateLockGuard::acquire(&lock).is_err(), "Acquire fails when lock was retained across handoff");
     }
 
     #[test]
@@ -878,6 +961,48 @@ mod tests {
             b"prior_backup_content",
             "Prior backup must be preserved completely untouched"
         );
+    }
+
+    #[test]
+    fn test_helper_relaunch_intact_original_on_first_rename_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let target_dir = temp.path().join("app_root");
+        fs::create_dir_all(&target_dir).unwrap();
+
+        let target_exe = target_dir.join("TargetApp.exe");
+        let original_bytes = b"MZ\x00\x00intact_target_original_binary";
+        fs::write(&target_exe, original_bytes).unwrap();
+
+        let staging = target_dir.join(STAGING_DIR_NAME);
+        fs::create_dir_all(&staging).unwrap();
+
+        let helper = staging.join("updater-helper.exe");
+        fs::write(&helper, b"MZ\x00\x00helper").unwrap();
+
+        let replacement = staging.join(REPLACEMENT_EXE_NAME);
+        fs::write(&replacement, b"MZ\x00\x00replacement").unwrap();
+
+        // Lock target_exe on Windows by opening it exclusively
+        let _file_lock = fs::OpenOptions::new().read(true).write(true).open(&target_exe);
+
+        let res = run_helper_logic(&helper, 999999, "TargetApp.exe", 1000, &[], &[]);
+        if let Err(e) = res {
+            assert!(
+                e.contains("Failed to move target executable to backup")
+                    || e.contains("Relaunched intact original executable")
+                    || e.contains("Intact original executable"),
+                "Error must indicate failure to move target to backup: {e}"
+            );
+            assert_eq!(
+                fs::read(&target_exe).unwrap(),
+                original_bytes,
+                "Target executable must remain completely intact"
+            );
+            assert!(
+                !staging.join(BACKUP_EXE_NAME).exists(),
+                "Backup executable must not exist if initial rename failed"
+            );
+        }
     }
 
     #[cfg(target_os = "windows")]
