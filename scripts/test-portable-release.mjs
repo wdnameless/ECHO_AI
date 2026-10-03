@@ -120,7 +120,7 @@ try {
   const base64MinisignEnvelope = Buffer.from(rawMinisignEnvelope, 'utf8').toString('base64');
   const validExeContent = Buffer.from('MZ...valid-portable-executable-payload...', 'utf8');
 
-  // Test 1: Valid portable release workflow
+  // Test 1: Valid portable release workflow with base64 envelope
   console.log('\n[Case 1] Valid portable release archive, minisign signature, and manifest');
   {
     const zipPath = join(tmpDir, 'Echo.AI_1.2.30_portable_x64.zip');
@@ -159,11 +159,43 @@ try {
     const patched = JSON.parse(readFileSync(manifestPath, 'utf8'));
     assert(patched.platforms['windows-x86_64'] !== undefined, 'Preserves existing installed windows-x86_64 target');
     assert(patched.platforms['windows-x86_64-portable'] !== undefined, 'Includes new windows-x86_64-portable target');
-    assert(patched.platforms['windows-x86_64-portable'].signature === base64MinisignEnvelope, 'Target signature matches .sig envelope');
+    assert(patched.platforms['windows-x86_64-portable'].signature === base64MinisignEnvelope, 'Target signature matches canonical base64 envelope');
     assert(
       patched.platforms['windows-x86_64-portable'].url === 'https://github.com/wdnameless/ECHO_AI/releases/download/v1.2.30/Echo.AI_1.2.30_portable_x64.zip',
       'Target URL matches expected release asset path'
     );
+  }
+
+  // Test 1b: Canonicalization from raw multiline minisign text in .sig file
+  console.log('\n[Case 1b] Canonicalization of raw multiline minisign signature to single-line base64');
+  {
+    const zipPath = join(tmpDir, 'Echo.AI_1.2.30_portable_x64.zip');
+    const rawSigPath = join(tmpDir, 'raw_multiline.sig');
+    const manifestPath = join(tmpDir, 'latest_canonical.json');
+
+    writeFileSync(rawSigPath, rawMinisignEnvelope + '\n');
+    const initialManifest = {
+      version: '1.2.30',
+      platforms: {
+        'windows-x86_64': {
+          signature: base64MinisignEnvelope,
+          url: 'https://example.com/app.msi',
+        },
+      },
+    };
+    writeFileSync(manifestPath, JSON.stringify(initialManifest, null, 2));
+
+    const patchRes = runCli(['patch-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', rawSigPath, 'wdnameless/ECHO_AI']);
+    assert(patchRes.status === 0, 'patch-manifest succeeds with raw multiline minisign input');
+
+    const patched = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    assert(
+      patched.platforms['windows-x86_64-portable'].signature === base64MinisignEnvelope,
+      'patch-manifest normalizes raw multiline minisign text into canonical base64 envelope'
+    );
+
+    const checkRes = runCli(['validate-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', rawSigPath, 'wdnameless/ECHO_AI']);
+    assert(checkRes.status === 0, 'validate-manifest verifies canonicalized signature matches');
   }
 
   // Test 2: Missing .portable marker
@@ -183,8 +215,8 @@ try {
     assert(res.stderr.includes('.portable'), 'Error indicates missing .portable marker');
   }
 
-  // Test 3: Signature format validation (missing, empty, non-envelope text, arbitrary base64)
-  console.log('\n[Case 3] Signature validation: missing, empty, arbitrary non-minisign text/base64');
+  // Test 3: Signature format validation (missing, empty, non-envelope text, arbitrary base64, corrupt lines)
+  console.log('\n[Case 3] Signature validation: missing, empty, arbitrary non-minisign text/base64, corrupt sig lines');
   {
     const zipPath = join(tmpDir, 'sig_test.zip');
     const zipBuffer = createZip([
@@ -216,14 +248,43 @@ try {
     const resRandomBase64 = runCli(['validate-archive', zipPath, randomBase64SigPath]);
     assert(resRandomBase64.status !== 0, 'validate-archive fails on arbitrary base64 without minisign headers');
     assert(resRandomBase64.stderr.includes('untrusted comment'), 'Error specifies signature must contain minisign headers');
+
+    // Minisign envelope with corrupt signature line syntax (not base64)
+    const corruptLineSigPath = join(tmpDir, 'corrupt_line.sig');
+    const corruptLineEnvelope = [
+      'untrusted comment: signature from tauri secret key',
+      'NOT-VALID-BASE64-SIG-DATA!@#$',
+      'trusted comment: timestamp:1727956800\tfile:test.zip',
+      'RWTnnItHPcahcqKwHCs6vhkmePoe8oVrjy36j5g2esMx5vny5LluNZqQ0123456789abcdef0123456789abcdef0123456789abcdef',
+    ].join('\n');
+    writeFileSync(corruptLineSigPath, Buffer.from(corruptLineEnvelope, 'utf8').toString('base64'));
+    const resCorruptLine = runCli(['validate-archive', zipPath, corruptLineSigPath]);
+    assert(resCorruptLine.status !== 0, 'validate-archive fails when signature line data is invalid base64');
+    assert(resCorruptLine.stderr.includes('signature data is not valid base64'), 'Error identifies invalid base64 signature syntax');
   }
 
-  // Test 4: Manifest target mismatches
-  console.log('\n[Case 4] Manifest target mismatches: URL, signature, or platform corruption');
+  // Test 4: Manifest target and version mismatches
+  console.log('\n[Case 4] Manifest target mismatches: URL, signature, version equality, platform corruption');
   {
     const manifestPath = join(tmpDir, 'mismatch_latest.json');
     const sigPath = join(tmpDir, 'mismatch.sig');
     writeFileSync(sigPath, base64MinisignEnvelope);
+
+    // Mismatched manifest version
+    const wrongVersionManifest = {
+      version: '1.2.29', // Does not match expected 1.2.30
+      platforms: {
+        'windows-x86_64': { signature: base64MinisignEnvelope, url: 'https://example.com/app.msi' },
+        'windows-x86_64-portable': {
+          signature: base64MinisignEnvelope,
+          url: 'https://github.com/wdnameless/ECHO_AI/releases/download/v1.2.30/Echo.AI_1.2.30_portable_x64.zip',
+        },
+      },
+    };
+    writeFileSync(manifestPath, JSON.stringify(wrongVersionManifest));
+    const resWrongVer = runCli(['validate-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', sigPath, 'wdnameless/ECHO_AI']);
+    assert(resWrongVer.status !== 0, 'validate-manifest fails on manifest version mismatch');
+    assert(resWrongVer.stderr.includes('Manifest version mismatch'), 'Error describes manifest version mismatch');
 
     // Mismatched signature in manifest
     const differentEnvelope = Buffer.from(rawMinisignEnvelope.replace('1.2.30', '1.2.31'), 'utf8').toString('base64');
@@ -345,7 +406,6 @@ try {
     assert(existsSync(workflowPath), 'release.yml exists');
     const workflowContent = readFileSync(workflowPath, 'utf8');
 
-    // Extract the signing step commands from release.yml
     const signStepMatch = workflowContent.match(/- name: Sign portable archive for the updater[\s\S]*?run: \|([\s\S]*?)(?:- name:|$)/);
     assert(signStepMatch !== null, 'Found Sign portable archive step in release.yml');
     const signStepBody = signStepMatch[1];

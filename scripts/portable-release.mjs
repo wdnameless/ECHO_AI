@@ -15,29 +15,55 @@ export function validateSignatureFormat(rawSignature) {
     throw new Error('Signature is empty');
   }
 
-  // Check 1: Multi-line minisign text format
-  if (trimmed.includes('untrusted comment:') && trimmed.includes('trusted comment:')) {
-    const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    if (lines.length < 4) {
-      throw new Error(`Incomplete minisign envelope: expected at least 4 lines, found ${lines.length}`);
-    }
-    return trimmed;
-  }
+  let decodedText;
+  let canonicalBase64;
 
-  // Check 2: Base64-encoded minisign envelope (standard Tauri updater single-line envelope)
+  // Check 1: Base64-encoded envelope (standard Tauri single-line format)
   const singleLine = trimmed.replace(/\r?\n/g, '');
   if (/^[A-Za-z0-9+/]+={0,2}$/.test(singleLine)) {
-    const decoded = Buffer.from(singleLine, 'base64').toString('utf8');
-    if (decoded.includes('untrusted comment:') && decoded.includes('trusted comment:')) {
-      const lines = decoded.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-      if (lines.length < 4) {
-        throw new Error(`Incomplete base64 minisign envelope: expected at least 4 decoded lines, found ${lines.length}`);
+    try {
+      const candidateText = Buffer.from(singleLine, 'base64').toString('utf8');
+      if (candidateText.includes('untrusted comment:') && candidateText.includes('trusted comment:')) {
+        decodedText = candidateText;
+        canonicalBase64 = singleLine;
       }
-      return trimmed;
+    } catch {}
+  }
+
+  // Check 2: Raw multiline minisign text format (canonicalize to base64 envelope)
+  if (!decodedText) {
+    if (trimmed.includes('untrusted comment:') && trimmed.includes('trusted comment:')) {
+      decodedText = trimmed;
+      canonicalBase64 = Buffer.from(trimmed, 'utf8').toString('base64');
     }
   }
 
-  throw new Error("Invalid signature format: expected Tauri minisign envelope containing 'untrusted comment:' and 'trusted comment:' headers");
+  if (!decodedText || !canonicalBase64) {
+    throw new Error("Invalid signature format: expected Tauri minisign envelope containing 'untrusted comment:' and 'trusted comment:' headers");
+  }
+
+  // Validate the 4-line minisign structure and base64 syntax of signature lines
+  const lines = decodedText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  if (lines.length < 4) {
+    throw new Error(`Incomplete minisign envelope: expected at least 4 lines, found ${lines.length}`);
+  }
+
+  const [untrustedHeader, sigLine1, trustedHeader, sigLine2] = lines;
+  if (!untrustedHeader.startsWith('untrusted comment:')) {
+    throw new Error("Invalid minisign envelope: line 1 must begin with 'untrusted comment:'");
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(sigLine1)) {
+    throw new Error('Invalid minisign envelope: line 2 signature data is not valid base64');
+  }
+  if (!trustedHeader.startsWith('trusted comment:')) {
+    throw new Error("Invalid minisign envelope: line 3 must begin with 'trusted comment:'");
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(sigLine2)) {
+    throw new Error('Invalid minisign envelope: line 4 global signature data is not valid base64');
+  }
+
+  // Always return the canonical single-line base64 envelope
+  return canonicalBase64;
 }
 
 export function readZipEntries(buffer) {
@@ -197,6 +223,11 @@ export function validateManifest(latestJsonPath, version, archiveName, sigPath, 
   const raw = readFileSync(latestJsonPath, 'utf8');
   const manifest = JSON.parse(raw);
 
+  const cleanVersion = version.replace(/^v/, '');
+  if (!manifest.version || manifest.version.replace(/^v/, '') !== cleanVersion) {
+    throw new Error(`Manifest version mismatch: expected '${cleanVersion}', got '${manifest.version}'`);
+  }
+
   if (!manifest.platforms || typeof manifest.platforms !== 'object') {
     throw new Error("Manifest is missing 'platforms' object");
   }
@@ -214,7 +245,6 @@ export function validateManifest(latestJsonPath, version, archiveName, sigPath, 
     throw new Error("Manifest portable target signature does not match .sig file contents");
   }
 
-  const cleanVersion = version.replace(/^v/, '');
   const cleanRepo = repoSlug.replace(/^\/+|\/+$/g, '');
   const expectedUrl = `https://github.com/${cleanRepo}/releases/download/v${cleanVersion}/${archiveName}`;
 
