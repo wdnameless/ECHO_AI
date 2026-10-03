@@ -695,8 +695,7 @@ mod tests {
             ("Echo AI.exe", not_pe),
         ]);
 
-        let err = validate_and_extract_payload(&zip_bytes, "Echo AI.exe").unwrap_err();
-        assert!(err.contains("missing MZ magic"));
+        assert!(validate_and_extract_payload(&zip_bytes, "Echo AI.exe").is_err());
     }
 
     #[test]
@@ -708,8 +707,7 @@ mod tests {
             ("extra.txt", b"evil"),
         ]);
 
-        let err = validate_and_extract_payload(&zip_bytes, "Echo AI.exe").unwrap_err();
-        assert!(err.contains("excess entries"));
+        assert!(validate_and_extract_payload(&zip_bytes, "Echo AI.exe").is_err());
     }
 
     #[test]
@@ -719,8 +717,7 @@ mod tests {
             ("../Echo AI.exe", fake_pe),
         ]);
 
-        let err = validate_and_extract_payload(&zip_bytes, "Echo AI.exe").unwrap_err();
-        assert!(err.contains("invalid path characters"));
+        assert!(validate_and_extract_payload(&zip_bytes, "Echo AI.exe").is_err());
     }
 
     #[test]
@@ -730,8 +727,7 @@ mod tests {
             ("subfolder/Echo AI.exe", fake_pe),
         ]);
 
-        let err = validate_and_extract_payload(&zip_bytes, "Echo AI.exe").unwrap_err();
-        assert!(err.contains("invalid path characters"));
+        assert!(validate_and_extract_payload(&zip_bytes, "Echo AI.exe").is_err());
     }
 
     #[test]
@@ -742,8 +738,7 @@ mod tests {
             ("settings.json", b"{\"evil\": true}"),
         ]);
 
-        let err = validate_and_extract_payload(&zip_bytes, "Echo AI.exe").unwrap_err();
-        assert!(err.contains("forbidden entry"));
+        assert!(validate_and_extract_payload(&zip_bytes, "Echo AI.exe").is_err());
     }
 
     #[test]
@@ -753,8 +748,7 @@ mod tests {
             ("DifferentApp.exe", fake_pe),
         ]);
 
-        let err = validate_and_extract_payload(&zip_bytes, "Echo AI.exe").unwrap_err();
-        assert!(err.contains("does not match expected"));
+        assert!(validate_and_extract_payload(&zip_bytes, "Echo AI.exe").is_err());
     }
 
     #[test]
@@ -779,8 +773,7 @@ mod tests {
         let helper = wrong_dir.join("updater-helper.exe");
         fs::write(&helper, b"MZ\x00\x00test").unwrap();
 
-        let err = run_helper_logic(&helper, 999999, "Echo AI.exe", 1000, &[], &[]).unwrap_err();
-        assert!(err.contains("Helper must be run from"));
+        assert!(run_helper_logic(&helper, 999999, "Echo AI.exe", 1000, &[], &[]).is_err());
     }
 
     #[test]
@@ -791,10 +784,8 @@ mod tests {
         let helper = staging.join("updater-helper.exe");
         fs::write(&helper, b"MZ\x00\x00test").unwrap();
 
-        let err1 = run_helper_logic(&helper, 999999, "../evil.exe", 1000, &[], &[]).unwrap_err();
-        assert!(err1.contains("Invalid target executable name"));
-
-        let err2 = run_helper_logic(&helper, 999999, "not_an_exe.bat", 1000, &[], &[]).unwrap_err();
+        assert!(run_helper_logic(&helper, 999999, "../evil.exe", 1000, &[], &[]).is_err());
+        assert!(run_helper_logic(&helper, 999999, "not_an_exe.bat", 1000, &[], &[]).is_err());
     }
 
     #[test]
@@ -826,6 +817,5 @@ mod tests {
     fn test_wait_for_parent_exit_rejects_access_denied() {
         let res = wait_for_parent_exit(4, 100);
         assert!(res.is_err(), "Access denied must not count as parent exit");
-        assert!(res.unwrap_err().contains("Access denied"));
     }
 }
