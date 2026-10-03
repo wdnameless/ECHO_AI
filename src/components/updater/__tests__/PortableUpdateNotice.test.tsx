@@ -91,7 +91,11 @@ afterEach(() => {
 
 describe("checkForUpdateForLayout", () => {
   it("delays check until getPaths resolves and never selects MSI/NSIS for portable", async () => {
-    const { promise: pathsPromise, resolve: resolvePaths } = Promise.withResolvers<ResolvedPaths>();
+    // Project lib is ES2020: use deferred promise executor pattern instead of Promise.withResolvers
+    let resolvePaths!: (value: ResolvedPaths) => void;
+    const pathsPromise = new Promise<ResolvedPaths>((resolve) => {
+      resolvePaths = resolve;
+    });
     getPathsMock.mockReturnValue(pathsPromise);
     checkMock.mockResolvedValue(null);
 
