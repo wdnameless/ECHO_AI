@@ -297,6 +297,27 @@ describe("Consumer: Updater component", () => {
 
     expect(relaunchMock).toHaveBeenCalledOnce();
   });
+
+  it("surfaces portable install error with visible alert and retry button without claiming success or relaunching", async () => {
+    getPathsMock.mockResolvedValue({ root_kind: "portable", root: "D:/portable" });
+    invokeMock.mockRejectedValue(new Error("invalid signature"));
+    const mockUpdate = createMockUpdate({ version: "2.0.0" });
+    checkMock.mockResolvedValue(mockUpdate);
+
+    render(<Updater />);
+
+    const trigger = await screen.findByTitle(/Update available: 2\.0\.0/);
+    await userEvent.click(trigger);
+
+    const installBtn = await screen.findByRole("button", { name: /Download & Install Update/i });
+    await userEvent.click(installBtn);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("invalid signature");
+    expect(screen.getByRole("button", { name: /Try Again/i })).toBeInTheDocument();
+    expect(screen.queryByText(/Ready - Restarting/i)).not.toBeInTheDocument();
+    expect(relaunchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("Consumer: UpdateSettings component", () => {

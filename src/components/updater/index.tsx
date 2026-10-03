@@ -46,6 +46,7 @@ interface DownloadProgress {
 export const Updater = () => {
   const [updateState, setUpdateState] = useState<UpdateState>("uptodate");
   const [update, setUpdate] = useState<Update | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [progress, setProgress] = useState<DownloadProgress>({
     downloaded: 0,
     contentLength: 0,
@@ -61,6 +62,7 @@ export const Updater = () => {
 
   const checkForUpdates = async () => {
     try {
+      setErrorMessage(null);
       setUpdateState("checking");
 
       const foundUpdate = await checkForUpdateForLayout();
@@ -70,8 +72,10 @@ export const Updater = () => {
       } else {
         setUpdateState("uptodate");
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error("Failed to check for updates:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      setErrorMessage(message);
       setUpdateState("error");
     }
   };
@@ -80,6 +84,7 @@ export const Updater = () => {
     if (!update) return;
 
     try {
+      setErrorMessage(null);
       setUpdateState("downloading");
       setProgress({ downloaded: 0, contentLength: 0, percentage: 0 });
 
@@ -122,8 +127,10 @@ export const Updater = () => {
           await relaunch();
         }, 2000);
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error("Failed to download/install update:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      setErrorMessage(message);
       setUpdateState("failed");
       // Keep the popover open so user can try again
       setIsPopoverOpen(true);
@@ -182,6 +189,7 @@ export const Updater = () => {
           </>
         );
       case "error":
+      case "failed":
         return (
           <>
             <AlertCircle className="mr-2 h-4 w-4" />
@@ -299,6 +307,15 @@ export const Updater = () => {
 
         {/* Fixed Download Section */}
         <div className="border-t border-input/50 p-4 space-y-3">
+          {errorMessage && (
+            <p
+              role="alert"
+              className="flex items-center gap-1.5 text-xs text-destructive leading-relaxed"
+            >
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              <span>{errorMessage}</span>
+            </p>
+          )}
           <Button
             onClick={getButtonOnClick()}
             disabled={getButtonDisabled()}
