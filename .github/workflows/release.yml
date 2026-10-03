@@ -48,28 +48,30 @@ jobs:
           tag="v${version}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual run: releasing $tag."
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # A tag push is an explicit act: treat it as "release this", even if a
-          # release object already exists (the build may be re-run after a fix).
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "Tag push (${{ github.ref_name }}): releasing."
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Branch push: check whether release already exists AND is published.
-          # A release that is a draft (e.g. left by a failed previous run) should be
-          # rebuildable. Only an already-published (non-draft) release skips.
+          # Check whether release already exists AND whether it is published.
+          # Existing complete published releases must NEVER be rebuilt, overwritten,
+          # or demoted to draft. Only new or incomplete draft releases are built.
           is_draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo "not_found")
           if [ "$is_draft" = "false" ]; then
-            echo "Published release $tag already exists; nothing to build."
+            echo "Published release $tag already exists and is complete; nothing to build."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
-          elif [ "$is_draft" = "true" ]; then
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual run for unreleased/draft $tag: releasing."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A tag push releases if no complete published release exists.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "Tag push (${{ github.ref_name }}) for unreleased/draft $tag: releasing."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$is_draft" = "true" ]; then
             echo "Release $tag exists as draft (incomplete previous build); rebuilding to complete release."
             echo "should_release=true" >> "$GITHUB_OUTPUT"
           else
@@ -183,11 +185,12 @@ jobs:
           # the real one missing notes. Manual runs had the same problem.
           version="${{ needs.check.outputs.version }}"
           tag="v${version}"
-          if gh release view "$tag" \
-              --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $tag already exists - ensuring draft mode during build."
-            gh release edit "$tag" \
-              --repo "$GITHUB_REPOSITORY" --draft=true || true
+          is_draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo "not_found")
+          if [ "$is_draft" = "false" ]; then
+            echo "::error::Release $tag is already published and complete. Refusing to demote to draft or overwrite."
+            exit 1
+          elif [ "$is_draft" = "true" ]; then
+            echo "Release $tag exists as draft; proceeding with build."
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
               --title "Echo AI $tag" \

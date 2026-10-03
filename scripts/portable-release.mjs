@@ -1,26 +1,43 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
-import { crc32 } from 'node:zlib';
 import { pathToFileURL } from 'node:url';
 
 const MAX_ARCHIVE_SIZE = 250 * 1024 * 1024; // 250 MB
 const MAX_EXE_SIZE = 250 * 1024 * 1024;
 const MAX_PORTABLE_MARKER_SIZE = 1024; // 1 KB
-const MIN_SIGNATURE_DECODED_BYTES = 64; // Tauri/minisign signature envelope
 
 export function validateSignatureFormat(rawSignature) {
   if (typeof rawSignature !== 'string') {
     throw new Error('Signature must be a string');
   }
-  const clean = rawSignature.trim().replace(/\r?\n/g, '');
-  if (!clean || !/^[A-Za-z0-9+/]+={0,2}$/.test(clean)) {
-    throw new Error('Signature must be a valid base64 envelope as produced by Tauri CLI signer');
+  const trimmed = rawSignature.trim();
+  if (trimmed.length === 0) {
+    throw new Error('Signature is empty');
   }
-  const decoded = Buffer.from(clean, 'base64');
-  if (decoded.length < MIN_SIGNATURE_DECODED_BYTES) {
-    throw new Error(`Signature decoded length (${decoded.length} bytes) is too short for a Tauri signature (minimum ${MIN_SIGNATURE_DECODED_BYTES} bytes)`);
+
+  // Check 1: Multi-line minisign text format
+  if (trimmed.includes('untrusted comment:') && trimmed.includes('trusted comment:')) {
+    const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (lines.length < 4) {
+      throw new Error(`Incomplete minisign envelope: expected at least 4 lines, found ${lines.length}`);
+    }
+    return trimmed;
   }
-  return clean;
+
+  // Check 2: Base64-encoded minisign envelope (standard Tauri updater single-line envelope)
+  const singleLine = trimmed.replace(/\r?\n/g, '');
+  if (/^[A-Za-z0-9+/]+={0,2}$/.test(singleLine)) {
+    const decoded = Buffer.from(singleLine, 'base64').toString('utf8');
+    if (decoded.includes('untrusted comment:') && decoded.includes('trusted comment:')) {
+      const lines = decoded.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      if (lines.length < 4) {
+        throw new Error(`Incomplete base64 minisign envelope: expected at least 4 decoded lines, found ${lines.length}`);
+      }
+      return trimmed;
+    }
+  }
+
+  throw new Error("Invalid signature format: expected Tauri minisign envelope containing 'untrusted comment:' and 'trusted comment:' headers");
 }
 
 export function readZipEntries(buffer) {
@@ -76,69 +93,6 @@ export function readZipEntries(buffer) {
   }
 
   return entries;
-}
-
-export function createZip(entries) {
-  const parts = [];
-  const cdParts = [];
-  let offset = 0;
-  for (const entry of entries) {
-    const nameBuf = Buffer.from(entry.name, 'utf8');
-    const content = Buffer.isBuffer(entry.content)
-      ? entry.content
-      : Buffer.from(entry.content || '', 'utf8');
-    const crc = crc32(content);
-
-    const lh = Buffer.alloc(30);
-    lh.writeUInt32LE(0x04034b50, 0);
-    lh.writeUInt16LE(20, 4);
-    lh.writeUInt16LE(0, 6);
-    lh.writeUInt16LE(0, 8); // Store
-    lh.writeUInt16LE(0, 10);
-    lh.writeUInt16LE(0, 12);
-    lh.writeUInt32LE(crc, 14);
-    lh.writeUInt32LE(content.length, 18);
-    lh.writeUInt32LE(content.length, 22);
-    lh.writeUInt16LE(nameBuf.length, 26);
-    lh.writeUInt16LE(0, 28);
-    parts.push(lh, nameBuf, content);
-
-    const cdh = Buffer.alloc(46);
-    cdh.writeUInt32LE(0x02014b50, 0);
-    cdh.writeUInt16LE(20, 4);
-    cdh.writeUInt16LE(20, 6);
-    cdh.writeUInt16LE(0, 8);
-    cdh.writeUInt16LE(0, 10);
-    cdh.writeUInt16LE(0, 12);
-    cdh.writeUInt16LE(0, 14);
-    cdh.writeUInt32LE(crc, 16);
-    cdh.writeUInt32LE(content.length, 20);
-    cdh.writeUInt32LE(content.length, 24);
-    cdh.writeUInt16LE(nameBuf.length, 28);
-    cdh.writeUInt16LE(0, 30);
-    cdh.writeUInt16LE(0, 32);
-    cdh.writeUInt16LE(0, 34);
-    cdh.writeUInt16LE(0, 36);
-    cdh.writeUInt32LE(0, 38);
-    cdh.writeUInt32LE(offset, 42);
-    cdParts.push(cdh, nameBuf);
-
-    offset += 30 + nameBuf.length + content.length;
-  }
-
-  const cdOffset = offset;
-  const cdBuf = Buffer.concat(cdParts);
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(0, 4);
-  eocd.writeUInt16LE(0, 6);
-  eocd.writeUInt16LE(entries.length, 8);
-  eocd.writeUInt16LE(entries.length, 10);
-  eocd.writeUInt32LE(cdBuf.length, 12);
-  eocd.writeUInt32LE(cdOffset, 16);
-  eocd.writeUInt16LE(0, 20);
-
-  return Buffer.concat([...parts, cdBuf, eocd]);
 }
 
 export function validateArchive(archivePath, sigPath, expectedExeName = 'Echo AI.exe') {
