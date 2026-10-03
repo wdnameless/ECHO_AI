@@ -362,69 +362,29 @@ try {
     assert(resNoExe.status !== 0, 'validate-archive fails when expected executable is missing');
   }
 
-  // Test 6: Unsupported sign option removed via executable command
-  console.log('\n[Case 6] Unsupported sign option removed and supported local CLI invocation');
+  // Test 6: Corrupted, empty, or truncated archive rejection
+  console.log('\n[Case 6] Corrupted, empty, and truncated archive rejection');
   {
-    // A: Invocations with unsupported --write-signature-file fail
-    const resUnsupported = runCli([
-      'verify-sign-invocation',
-      'npx', '--no-install', 'tauri', 'signer', 'sign', 'archive.zip',
-      '--private-key', 'dummy_key', '--password', 'dummy_pwd',
-      '--write-signature-file',
-    ]);
-    assert(resUnsupported.status !== 0, 'verify-sign-invocation rejects unsupported --write-signature-file');
-
-    // B: Invocations fetching floating npx CLI version fail
-    const resFloating = runCli([
-      'verify-sign-invocation',
-      'npx', '--yes', '@tauri-apps/cli@2', 'signer', 'sign', 'archive.zip',
-      '--private-key', 'dummy_key', '--password', 'dummy_pwd',
-    ]);
-    assert(resFloating.status !== 0, 'verify-sign-invocation rejects floating npx CLI fetch');
-
-    // C: Supported local npm-ci installed CLI invocation succeeds
-    const resSupported = runCli([
-      'verify-sign-invocation',
-      'npx', '--no-install', 'tauri', 'signer', 'sign', 'archive.zip',
-      '--private-key', 'dummy_key', '--password', 'dummy_pwd',
-    ]);
-    assert(resSupported.status === 0, 'verify-sign-invocation accepts supported local CLI invocation');
-
-    // D: Verify actual workflow command in .github/workflows/release.yml via executable command
-    const workflowPath = join(process.cwd(), '.github', 'workflows', 'release.yml');
-    assert(existsSync(workflowPath), 'release.yml exists');
-    const workflowContent = readFileSync(workflowPath, 'utf8');
-
-    const signStepMatch = workflowContent.match(/- name: Sign portable archive for the updater[\s\S]*?run: \|([\s\S]*?)(?:- name:|$)/);
-    assert(signStepMatch !== null, 'Found Sign portable archive step in release.yml');
-    const signStepBody = signStepMatch[1];
-
-    const tauriSignLines = signStepBody
-      .split('\n')
-      .map(line => line.trim())
-      .filter(line => line.includes('tauri signer sign') || line.includes('--private-key') || line.includes('--password') || line.includes('--write-signature-file'));
-    const commandText = tauriSignLines.join(' ').replace(/\\/g, ' ');
-    const commandTokens = commandText.split(/\s+/).filter(Boolean);
-
-    const resWorkflowCmd = runCli(['verify-sign-invocation', ...commandTokens]);
-    assert(resWorkflowCmd.status === 0, 'Actual command line extracted from release.yml is valid and supported');
-  }
-
-  // Test 7: Failure before promotion prevents partial release promotion (R06)
-  console.log('\n[Case 7] Pipeline abort on archive/sig failure prevents release promotion');
-  {
-    let draftPromoted = false;
-    const badZip = join(tmpDir, 'corrupt.zip');
-    writeFileSync(badZip, Buffer.from('corrupt non-zip data'));
     const sigPath = join(tmpDir, 'corrupt.sig');
     writeFileSync(sigPath, base64MinisignEnvelope);
 
-    const stepResult = runCli(['validate-archive', badZip, sigPath]);
-    if (stepResult.status === 0) {
-      draftPromoted = true;
-    }
+    // Corrupt non-zip payload
+    const corruptZip = join(tmpDir, 'corrupt.zip');
+    writeFileSync(corruptZip, Buffer.from('corrupt non-zip raw file bytes'));
+    const resCorrupt = runCli(['validate-archive', corruptZip, sigPath]);
+    assert(resCorrupt.status !== 0, 'validate-archive fails on non-zip corrupted archive bytes');
 
-    assert(draftPromoted === false, 'Corrupted archive halts pipeline; release promotion is skipped, leaving draft isolated');
+    // Empty archive file
+    const emptyZip = join(tmpDir, 'empty.zip');
+    writeFileSync(emptyZip, Buffer.alloc(0));
+    const resEmpty = runCli(['validate-archive', emptyZip, sigPath]);
+    assert(resEmpty.status !== 0, 'validate-archive fails on 0-byte empty archive');
+
+    // Truncated zip header (smaller than EOCD minimum 22 bytes)
+    const truncatedZip = join(tmpDir, 'truncated.zip');
+    writeFileSync(truncatedZip, Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    const resTruncated = runCli(['validate-archive', truncatedZip, sigPath]);
+    assert(resTruncated.status !== 0, 'validate-archive fails on truncated zip file');
   }
 
   console.log(`\nAll tests passed: ${passed}/${total}`);

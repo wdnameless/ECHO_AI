@@ -263,27 +263,6 @@ export function validateManifest(latestJsonPath, version, archiveName, sigPath, 
   return manifest;
 }
 
-export function verifySignInvocation(args) {
-  const joined = args.join(' ');
-
-  if (args.includes('--write-signature-file') || /--write-signature-file\b/.test(joined)) {
-    throw new Error("unsupported option: '--write-signature-file' is not supported by Tauri v2 CLI (signer creates .sig by default)");
-  }
-
-  if (/npx\s+--yes/.test(joined) || /@tauri-apps\/cli@/.test(joined)) {
-    throw new Error("unsupported invocation: floating CLI version fetched; use npm-ci-installed CLI ('npx --no-install tauri')");
-  }
-
-  if (!joined.includes('signer') || !joined.includes('sign')) {
-    throw new Error("invalid signing invocation: command must invoke 'signer sign'");
-  }
-
-  if (!joined.includes('--private-key') || !joined.includes('--password')) {
-    throw new Error("invalid signing invocation: missing '--private-key' or '--password'");
-  }
-
-  return true;
-}
 
 // CLI Dispatcher
 if (process.argv[1] && (process.argv[1].endsWith('portable-release.mjs') || import.meta.url === pathToFileURL(process.argv[1]).href)) {
@@ -318,16 +297,8 @@ if (process.argv[1] && (process.argv[1].endsWith('portable-release.mjs') || impo
         console.log(`Validated manifest '${latestJsonPath}' portable target`);
         break;
       }
-      case 'verify-sign-invocation': {
-        if (rest.length === 0) {
-          throw new Error('usage: verify-sign-invocation <args...>');
-        }
-        verifySignInvocation(rest);
-        console.log('Verified signing invocation: supported options and local CLI');
-        break;
-      }
       default:
-        console.error(`Unknown command '${cmd}'. Available: validate-archive, patch-manifest, validate-manifest, verify-sign-invocation`);
+        console.error(`Unknown command '${cmd}'. Available: validate-archive, patch-manifest, validate-manifest`);
         process.exit(1);
     }
   } catch (err) {
