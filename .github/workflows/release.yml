@@ -62,9 +62,16 @@ jobs:
             exit 0
           fi
 
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $tag already exists; nothing to build."
+          # Branch push: check whether release already exists AND is published.
+          # A release that is a draft (e.g. left by a failed previous run) should be
+          # rebuildable. Only an already-published (non-draft) release skips.
+          is_draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo "not_found")
+          if [ "$is_draft" = "false" ]; then
+            echo "Published release $tag already exists; nothing to build."
             echo "should_release=false" >> "$GITHUB_OUTPUT"
+          elif [ "$is_draft" = "true" ]; then
+            echo "Release $tag exists as draft (incomplete previous build); rebuilding to complete release."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
           else
             echo "$tag has not been released yet: building."
             echo "should_release=true" >> "$GITHUB_OUTPUT"
@@ -178,14 +185,15 @@ jobs:
           tag="v${version}"
           if gh release view "$tag" \
               --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $tag already exists - publishing if draft."
+            echo "Release $tag already exists - ensuring draft mode during build."
             gh release edit "$tag" \
-              --repo "$GITHUB_REPOSITORY" --draft=false || true
+              --repo "$GITHUB_REPOSITORY" --draft=true || true
           else
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
               --title "Echo AI $tag" \
-              --notes "Auto-generated release."
-            echo "Release $tag created with PAT."
+              --notes "Auto-generated release." \
+              --draft
+            echo "Draft release $tag created with PAT."
             # (No --verify-tag: on a branch push the git tag does not exist yet
             # and `gh release create` mints it via the API.)
           fi
@@ -199,7 +207,7 @@ jobs:
           tagName: v__VERSION__
           releaseName: "Echo AI v__VERSION__"
           releaseBody: "Auto-generated release from the latest push."
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
 
       - name: Build portable archive
@@ -234,7 +242,8 @@ jobs:
 
           $version = (Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json).version
           $archive = "Echo.AI_${version}_portable_x64.zip"
-          Compress-Archive -Path "$stage/*" -DestinationPath $archive -Force
+          $items = Get-ChildItem -Path $stage -Force | ForEach-Object { $_.FullName }
+          Compress-Archive -Path $items -DestinationPath $archive -Force
           Write-Host "Portable archive: $archive ($([math]::Round((Get-Item $archive).Length / 1MB, 1)) MB)"
 
       - name: Sign portable archive for the updater
@@ -249,13 +258,34 @@ jobs:
           # Same key the MSI/NSIS updater targets use: the updater verifies the
           # zip bytes against the signature recorded in latest.json and refuses
           # the update when they do not match (fail-closed).
-          npx --yes @tauri-apps/cli@2 signer sign "$archive" \
+          # Uses npm-ci-installed CLI and standard signer behavior (creates .sig automatically).
+          npx --no-install tauri signer sign "$archive" \
             --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
-            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
-            --write-signature-file
+            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
           echo "Signed $archive ($archive.sig)"
 
-      - name: Patch latest.json with the portable target
+      - name: Validate portable archive and signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          archive="Echo.AI_${version}_portable_x64.zip"
+          node scripts/portable-release.mjs validate-archive "$archive" "${archive}.sig" "Echo AI.exe"
+          echo "Validated $archive shape and signature."
+
+      - name: Upload portable archive to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          tag="v${version}"
+          archive="Echo.AI_${version}_portable_x64.zip"
+          gh release upload "$tag" "$archive" "${archive}.sig" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Uploaded $archive + sig to draft release $tag"
+
+      - name: Patch and validate latest.json with the portable target
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
@@ -263,30 +293,26 @@ jobs:
           set -euo pipefail
           # tauri-action writes latest.json with only the MSI/NSIS targets it
           # built. The portable zip is hand-built, so its target is patched in:
-          # download + verify the signature tauri-action just produced, then
-          # add `windows-x86_64-portable` pointing at the zip + sig.
+          # download latest.json, patch windows-x86_64-portable pointing at the
+          # uploaded zip + sig, validate manifest target and preservation of installed
+          # targets, then upload.
           version=$(node -p "require('./src-tauri/tauri.conf.json').version")
           tag="v${version}"
           archive="Echo.AI_${version}_portable_x64.zip"
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
             --pattern "latest.json" --clobber --output ./latest.json
-          sig=$(cat "$archive.sig")
-          url="https://github.com/wdnameless/ECHO_AI/releases/download/${tag}/${archive}"
-          SIG="$sig" URL="$url" node -e "
-            const fs = require('fs');
-            const j = JSON.parse(fs.readFileSync('./latest.json', 'utf8'));
-            j.platforms['windows-x86_64-portable'] = { signature: process.env.SIG, url: process.env.URL };
-            fs.writeFileSync('./latest.json', JSON.stringify(j, null, 2));
-          "
+          node scripts/portable-release.mjs patch-manifest ./latest.json "$version" "$archive" "${archive}.sig" "$GITHUB_REPOSITORY"
+          node scripts/portable-release.mjs validate-manifest ./latest.json "$version" "$archive" "${archive}.sig" "$GITHUB_REPOSITORY"
           gh release upload "$tag" ./latest.json --repo "$GITHUB_REPOSITORY" --clobber
-          echo "Patched latest.json with windows-x86_64-portable -> $url"
+          echo "Patched, validated and uploaded latest.json with windows-x86_64-portable"
 
-      - name: Upload portable archive to the release
+      - name: Publish and promote release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
         run: |
+          set -euo pipefail
           version=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          archive="Echo.AI_${version}_portable_x64.zip"
-          gh release upload "v${version}" "$archive" "$archive.sig" --repo "$GITHUB_REPOSITORY" --clobber
-          echo "Uploaded $archive + sig"
+          tag="v${version}"
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          echo "Promoted release $tag from draft to published latest."
