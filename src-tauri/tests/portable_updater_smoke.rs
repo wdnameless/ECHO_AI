@@ -3,6 +3,7 @@ use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use tauri::Url;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
@@ -43,6 +44,59 @@ fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     }
     zip.finish().unwrap();
     buf
+}
+
+fn generate_ephemeral_signing_keys_and_sign(
+    temp_dir: &Path,
+    archive_path: &Path,
+) -> (String, String) {
+    let key_file = temp_dir.join("ephemeral_test.key");
+    let key_file_str = key_file.to_str().unwrap();
+
+    let gen_status = Command::new("npx")
+        .arg("tauri")
+        .arg("signer")
+        .arg("generate")
+        .arg("-p")
+        .arg("")
+        .arg("-w")
+        .arg(key_file_str)
+        .arg("-f")
+        .arg("--ci")
+        .status()
+        .expect("Failed to execute tauri signer generate");
+    assert!(gen_status.success(), "tauri signer generate must succeed");
+
+    let priv_key = fs::read_to_string(&key_file)
+        .expect("Failed to read generated private key")
+        .trim()
+        .to_string();
+
+    let pubkey = fs::read_to_string(format!("{key_file_str}.pub"))
+        .expect("Failed to read generated public key")
+        .trim()
+        .to_string();
+
+    let sign_status = Command::new("npx")
+        .arg("tauri")
+        .arg("signer")
+        .arg("sign")
+        .arg("-p")
+        .arg("")
+        .arg("-k")
+        .arg(&priv_key)
+        .arg(archive_path.to_str().unwrap())
+        .status()
+        .expect("Failed to execute tauri signer sign");
+    assert!(sign_status.success(), "tauri signer sign must succeed");
+
+    let sig_path = format!("{}.sig", archive_path.to_str().unwrap());
+    let signature = fs::read_to_string(&sig_path)
+        .expect("Failed to read generated signature")
+        .trim()
+        .to_string();
+
+    (pubkey, signature)
 }
 
 async fn start_mock_updater_server(
@@ -343,35 +397,42 @@ fn test_smoke_production_helper_subprocess_rejects_arbitrary_target() {
 }
 
 #[tokio::test]
-async fn test_smoke_real_local_http_signature_verification_gate() {
+async fn test_smoke_real_local_http_signed_staging_and_tampered_rejection() {
     use tauri_plugin_updater::UpdaterExt;
 
-    let app = tauri::test::mock_app();
     let temp = tempfile::tempdir().unwrap();
-    let app_dir = temp.path().join("EchoAI_HttpTest");
+    let app_dir = temp.path().join("EchoAI_HttpSmoke");
     fs::create_dir_all(&app_dir).unwrap();
 
     let target_exe = app_dir.join("Echo AI.exe");
-    fs::write(&target_exe, b"MZ\x90\x00current_binary_content").unwrap();
+    compile_std_fixture_exe(&target_exe);
 
     let echo_ai_dir = app_dir.join(".echo-ai");
     fs::create_dir_all(&echo_ai_dir).unwrap();
     let settings_file = echo_ai_dir.join("settings.json");
-    fs::write(&settings_file, b"{\"safe\": true}").unwrap();
+    fs::write(&settings_file, b"{\"database\":\"preserved\"}").unwrap();
 
-    // Minisign test key vector from minisign-verify
-    let pubkey_str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
-    let sig_str = "untrusted comment: signature from minisign secret key\n\
-RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\n\
-trusted comment: timestamp:1556193335\tfile:test\n\
-y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==";
+    // 1. Build valid fixture ZIP archive in OS temp
+    let archive_path = temp.path().join("update_payload.zip");
+    let replacement_bin_path = temp.path().join("replacement_fixture.exe");
+    compile_std_fixture_exe(&replacement_bin_path);
+    let replacement_bytes = fs::read(&replacement_bin_path).unwrap();
 
-    // Start local HTTP server serving TAMPERED archive bytes
-    let tampered_payload = b"tampered_archive_bytes_fail_signature".to_vec();
-    let manifest = format!(
+    let valid_zip_bytes = build_test_zip(&[
+        ("Echo AI.exe", &replacement_bytes),
+        (".portable", b"marker"),
+    ]);
+    fs::write(&archive_path, &valid_zip_bytes).unwrap();
+
+    // 2. Generate ephemeral key pair and sign the archive via tauri signer CLI (no human keys)
+    let (pubkey_envelope, valid_sig_envelope) =
+        generate_ephemeral_signing_keys_and_sign(temp.path(), &archive_path);
+
+    // 3. Positive signed test: Valid signature and valid archive must download, verify, and stage!
+    let valid_manifest = format!(
         r#"{{
             "version": "1.2.31",
-            "notes": "Security test update",
+            "notes": "Verified update",
             "pub_date": "2026-10-03T00:00:00Z",
             "platforms": {{
                 "windows-x86_64-portable": {{
@@ -380,52 +441,124 @@ y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+b
                 }}
             }}
         }}"#,
-        sig_str.replace('\n', "\\n")
+        valid_sig_envelope
     );
 
-    let (server_base, shutdown_tx) = start_mock_updater_server(manifest, tampered_payload).await;
-    let manifest_url = format!("{server_base}/manifest");
+    let (pos_server_base, pos_shutdown) =
+        start_mock_updater_server(valid_manifest, valid_zip_bytes.clone()).await;
 
-    let updater = app
+    let mut pos_context = tauri::test::mock_context(tauri::test::noop_assets());
+    pos_context.config_mut().plugins.0.insert(
+        "updater".to_string(),
+        serde_json::json!({
+            "dangerousInsecureTransportProtocol": true,
+            "endpoints": [format!("{pos_server_base}/manifest")],
+            "pubkey": pubkey_envelope
+        }),
+    );
+    let pos_app = tauri::test::mock_builder().build(pos_context).unwrap();
+
+    let pos_updater = pos_app
         .updater_builder()
         .target("windows-x86_64-portable")
-        .endpoints(vec![url::Url::parse(&manifest_url).unwrap()])
+        .endpoints(vec![Url::parse(&format!("{pos_server_base}/manifest")).unwrap()])
         .unwrap()
-        .pubkey(pubkey_str)
+        .pubkey(&pubkey_envelope)
         .build()
         .unwrap();
 
     let channel = tauri::ipc::Channel::new(|_body| Ok(()));
 
-    // Call verify_and_stage_portable_update: must download via Tauri Update.download and verify signature
-    let res = verify_and_stage_portable_update(
-        &app.app_handle(),
+    let pos_res = verify_and_stage_portable_update(
+        &pos_app.app_handle(),
         "1.2.31",
         &channel,
-        Some(updater),
+        Some(pos_updater),
         &target_exe,
         &app_dir,
         "Echo AI.exe",
     )
     .await;
 
-    // Signature verification must FAIL before any staging occurs!
-    assert!(res.is_err(), "Tampered payload must fail signature verification");
-    let err_msg = res.unwrap_err();
+    assert!(pos_res.is_ok(), "Positive signed update staging must succeed: {:?}", pos_res.err());
+    let (staging_dir, helper_path) = pos_res.unwrap();
+    assert!(staging_dir.join(REPLACEMENT_EXE_NAME).is_file(), "replacement.exe must be staged");
+    assert!(helper_path.is_file(), "updater-helper.exe must be staged");
+    assert_eq!(fs::read(&settings_file).unwrap(), b"{\"database\":\"preserved\"}");
+
+    let _ = pos_shutdown.send(());
+
+    // Clean staging for negative test
+    let _ = fs::remove_file(staging_dir.join(REPLACEMENT_EXE_NAME));
+    let _ = fs::remove_file(&helper_path);
+    let _ = fs::remove_dir(&staging_dir);
+
+    // 4. Negative test: Tampered archive bytes must fail signature check and leave staging empty!
+    let mut tampered_zip_bytes = valid_zip_bytes.clone();
+    let last_idx = tampered_zip_bytes.len() - 1;
+    tampered_zip_bytes[last_idx] ^= 0xFF; // Flip last byte to invalidate minisign signature
+
+    let tampered_manifest = format!(
+        r#"{{
+            "version": "1.2.31",
+            "notes": "Tampered update",
+            "pub_date": "2026-10-03T00:00:00Z",
+            "platforms": {{
+                "windows-x86_64-portable": {{
+                    "signature": "{}",
+                    "url": "ENDPOINT_URL/download"
+                }}
+            }}
+        }}"#,
+        valid_sig_envelope
+    );
+
+    let (neg_server_base, neg_shutdown) =
+        start_mock_updater_server(tampered_manifest, tampered_zip_bytes).await;
+
+    let mut neg_context = tauri::test::mock_context(tauri::test::noop_assets());
+    neg_context.config_mut().plugins.0.insert(
+        "updater".to_string(),
+        serde_json::json!({
+            "dangerousInsecureTransportProtocol": true,
+            "endpoints": [format!("{neg_server_base}/manifest")],
+            "pubkey": pubkey_envelope
+        }),
+    );
+    let neg_app = tauri::test::mock_builder().build(neg_context).unwrap();
+
+    let neg_updater = neg_app
+        .updater_builder()
+        .target("windows-x86_64-portable")
+        .endpoints(vec![Url::parse(&format!("{neg_server_base}/manifest")).unwrap()])
+        .unwrap()
+        .pubkey(&pubkey_envelope)
+        .build()
+        .unwrap();
+
+    let neg_res = verify_and_stage_portable_update(
+        &neg_app.app_handle(),
+        "1.2.31",
+        &channel,
+        Some(neg_updater),
+        &target_exe,
+        &app_dir,
+        "Echo AI.exe",
+    )
+    .await;
+
+    assert!(neg_res.is_err(), "Tampered payload must fail signature verification in Update.download");
+    let err_msg = neg_res.unwrap_err();
     assert!(
         err_msg.contains("signature") || err_msg.contains("download"),
         "Error message should mention signature or download failure: {err_msg}"
     );
 
-    // Staging directory must NOT have been created!
-    let staging_dir = app_dir.join(STAGING_DIR_NAME);
-    assert!(!staging_dir.exists(), "Staging directory must not be created on signature failure");
+    // Staging directory must NOT exist after signature failure
+    assert!(!staging_dir.exists(), "Staging directory must NOT be created on signature failure");
+    assert_eq!(fs::read(&settings_file).unwrap(), b"{\"database\":\"preserved\"}");
 
-    // Target executable and data must be completely untouched
-    assert_eq!(fs::read(&target_exe).unwrap(), b"MZ\x90\x00current_binary_content");
-    assert_eq!(fs::read(&settings_file).unwrap(), b"{\"safe\": true}");
-
-    let _ = shutdown_tx.send(());
+    let _ = neg_shutdown.send(());
 }
 
 #[test]
