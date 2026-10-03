@@ -8,7 +8,7 @@ use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use pluely_lib::portable_update::{
-    clean_staging_dir, validate_and_extract_payload, verify_and_stage_portable_update,
+    validate_and_extract_payload, verify_and_stage_portable_update,
     DownloadEvent, BACKUP_EXE_NAME, HELPER_EXE_NAME, REPLACEMENT_EXE_NAME, STAGING_DIR_NAME,
 };
 
@@ -30,7 +30,60 @@ fn find_production_binary() -> PathBuf {
             return p;
         }
     }
-    std::env::current_exe().unwrap()
+    panic!("Production binary 'pluely.exe' was not found. Please build the application before running integration smoke.");
+}
+
+fn compile_std_fixture_exe(dest: &Path) {
+    let temp = tempfile::tempdir().unwrap();
+    let src = temp.path().join("fixture.rs");
+    let code = r#"
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let mut i = 1;
+    let mut marker_path: Option<String> = None;
+    let mut marker_text = "MARKER".to_string();
+    let mut sleep_ms = 0u64;
+
+    while i < args.len() {
+        match args[i].as_str() {
+            "--marker" if i + 1 < args.len() => {
+                marker_path = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--text" if i + 1 < args.len() => {
+                marker_text = args[i + 1].clone();
+                i += 1;
+            }
+            "--sleep-ms" if i + 1 < args.len() => {
+                if let Ok(ms) = args[i + 1].parse() {
+                    sleep_ms = ms;
+                }
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if let Some(p) = &marker_path {
+        let _ = std::fs::write(p, b"RUNNING");
+    }
+    if sleep_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+    }
+    if let Some(p) = &marker_path {
+        let _ = std::fs::write(p, marker_text.as_bytes());
+    }
+}
+"#;
+    std::fs::write(&src, code).unwrap();
+    let status = Command::new("rustc")
+        .arg(&src)
+        .arg("-o")
+        .arg(dest)
+        .status()
+        .expect("Failed to execute rustc to compile fixture executable");
+    assert!(status.success(), "rustc compilation of fixture executable failed");
 }
 
 fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -154,9 +207,9 @@ fn test_smoke_production_helper_subprocess_swap_and_relaunch() {
 
     let prod_bin = find_production_binary();
 
-    // 1. Target executable Echo AI.exe
+    // 1. Compile standalone fixture parent executable
     let target_exe = app_dir.join("Echo AI.exe");
-    fs::copy(&prod_bin, &target_exe).unwrap();
+    compile_std_fixture_exe(&target_exe);
 
     // 2. User data in .echo-ai and portable marker
     let marker_file = app_dir.join(".portable");
@@ -176,7 +229,7 @@ fn test_smoke_production_helper_subprocess_swap_and_relaunch() {
     fs::write(&history_db, initial_db).unwrap();
     fs::write(&model_file, initial_model).unwrap();
 
-    // 3. Staging setup with helper and replacement
+    // 3. Staging setup with helper (built pluely.exe) and replacement (fixture executable)
     let staging_dir = app_dir.join(STAGING_DIR_NAME);
     fs::create_dir_all(&staging_dir).unwrap();
 
@@ -184,17 +237,18 @@ fn test_smoke_production_helper_subprocess_swap_and_relaunch() {
     fs::copy(&prod_bin, &helper_exe).unwrap();
 
     let replacement_exe = staging_dir.join(REPLACEMENT_EXE_NAME);
-    fs::copy(&prod_bin, &replacement_exe).unwrap();
+    compile_std_fixture_exe(&replacement_exe);
 
-    // 4. Start fixture parent subprocess using production binary flag
+    // 4. Start fixture parent subprocess
     let parent_marker = temp.path().join("parent_status.txt");
     let mut parent_cmd = Command::new(&target_exe);
     parent_cmd
-        .arg("--portable-fixture-parent")
         .arg("--marker")
         .arg(&parent_marker)
         .arg("--sleep-ms")
         .arg("700")
+        .arg("--text")
+        .arg("PARENT_EXITED")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
@@ -204,7 +258,7 @@ fn test_smoke_production_helper_subprocess_swap_and_relaunch() {
     // Confirm parent is active
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(2) {
-        if parent_marker.exists() && fs::read(&parent_marker).unwrap_or_default() == b"PARENT_RUNNING" {
+        if parent_marker.exists() && fs::read(&parent_marker).unwrap_or_default() == b"RUNNING" {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -220,8 +274,7 @@ fn test_smoke_production_helper_subprocess_swap_and_relaunch() {
         .arg("--target-exe-name")
         .arg("Echo AI.exe")
         .arg("--relaunch-arg")
-        .arg("--portable-fixture-marker")
-        .arg("--relaunch-arg")
+
         .arg("--marker")
         .arg("--relaunch-arg")
         .arg(&relaunch_marker)
@@ -289,9 +342,10 @@ fn test_smoke_production_helper_subprocess_rollback() {
 
     let prod_bin = find_production_binary();
 
+    // 1. Compile standalone fixture parent executable
     let target_exe = app_dir.join("Echo AI.exe");
-    let original_bytes = fs::read(&prod_bin).unwrap();
-    fs::write(&target_exe, &original_bytes).unwrap();
+    compile_std_fixture_exe(&target_exe);
+    let original_bytes = fs::read(&target_exe).unwrap();
 
     let echo_ai_dir = app_dir.join(".echo-ai");
     fs::create_dir_all(&echo_ai_dir).unwrap();
@@ -319,8 +373,7 @@ fn test_smoke_production_helper_subprocess_rollback() {
         .arg("--target-exe-name")
         .arg("Echo AI.exe")
         .arg("--rollback-arg")
-        .arg("--portable-fixture-marker")
-        .arg("--rollback-arg")
+
         .arg("--marker")
         .arg("--rollback-arg")
         .arg(&rollback_marker)

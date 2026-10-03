@@ -423,53 +423,6 @@ pub fn run_helper_logic(
 pub fn maybe_run_helper() -> Option<i32> {
     let args: Vec<String> = std::env::args().collect();
 
-    // Fixture parent mode for subprocess integration testing
-    if args.iter().any(|a| a == "--portable-fixture-parent") {
-        let mut marker_path: Option<String> = None;
-        let mut sleep_ms = 600u64;
-        let mut i = 1;
-        while i < args.len() {
-            if args[i] == "--marker" && i + 1 < args.len() {
-                marker_path = Some(args[i + 1].clone());
-                i += 1;
-            } else if args[i] == "--sleep-ms" && i + 1 < args.len() {
-                if let Ok(ms) = args[i + 1].parse() {
-                    sleep_ms = ms;
-                }
-                i += 1;
-            }
-            i += 1;
-        }
-        if let Some(p) = &marker_path {
-            let _ = fs::write(p, b"PARENT_RUNNING");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
-        if let Some(p) = &marker_path {
-            let _ = fs::write(p, b"PARENT_EXITED");
-        }
-        return Some(0);
-    }
-
-    // Fixture marker write mode for verifying relaunch
-    if args.iter().any(|a| a == "--portable-fixture-marker") {
-        let mut marker_path: Option<String> = None;
-        let mut marker_text = "MARKER".to_string();
-        let mut i = 1;
-        while i < args.len() {
-            if args[i] == "--marker" && i + 1 < args.len() {
-                marker_path = Some(args[i + 1].clone());
-                i += 1;
-            } else if args[i] == "--text" && i + 1 < args.len() {
-                marker_text = args[i + 1].clone();
-                i += 1;
-            }
-            i += 1;
-        }
-        if let Some(p) = &marker_path {
-            let _ = fs::write(p, marker_text.as_bytes());
-        }
-        return Some(0);
-    }
 
     if !args.iter().any(|a| a == "--portable-update-helper") {
         return None;
