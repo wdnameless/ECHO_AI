@@ -137,12 +137,26 @@ pub fn clean_staging_dir(staging_dir: &Path) {
         return;
     }
 
+    // 1. Attempt removal of owned HELPER_EXE_NAME FIRST.
+    // If removal fails (e.g. sharing violation because active helper process holds the executable
+    // image or handle without delete sharing), fail closed and return without touching
+    // replacement or other staging payloads!
+    let helper_path = staging_dir.join(HELPER_EXE_NAME);
+    if helper_path.exists() || helper_path.symlink_metadata().is_ok() {
+        if let Err(e) = fs::remove_file(&helper_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return;
+            }
+        }
+    }
+
+    // 2. Only clean inactive known artifacts, always retain backup.
     if let Ok(entries) = fs::read_dir(staging_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 // NEVER delete backup.exe in generic cleanup! It is an unresolved backup/lifeboat.
-                if name == REPLACEMENT_EXE_NAME || name == HELPER_EXE_NAME || name == "failed_replacement.exe" {
+                if name == REPLACEMENT_EXE_NAME || name == "failed_replacement.exe" {
                     let _ = fs::remove_file(&path);
                 }
             }
@@ -963,6 +977,50 @@ mod tests {
             b"prior_backup_content",
             "Prior backup must be preserved completely untouched"
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_clean_staging_dir_fails_closed_when_helper_is_active() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let staging = temp.path().join(STAGING_DIR_NAME);
+        fs::create_dir_all(&staging).unwrap();
+
+        let helper_file = staging.join(HELPER_EXE_NAME);
+        let helper_bytes = b"MZ\x00\x00helper_running_binary";
+        fs::write(&helper_file, helper_bytes).unwrap();
+
+        let replacement_file = staging.join(REPLACEMENT_EXE_NAME);
+        let replacement_bytes = b"MZ\x00\x00replacement_pending_binary";
+        fs::write(&replacement_file, replacement_bytes).unwrap();
+
+        let backup_file = staging.join(BACKUP_EXE_NAME);
+        let backup_bytes = b"MZ\x00\x00backup_lifeboat_binary";
+        fs::write(&backup_file, backup_bytes).unwrap();
+
+        // Hold helper file read-only with share READ|WRITE but NO DELETE
+        const FILE_SHARE_READ: u32 = 0x00000001;
+        const FILE_SHARE_WRITE: u32 = 0x00000002;
+        let mut opts = fs::OpenOptions::new();
+        opts.read(true);
+        opts.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        let _helper_lock = opts.open(&helper_file).expect("Open helper with share READ|WRITE must succeed");
+
+        clean_staging_dir(&staging);
+
+        // Assert helper, replacement, and backup bytes remain untouched!
+        assert!(helper_file.exists());
+        assert_eq!(fs::read(&helper_file).unwrap(), helper_bytes);
+
+        assert!(replacement_file.exists(), "replacement.exe must NOT be removed when helper is active");
+        assert_eq!(fs::read(&replacement_file).unwrap(), replacement_bytes);
+
+        assert!(backup_file.exists(), "backup.exe must NOT be removed");
+        assert_eq!(fs::read(&backup_file).unwrap(), backup_bytes);
+
+        assert!(staging.exists());
     }
 
 

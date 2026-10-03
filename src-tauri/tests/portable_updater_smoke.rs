@@ -307,7 +307,7 @@ fn test_smoke_production_helper_subprocess_swap_and_relaunch() {
     // Wait for relaunched replacement marker
     let relaunch_start = Instant::now();
     while relaunch_start.elapsed() < Duration::from_secs(3) {
-        if relaunch_marker.exists() {
+        if fs::read(&relaunch_marker).map(|b| b == b"REPLACEMENT_ACTIVE").unwrap_or(false) {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -407,7 +407,7 @@ fn test_smoke_production_helper_subprocess_rollback() {
     // Wait for relaunched original marker
     let rollback_start = Instant::now();
     while rollback_start.elapsed() < Duration::from_secs(3) {
-        if rollback_marker.exists() {
+        if fs::read(&rollback_marker).map(|b| b == b"ORIGINAL_ACTIVE").unwrap_or(false) {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -494,7 +494,7 @@ fn test_smoke_production_helper_subprocess_relaunch_intact_original_on_first_ren
     // 6. Wait for and assert intact-original marker
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(3) {
-        if intact_marker.exists() {
+        if fs::read(&intact_marker).map(|b| b == b"INTACT_ORIGINAL_ACTIVE").unwrap_or(false) {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
