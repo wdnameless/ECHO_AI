@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+
+interface MockChannelInstance<T = unknown> {
+  onmessage?: (response: T) => void;
+}
 
 const { getPathsMock, checkMock, relaunchMock, invokeMock, MockChannel } = vi.hoisted(() => {
   class MockChannel<T = unknown> {
@@ -169,7 +174,7 @@ describe("installUpdateForLayout", () => {
     expect(mockUpdate.downloadAndInstall).not.toHaveBeenCalled();
 
     // Verify progress forwarding through Channel
-    const channelPassed = invokeMock.mock.calls[0][1].onEvent as MockChannel<DownloadEvent>;
+    const channelPassed = invokeMock.mock.calls[0][1].onEvent as MockChannelInstance<DownloadEvent>;
     channelPassed.onmessage?.({ event: "Started", data: { contentLength: 5000 } });
     channelPassed.onmessage?.({ event: "Progress", data: { chunkLength: 2500 } });
     channelPassed.onmessage?.({ event: "Finished" });
@@ -299,7 +304,11 @@ describe("Consumer: UpdateSettings component", () => {
     getPathsMock.mockResolvedValue({ root_kind: "portable", root: "D:/portable" });
     checkMock.mockResolvedValue(createMockUpdate({ version: "2.0.0" }));
 
-    render(<UpdateSettings />);
+    render(
+      <MemoryRouter>
+        <UpdateSettings />
+      </MemoryRouter>
+    );
 
     const checkBtn = screen.getByRole("button", { name: /Проверить обновления/i });
     await userEvent.click(checkBtn);
@@ -311,7 +320,11 @@ describe("Consumer: UpdateSettings component", () => {
   it("surfaces check error and never claims success", async () => {
     getPathsMock.mockRejectedValue(new Error("check failed"));
 
-    render(<UpdateSettings />);
+    render(
+      <MemoryRouter>
+        <UpdateSettings />
+      </MemoryRouter>
+    );
 
     const checkBtn = screen.getByRole("button", { name: /Проверить обновления/i });
     await userEvent.click(checkBtn);
@@ -325,7 +338,11 @@ describe("Consumer: UpdateSettings component", () => {
     invokeMock.mockResolvedValue(undefined);
     checkMock.mockResolvedValue(createMockUpdate({ version: "2.0.0" }));
 
-    render(<UpdateSettings />);
+    render(
+      <MemoryRouter>
+        <UpdateSettings />
+      </MemoryRouter>
+    );
 
     const checkBtn = screen.getByRole("button", { name: /Проверить обновления/i });
     await userEvent.click(checkBtn);
@@ -343,7 +360,11 @@ describe("Consumer: UpdateSettings component", () => {
     const mockUpdate = createMockUpdate({ version: "2.0.0" });
     checkMock.mockResolvedValue(mockUpdate);
 
-    render(<UpdateSettings />);
+    render(
+      <MemoryRouter>
+        <UpdateSettings />
+      </MemoryRouter>
+    );
 
     const checkBtn = screen.getByRole("button", { name: /Проверить обновления/i });
     await userEvent.click(checkBtn);
@@ -360,7 +381,11 @@ describe("Consumer: UpdateSettings component", () => {
     invokeMock.mockRejectedValue(new Error("hash mismatch"));
     checkMock.mockResolvedValue(createMockUpdate({ version: "2.0.0" }));
 
-    render(<UpdateSettings />);
+    render(
+      <MemoryRouter>
+        <UpdateSettings />
+      </MemoryRouter>
+    );
 
     const checkBtn = screen.getByRole("button", { name: /Проверить обновления/i });
     await userEvent.click(checkBtn);
