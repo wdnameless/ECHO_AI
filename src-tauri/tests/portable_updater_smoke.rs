@@ -125,14 +125,11 @@ fn generate_ephemeral_signing_keys_and_sign(
         .arg("-w")
         .arg(key_file_str)
         .arg("-f")
-        .arg("--ci");
+        .arg("--ci")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     let gen_status = gen_cmd.status().expect("Failed to execute tauri signer generate");
     assert!(gen_status.success(), "tauri signer generate must succeed");
-
-    let priv_key = fs::read_to_string(&key_file)
-        .expect("Failed to read generated private key")
-        .trim()
-        .to_string();
 
     let pubkey = fs::read_to_string(format!("{key_file_str}.pub"))
         .expect("Failed to read generated public key")
@@ -149,12 +146,13 @@ fn generate_ephemeral_signing_keys_and_sign(
         .arg("sign")
         .arg("-p")
         .arg("")
-        .arg("-k")
-        .arg(&priv_key)
-        .arg(archive_path.to_str().unwrap());
+        .arg("-f")
+        .arg(key_file_str)
+        .arg(archive_path.to_str().unwrap())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     let sign_status = sign_cmd.status().expect("Failed to execute tauri signer sign");
     assert!(sign_status.success(), "tauri signer sign must succeed");
-
     let sig_path = format!("{}.sig", archive_path.to_str().unwrap());
     let signature = fs::read_to_string(&sig_path)
         .expect("Failed to read generated signature")
@@ -165,13 +163,14 @@ fn generate_ephemeral_signing_keys_and_sign(
 }
 
 async fn start_mock_updater_server(
-    manifest_json: String,
+    manifest_template: String,
     download_bytes: Vec<u8>,
 ) -> (String, tokio::sync::oneshot::Sender<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
+    let base_url = format!("http://127.0.0.1:{port}");
+    let manifest_json = manifest_template.replace("ENDPOINT_URL", &base_url);
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -208,7 +207,7 @@ async fn start_mock_updater_server(
         }
     });
 
-    (format!("http://127.0.0.1:{port}"), shutdown_tx)
+    (base_url, shutdown_tx)
 }
 
 #[test]
