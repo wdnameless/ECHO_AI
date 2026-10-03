@@ -2,10 +2,21 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const getPathsMock = vi.fn();
-const checkMock = vi.fn();
-const relaunchMock = vi.fn();
-const invokeMock = vi.fn();
+const { getPathsMock, checkMock, relaunchMock, invokeMock, MockChannel } = vi.hoisted(() => {
+  class MockChannel<T = unknown> {
+    onmessage?: (response: T) => void;
+    constructor(onmessage?: (response: T) => void) {
+      this.onmessage = onmessage;
+    }
+  }
+  return {
+    getPathsMock: vi.fn(),
+    checkMock: vi.fn(),
+    relaunchMock: vi.fn(),
+    invokeMock: vi.fn(),
+    MockChannel,
+  };
+});
 
 vi.mock("@/lib/storage/app-paths", () => ({
   getPaths: () => getPathsMock(),
@@ -19,18 +30,10 @@ vi.mock("@tauri-apps/plugin-process", () => ({
   relaunch: () => relaunchMock(),
 }));
 
-class MockChannel<T = unknown> {
-  onmessage?: (response: T) => void;
-  constructor(onmessage?: (response: T) => void) {
-    this.onmessage = onmessage;
-  }
-}
-
 vi.mock("@tauri-apps/api/core", () => ({
   Channel: MockChannel,
   invoke: (...args: unknown[]) => invokeMock(...args),
 }));
-
 vi.mock("@/hooks", () => ({
   useWindowResize: () => ({
     resizeWindow: vi.fn(),
