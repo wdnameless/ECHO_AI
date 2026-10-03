@@ -38,16 +38,14 @@ pub enum DownloadEvent {
     Finished,
 }
 
-pub fn is_version_newer(current: &str, candidate: &str) -> bool {
+pub fn is_version_newer(current: &str, candidate: &str) -> Result<bool, String> {
     let clean_current = current.trim_start_matches('v');
     let clean_candidate = candidate.trim_start_matches('v');
-    match (
-        semver::Version::parse(clean_current),
-        semver::Version::parse(clean_candidate),
-    ) {
-        (Ok(curr), Ok(cand)) => cand > curr,
-        _ => clean_candidate != clean_current,
-    }
+    let curr = semver::Version::parse(clean_current)
+        .map_err(|e| format!("Invalid current semver '{current}': {e}"))?;
+    let cand = semver::Version::parse(clean_candidate)
+        .map_err(|e| format!("Invalid update semver '{candidate}': {e}"))?;
+    Ok(cand > curr)
 }
 
 #[cfg(target_os = "windows")]
@@ -81,17 +79,18 @@ pub fn clean_staging_dir(staging_dir: &Path) {
     if !staging_dir.is_dir() || is_reparse_point_or_symlink(staging_dir) {
         return;
     }
-    let known_files = [
-        REPLACEMENT_EXE_NAME,
-        BACKUP_EXE_NAME,
-        HELPER_EXE_NAME,
-        "failed_replacement.exe",
-    ];
+    let target_dir = staging_dir.parent();
+    let can_delete_backup = target_dir
+        .map(|td| td.join("Echo AI.exe").is_file() || td.join("pluely.exe").is_file())
+        .unwrap_or(false);
+
     if let Ok(entries) = fs::read_dir(staging_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if known_files.contains(&name) {
+                if name == REPLACEMENT_EXE_NAME || name == HELPER_EXE_NAME || name == "failed_replacement.exe" {
+                    let _ = fs::remove_file(&path);
+                } else if name == BACKUP_EXE_NAME && can_delete_backup {
                     let _ = fs::remove_file(&path);
                 }
             }
@@ -217,8 +216,13 @@ pub fn validate_and_extract_payload(
 
 #[cfg(target_os = "windows")]
 pub fn wait_for_parent_exit(parent_pid: u32, timeout_ms: u32) -> Result<(), String> {
-    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0, WAIT_TIMEOUT};
-    use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER,
+        WAIT_OBJECT_0, WAIT_TIMEOUT,
+    };
+    use windows::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
 
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, parent_pid) };
     match handle {
@@ -235,8 +239,20 @@ pub fn wait_for_parent_exit(parent_pid: u32, timeout_ms: u32) -> Result<(), Stri
             }
         }
         _ => {
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            Ok(())
+            let err = unsafe { GetLastError() };
+            if err == ERROR_INVALID_PARAMETER {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                Ok(())
+            } else if err == ERROR_ACCESS_DENIED {
+                Err(format!(
+                    "Access denied for parent process {parent_pid}; process is still running and cannot be synchronized"
+                ))
+            } else {
+                Err(format!(
+                    "Cannot open parent process {parent_pid} for synchronization (Win32 error: {:?})",
+                    err.0
+                ))
+            }
         }
     }
 }
@@ -267,6 +283,8 @@ pub fn run_helper_logic(
     parent_pid: u32,
     target_exe_name: &str,
     wait_timeout_ms: u32,
+    relaunch_args: &[String],
+    rollback_args: &[String],
 ) -> Result<(), String> {
     let staging_dir = helper_exe
         .parent()
@@ -344,12 +362,31 @@ pub fn run_helper_logic(
         .map_err(|e| format!("Failed to move target executable to backup: {e}"))?;
 
     if let Err(e) = fs::rename(&replacement_exe, &target_exe) {
-        let _ = rename_with_retry(&backup_exe, &target_exe, 25, 100);
-        return Err(format!("Failed to move replacement executable into place: {e}. Restored original."));
+        let restore_res = rename_with_retry(&backup_exe, &target_exe, 25, 100);
+        return match &restore_res {
+            Ok(()) => {
+                let mut fallback_cmd = std::process::Command::new(&target_exe);
+                fallback_cmd.current_dir(target_dir);
+                for arg in rollback_args {
+                    fallback_cmd.arg(arg);
+                }
+                let _ = fallback_cmd.spawn();
+                Err(format!(
+                    "Failed to move replacement executable into place: {e}. Restored and relaunched original executable."
+                ))
+            }
+            Err(restore_err) => Err(format!(
+                "CRITICAL: Failed to move replacement executable ({e}) AND failed to restore backup ({restore_err}). Backup preserved at '{}'.",
+                backup_exe.display()
+            )),
+        };
     }
 
     let mut cmd = std::process::Command::new(&target_exe);
     cmd.current_dir(target_dir);
+    for arg in relaunch_args {
+        cmd.arg(arg);
+    }
 
     match cmd.spawn() {
         Ok(_) => {
@@ -360,26 +397,88 @@ pub fn run_helper_logic(
             let failed_path = staging_dir.join("failed_replacement.exe");
             let _ = fs::rename(&target_exe, &failed_path);
             let restore_res = rename_with_retry(&backup_exe, &target_exe, 25, 100);
-            if restore_res.is_ok() {
-                let mut fallback_cmd = std::process::Command::new(&target_exe);
-                fallback_cmd.current_dir(target_dir);
-                let _ = fallback_cmd.spawn();
+            match &restore_res {
+                Ok(()) => {
+                    let mut fallback_cmd = std::process::Command::new(&target_exe);
+                    fallback_cmd.current_dir(target_dir);
+                    for arg in rollback_args {
+                        fallback_cmd.arg(arg);
+                    }
+                    let _ = fallback_cmd.spawn();
+                    Err(format!(
+                        "Failed to relaunch replaced executable: {e}. Rolled back and relaunched original executable."
+                    ))
+                }
+                Err(restore_err) => {
+                    Err(format!(
+                        "CRITICAL: Failed to relaunch replaced executable ({e}) AND failed to restore backup ({restore_err}). Backup preserved at '{}'.",
+                        backup_exe.display()
+                    ))
+                }
             }
-            Err(format!(
-                "Failed to relaunch replaced executable: {e}. Rolled back to original executable."
-            ))
         }
     }
 }
 
 pub fn maybe_run_helper() -> Option<i32> {
     let args: Vec<String> = std::env::args().collect();
+
+    // Fixture parent mode for subprocess integration testing
+    if args.iter().any(|a| a == "--portable-fixture-parent") {
+        let mut marker_path: Option<String> = None;
+        let mut sleep_ms = 600u64;
+        let mut i = 1;
+        while i < args.len() {
+            if args[i] == "--marker" && i + 1 < args.len() {
+                marker_path = Some(args[i + 1].clone());
+                i += 1;
+            } else if args[i] == "--sleep-ms" && i + 1 < args.len() {
+                if let Ok(ms) = args[i + 1].parse() {
+                    sleep_ms = ms;
+                }
+                i += 1;
+            }
+            i += 1;
+        }
+        if let Some(p) = &marker_path {
+            let _ = fs::write(p, b"PARENT_RUNNING");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
+        if let Some(p) = &marker_path {
+            let _ = fs::write(p, b"PARENT_EXITED");
+        }
+        return Some(0);
+    }
+
+    // Fixture marker write mode for verifying relaunch
+    if args.iter().any(|a| a == "--portable-fixture-marker") {
+        let mut marker_path: Option<String> = None;
+        let mut marker_text = "MARKER".to_string();
+        let mut i = 1;
+        while i < args.len() {
+            if args[i] == "--marker" && i + 1 < args.len() {
+                marker_path = Some(args[i + 1].clone());
+                i += 1;
+            } else if args[i] == "--text" && i + 1 < args.len() {
+                marker_text = args[i + 1].clone();
+                i += 1;
+            }
+            i += 1;
+        }
+        if let Some(p) = &marker_path {
+            let _ = fs::write(p, marker_text.as_bytes());
+        }
+        return Some(0);
+    }
+
     if !args.iter().any(|a| a == "--portable-update-helper") {
         return None;
     }
 
     let mut parent_pid: Option<u32> = None;
     let mut target_exe_name: Option<String> = None;
+    let mut relaunch_args: Vec<String> = Vec::new();
+    let mut rollback_args: Vec<String> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -396,11 +495,22 @@ pub fn maybe_run_helper() -> Option<i32> {
                     i += 1;
                 }
             }
+            "--relaunch-arg" => {
+                if i + 1 < args.len() {
+                    relaunch_args.push(args[i + 1].clone());
+                    i += 1;
+                }
+            }
+            "--rollback-arg" => {
+                if i + 1 < args.len() {
+                    rollback_args.push(args[i + 1].clone());
+                    i += 1;
+                }
+            }
             _ => {}
         }
         i += 1;
     }
-
     let pid = match parent_pid {
         Some(p) => p,
         None => {
@@ -409,7 +519,7 @@ pub fn maybe_run_helper() -> Option<i32> {
         }
     };
 
-    let target_name = match target_exe_name {
+    let target_name = match &target_exe_name {
         Some(n) => n,
         None => {
             eprintln!("[portable_update helper] Missing --target-exe-name");
@@ -425,7 +535,7 @@ pub fn maybe_run_helper() -> Option<i32> {
         }
     };
 
-    match run_helper_logic(&helper_exe, pid, &target_name, 120_000) {
+    match run_helper_logic(&helper_exe, pid, target_name, 120_000, &relaunch_args, &rollback_args) {
         Ok(()) => Some(0),
         Err(e) => {
             eprintln!("[portable_update helper] Helper failed: {e}");
@@ -434,34 +544,23 @@ pub fn maybe_run_helper() -> Option<i32> {
     }
 }
 
-#[tauri::command]
-pub async fn install_portable_update(
-    app: AppHandle,
-    expected_version: String,
-    on_event: Channel<DownloadEvent>,
-) -> Result<(), String> {
-    if !cfg!(target_os = "windows") {
-        return Err("Portable auto-update is only supported on Windows".to_string());
-    }
-
-    let paths = crate::settings::resolved_paths();
-    if paths.root_kind != crate::settings::RootKind::Portable {
-        return Err("Current layout is not portable; portable update rejected".to_string());
-    }
-
-    if UPDATE_IN_PROGRESS
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("A portable update is already in progress".to_string());
-    }
-    let _guard = UpdateLockGuard;
-
-    let updater = app
-        .updater_builder()
-        .target("windows-x86_64-portable")
-        .build()
-        .map_err(|e| format!("Failed to build portable updater: {e}"))?;
+pub async fn verify_and_stage_portable_update<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    expected_version: &str,
+    on_event: &Channel<DownloadEvent>,
+    updater_override: Option<tauri_plugin_updater::Updater>,
+    current_exe: &Path,
+    target_dir: &Path,
+    target_exe_name: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let updater = match updater_override {
+        Some(u) => u,
+        None => app
+            .updater_builder()
+            .target("windows-x86_64-portable")
+            .build()
+            .map_err(|e| format!("Failed to build portable updater: {e}"))?,
+    };
 
     let update = updater
         .check()
@@ -476,7 +575,7 @@ pub async fn install_portable_update(
         ));
     }
 
-    if !is_version_newer(&update.current_version, &update.version) {
+    if !is_version_newer(&update.current_version, &update.version)? {
         return Err(format!(
             "Update version '{}' is not newer than current version '{}'",
             update.version, update.current_version
@@ -501,17 +600,7 @@ pub async fn install_portable_update(
         .await
         .map_err(|e| format!("Failed to download and verify update signature: {e}"))?;
 
-    let current_exe = std::env::current_exe()
-        .map_err(|e| format!("Failed to resolve current executable path: {e}"))?;
-    let target_dir = current_exe
-        .parent()
-        .ok_or_else(|| "Current executable has no parent directory".to_string())?;
-    let target_exe_name = current_exe
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| "Failed to determine current executable filename".to_string())?;
-
-    if is_reparse_point_or_symlink(target_dir) || is_reparse_point_or_symlink(&current_exe) {
+    if is_reparse_point_or_symlink(target_dir) || is_reparse_point_or_symlink(current_exe) {
         return Err("Target executable or directory is a symlink or reparse point; refusing update".to_string());
     }
 
@@ -532,8 +621,55 @@ pub async fn install_portable_update(
         .map_err(|e| format!("Failed to write replacement executable: {e}"))?;
 
     let helper_path = staging_dir.join(HELPER_EXE_NAME);
-    fs::copy(&current_exe, &helper_path)
+    fs::copy(current_exe, &helper_path)
         .map_err(|e| format!("Failed to copy updater helper executable: {e}"))?;
+
+    Ok((staging_dir, helper_path))
+}
+
+#[tauri::command]
+pub async fn install_portable_update<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    expected_version: String,
+    on_event: Channel<DownloadEvent>,
+) -> Result<(), String> {
+    if !cfg!(target_os = "windows") {
+        return Err("Portable auto-update is only supported on Windows".to_string());
+    }
+
+    let paths = crate::settings::resolved_paths();
+    if paths.root_kind != crate::settings::RootKind::Portable {
+        return Err("Current layout is not portable; portable update rejected".to_string());
+    }
+
+    if UPDATE_IN_PROGRESS
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("A portable update is already in progress".to_string());
+    }
+    let _guard = UpdateLockGuard;
+
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to resolve current executable path: {e}"))?;
+    let target_dir = current_exe
+        .parent()
+        .ok_or_else(|| "Current executable has no parent directory".to_string())?;
+    let target_exe_name = current_exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "Failed to determine current executable filename".to_string())?;
+
+    let (_staging_dir, helper_path) = verify_and_stage_portable_update(
+        &app,
+        &expected_version,
+        &on_event,
+        None,
+        &current_exe,
+        target_dir,
+        target_exe_name,
+    )
+    .await?;
 
     let current_pid = std::process::id();
     let mut cmd = std::process::Command::new(&helper_path);
@@ -546,6 +682,13 @@ pub async fn install_portable_update(
 
     cmd.spawn()
         .map_err(|e| format!("Failed to spawn updater helper: {e}"))?;
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        crate::handy_server::stop_server();
+        app_handle.exit(0);
+    });
 
     Ok(())
 }
@@ -570,11 +713,15 @@ mod tests {
     }
 
     #[test]
-    fn test_version_newer_logic() {
-        assert!(is_version_newer("1.2.30", "1.2.31"));
-        assert!(is_version_newer("v1.2.30", "v1.3.0"));
-        assert!(!is_version_newer("1.2.30", "1.2.30"));
-        assert!(!is_version_newer("1.2.30", "1.2.29"));
+    fn test_version_newer_logic_and_strict_rejection() {
+        assert_eq!(is_version_newer("1.2.30", "1.2.31"), Ok(true));
+        assert_eq!(is_version_newer("v1.2.30", "v1.3.0"), Ok(true));
+        assert_eq!(is_version_newer("1.2.30", "1.2.30"), Ok(false));
+        assert_eq!(is_version_newer("1.2.30", "1.2.29"), Ok(false));
+
+        assert!(is_version_newer("invalid_ver", "1.2.31").is_err());
+        assert!(is_version_newer("1.2.30", "invalid_ver").is_err());
+        assert!(is_version_newer("foo", "bar").is_err());
     }
 
     #[test]
@@ -666,11 +813,9 @@ mod tests {
             assert!(acquired);
             let _guard = UpdateLockGuard;
 
-            // Second acquisition must fail
             let second = UPDATE_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok();
             assert!(!second);
         }
-        // Guard dropped, must be free again
         assert!(!UPDATE_IN_PROGRESS.load(Ordering::SeqCst));
     }
 
@@ -682,7 +827,7 @@ mod tests {
         let helper = wrong_dir.join("updater-helper.exe");
         fs::write(&helper, b"MZ\x00\x00test").unwrap();
 
-        let err = run_helper_logic(&helper, 999999, "Echo AI.exe", 1000).unwrap_err();
+        let err = run_helper_logic(&helper, 999999, "Echo AI.exe", 1000, &[], &[]).unwrap_err();
         assert!(err.contains("Helper must be run from"));
     }
 
@@ -694,15 +839,14 @@ mod tests {
         let helper = staging.join("updater-helper.exe");
         fs::write(&helper, b"MZ\x00\x00test").unwrap();
 
-        let err1 = run_helper_logic(&helper, 999999, "../evil.exe", 1000).unwrap_err();
+        let err1 = run_helper_logic(&helper, 999999, "../evil.exe", 1000, &[], &[]).unwrap_err();
         assert!(err1.contains("Invalid target executable name"));
 
-        let err2 = run_helper_logic(&helper, 999999, "not_an_exe.bat", 1000).unwrap_err();
-        assert!(err2.contains("does not end with .exe"));
+        let err2 = run_helper_logic(&helper, 999999, "not_an_exe.bat", 1000, &[], &[]).unwrap_err();
     }
 
     #[test]
-    fn test_clean_staging_dir_preserves_unknown_files() {
+    fn test_clean_staging_dir_preserves_unknown_files_and_orphan_backup() {
         let temp = tempfile::tempdir().unwrap();
         let staging = temp.path().join(STAGING_DIR_NAME);
         fs::create_dir_all(&staging).unwrap();
@@ -713,10 +857,23 @@ mod tests {
         let user_file = staging.join("important_user_note.txt");
         fs::write(&user_file, b"do not delete").unwrap();
 
+        let backup_file = staging.join(BACKUP_EXE_NAME);
+        fs::write(&backup_file, b"backup_bytes").unwrap();
+
+        // Target executable is missing in parent -> backup MUST be preserved!
         clean_staging_dir(&staging);
 
         assert!(!known_file.exists());
         assert!(user_file.exists());
-        assert!(staging.exists()); // Not removed because user_file is preserved
+        assert!(backup_file.exists(), "Backup must NOT be deleted if target exe is missing");
+        assert!(staging.exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_wait_for_parent_exit_rejects_access_denied() {
+        let res = wait_for_parent_exit(4, 100);
+        assert!(res.is_err(), "Access denied must not count as parent exit");
+        assert!(res.unwrap_err().contains("Access denied"));
     }
 }

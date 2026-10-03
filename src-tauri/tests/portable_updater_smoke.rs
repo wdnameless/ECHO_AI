@@ -7,42 +7,29 @@ use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 use pluely_lib::portable_update::{
-    self, clean_staging_dir, run_helper_logic, validate_and_extract_payload,
-    BACKUP_EXE_NAME, HELPER_EXE_NAME, REPLACEMENT_EXE_NAME, STAGING_DIR_NAME,
+    clean_staging_dir, validate_and_extract_payload, verify_and_stage_portable_update,
+    DownloadEvent, BACKUP_EXE_NAME, HELPER_EXE_NAME, REPLACEMENT_EXE_NAME, STAGING_DIR_NAME,
 };
 
-fn init_fixture_role_if_present() {
-    if let Ok(role) = std::env::var("PORTABLE_UPDATER_FIXTURE_ROLE") {
-        match role.as_str() {
-            "parent" => {
-                // Mock running application holding the executable open
-                let marker_path = std::env::var("FIXTURE_MARKER_PATH").unwrap_or_default();
-                if !marker_path.is_empty() {
-                    let _ = fs::write(&marker_path, b"PARENT_RUNNING");
-                }
-                std::thread::sleep(Duration::from_millis(600));
-                if !marker_path.is_empty() {
-                    let _ = fs::write(&marker_path, b"PARENT_EXITED");
-                }
-                std::process::exit(0);
-            }
-            "relaunched_replacement" => {
-                let marker_path = std::env::var("FIXTURE_MARKER_PATH").unwrap_or_default();
-                if !marker_path.is_empty() {
-                    let _ = fs::write(&marker_path, b"RELAUNCHED_NEW");
-                }
-                std::process::exit(0);
-            }
-            "relaunched_original" => {
-                let marker_path = std::env::var("FIXTURE_MARKER_PATH").unwrap_or_default();
-                if !marker_path.is_empty() {
-                    let _ = fs::write(&marker_path, b"RELAUNCHED_ORIGINAL");
-                }
-                std::process::exit(0);
-            }
-            _ => {}
+fn find_production_binary() -> PathBuf {
+    if let Some(path) = option_env!("CARGO_BIN_EXE_pluely") {
+        let p = PathBuf::from(path);
+        if p.is_file() {
+            return p;
         }
     }
+    for candidate in [
+        "target/debug/pluely.exe",
+        "target/release/pluely.exe",
+        "../target/debug/pluely.exe",
+        "../target/release/pluely.exe",
+    ] {
+        let p = PathBuf::from(candidate);
+        if p.is_file() {
+            return p;
+        }
+    }
+    std::env::current_exe().unwrap()
 }
 
 fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -58,21 +45,66 @@ fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     buf
 }
 
-#[test]
-fn test_smoke_helper_process_wait_and_replacement() {
-    init_fixture_role_if_present();
+async fn start_mock_updater_server(
+    manifest_json: String,
+    download_bytes: Vec<u8>,
+) -> (String, tokio::sync::oneshot::Sender<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut shutdown_rx => break,
+                res = listener.accept() => {
+                    if let Ok((mut socket, _)) = res {
+                        let manifest = manifest_json.clone();
+                        let payload = download_bytes.clone();
+                        tokio::spawn(async move {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            let mut buf = [0u8; 1024];
+                            if let Ok(n) = socket.read(&mut buf).await {
+                                let req = String::from_utf8_lossy(&buf[..n]);
+                                if req.starts_with("GET /manifest") {
+                                    let resp = format!(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                        manifest.len(),
+                                        manifest
+                                    );
+                                    let _ = socket.write_all(resp.as_bytes()).await;
+                                } else if req.starts_with("GET /download") {
+                                    let resp_header = format!(
+                                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                        payload.len()
+                                    );
+                                    let _ = socket.write_all(resp_header.as_bytes()).await;
+                                    let _ = socket.write_all(&payload).await;
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    });
+
+    (format!("http://127.0.0.1:{port}"), shutdown_tx)
+}
+
+#[test]
+fn test_smoke_production_helper_subprocess_swap_and_relaunch() {
     let temp = tempfile::tempdir().unwrap();
-    let app_dir = temp.path().join("EchoAI_Portable");
+    let app_dir = temp.path().join("EchoAI_SubprocessSwap");
     fs::create_dir_all(&app_dir).unwrap();
 
-    let current_test_exe = std::env::current_exe().unwrap();
+    let prod_bin = find_production_binary();
 
-    // 1. Create target executable (Echo AI.exe)
+    // 1. Target executable Echo AI.exe
     let target_exe = app_dir.join("Echo AI.exe");
-    fs::copy(&current_test_exe, &target_exe).unwrap();
+    fs::copy(&prod_bin, &target_exe).unwrap();
 
-    // 2. Create portable marker and .echo-ai user data
+    // 2. User data in .echo-ai and portable marker
     let marker_file = app_dir.join(".portable");
     fs::write(&marker_file, b"portable-mode").unwrap();
 
@@ -90,132 +122,186 @@ fn test_smoke_helper_process_wait_and_replacement() {
     fs::write(&history_db, initial_db).unwrap();
     fs::write(&model_file, initial_model).unwrap();
 
-    // 3. Staging setup
+    // 3. Staging setup with helper and replacement
     let staging_dir = app_dir.join(STAGING_DIR_NAME);
     fs::create_dir_all(&staging_dir).unwrap();
 
     let helper_exe = staging_dir.join(HELPER_EXE_NAME);
-    fs::copy(&current_test_exe, &helper_exe).unwrap();
+    fs::copy(&prod_bin, &helper_exe).unwrap();
 
     let replacement_exe = staging_dir.join(REPLACEMENT_EXE_NAME);
-    // Replacement is also a copy of test exe so it can be relaunched
-    fs::copy(&current_test_exe, &replacement_exe).unwrap();
+    fs::copy(&prod_bin, &replacement_exe).unwrap();
 
-    // 4. Start fixture parent process holding target_exe open
-    let status_marker = temp.path().join("fixture_status.txt");
+    // 4. Start fixture parent subprocess using production binary flag
+    let parent_marker = temp.path().join("parent_status.txt");
     let mut parent_cmd = Command::new(&target_exe);
     parent_cmd
-        .env("PORTABLE_UPDATER_FIXTURE_ROLE", "parent")
-        .env("FIXTURE_MARKER_PATH", &status_marker)
+        .arg("--portable-fixture-parent")
+        .arg("--marker")
+        .arg(&parent_marker)
+        .arg("--sleep-ms")
+        .arg("700")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    let parent_child = parent_cmd.spawn().expect("Failed to spawn fixture parent process");
+    let mut parent_child = parent_cmd.spawn().expect("Failed to spawn parent subprocess");
     let parent_pid = parent_child.id();
 
-    // Wait until parent is confirmed running
+    // Confirm parent is active
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(2) {
-        if status_marker.exists() && fs::read(&status_marker).unwrap_or_default() == b"PARENT_RUNNING" {
+        if parent_marker.exists() && fs::read(&parent_marker).unwrap_or_default() == b"PARENT_RUNNING" {
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // 5. Run helper logic: must wait for parent to exit, swap, relaunch, clean up
+    // 5. Spawn actual production helper subprocess with relaunch marker argument
     let relaunch_marker = temp.path().join("relaunch_status.txt");
-    std::env::set_var("PORTABLE_UPDATER_FIXTURE_ROLE", "relaunched_replacement");
-    std::env::set_var("FIXTURE_MARKER_PATH", &relaunch_marker);
+    let mut helper_cmd = Command::new(&helper_exe);
+    helper_cmd
+        .arg("--portable-update-helper")
+        .arg("--parent-pid")
+        .arg(parent_pid.to_string())
+        .arg("--target-exe-name")
+        .arg("Echo AI.exe")
+        .arg("--relaunch-arg")
+        .arg("--portable-fixture-marker")
+        .arg("--relaunch-arg")
+        .arg("--marker")
+        .arg("--relaunch-arg")
+        .arg(&relaunch_marker)
+        .arg("--relaunch-arg")
+        .arg("--text")
+        .arg("--relaunch-arg")
+        .arg("REPLACEMENT_ACTIVE");
 
-    let helper_res = run_helper_logic(&helper_exe, parent_pid, "Echo AI.exe", 5000);
-    assert!(helper_res.is_ok(), "Helper execution failed: {:?}", helper_res.err());
+    let helper_status = helper_cmd.status().expect("Failed to execute helper subprocess");
+    assert!(helper_status.success(), "Production helper subprocess must exit with success (0)");
 
-    // 6. Verify assertions
-    assert!(target_exe.is_file(), "Target executable must exist at original path");
+    // Parent must have exited
+    let _ = parent_child.wait();
     assert_eq!(
-        target_exe.file_name().unwrap(),
-        "Echo AI.exe",
-        "Target executable filename must be preserved"
+        fs::read(&parent_marker).unwrap_or_default(),
+        b"PARENT_EXITED",
+        "Parent process must have completed and exited before swap"
     );
 
-    // Verify .echo-ai data preserved
+    // Wait for relaunched replacement marker
+    let relaunch_start = Instant::now();
+    while relaunch_start.elapsed() < Duration::from_secs(3) {
+        if relaunch_marker.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        fs::read(&relaunch_marker).unwrap_or_default(),
+        b"REPLACEMENT_ACTIVE",
+        "Relaunched replacement executable must write distinct replacement marker"
+    );
+
+    // 6. Assert swap and data preservation
+    assert!(target_exe.is_file(), "Target executable must exist");
+    assert_eq!(target_exe.file_name().unwrap(), "Echo AI.exe");
+
     assert_eq!(
         fs::read(&settings_file).unwrap(),
         initial_settings,
-        "Settings file in .echo-ai must be 100% preserved"
+        "Settings in .echo-ai must be preserved"
     );
     assert_eq!(
         fs::read(&history_db).unwrap(),
         initial_db,
-        "Database in .echo-ai must be 100% preserved"
+        "Database in .echo-ai must be preserved"
     );
     assert_eq!(
         fs::read(&model_file).unwrap(),
         initial_model,
-        "Model binary in .echo-ai must be 100% preserved"
+        "Models in .echo-ai must be preserved"
     );
     assert!(marker_file.is_file(), ".portable marker must be preserved");
 
-    // Verify staging artifacts removed
-    assert!(
-        !staging_dir.join(REPLACEMENT_EXE_NAME).exists(),
-        "Replacement binary must be cleaned up from staging"
-    );
-    assert!(
-        !staging_dir.join(BACKUP_EXE_NAME).exists(),
-        "Backup binary must be cleaned up from staging after successful swap"
-    );
-
-    // Reset env
-    std::env::remove_var("PORTABLE_UPDATER_FIXTURE_ROLE");
-    std::env::remove_var("FIXTURE_MARKER_PATH");
+    // Staging artifacts removed
+    assert!(!staging_dir.join(REPLACEMENT_EXE_NAME).exists());
+    assert!(!staging_dir.join(BACKUP_EXE_NAME).exists());
 }
 
 #[test]
-fn test_smoke_helper_rollback_on_relaunch_failure() {
-    init_fixture_role_if_present();
-
+fn test_smoke_production_helper_subprocess_rollback() {
     let temp = tempfile::tempdir().unwrap();
-    let app_dir = temp.path().join("EchoAI_RollbackTest");
+    let app_dir = temp.path().join("EchoAI_SubprocessRollback");
     fs::create_dir_all(&app_dir).unwrap();
 
-    let current_test_exe = std::env::current_exe().unwrap();
+    let prod_bin = find_production_binary();
 
-    // 1. Create target executable with distinctive content
     let target_exe = app_dir.join("Echo AI.exe");
-    let original_bytes = fs::read(&current_test_exe).unwrap();
+    let original_bytes = fs::read(&prod_bin).unwrap();
     fs::write(&target_exe, &original_bytes).unwrap();
 
-    // 2. Create user data in .echo-ai
     let echo_ai_dir = app_dir.join(".echo-ai");
     fs::create_dir_all(&echo_ai_dir).unwrap();
     let settings_file = echo_ai_dir.join("settings.json");
-    let initial_settings = b"{\"state\":\"do_not_lose_this_data\"}";
+    let initial_settings = b"{\"important_data\": 42}";
     fs::write(&settings_file, initial_settings).unwrap();
 
-    // 3. Staging setup with broken replacement (valid MZ header but invalid PE content that fails spawn)
     let staging_dir = app_dir.join(STAGING_DIR_NAME);
     fs::create_dir_all(&staging_dir).unwrap();
 
     let helper_exe = staging_dir.join(HELPER_EXE_NAME);
-    fs::copy(&current_test_exe, &helper_exe).unwrap();
+    fs::copy(&prod_bin, &helper_exe).unwrap();
 
     let broken_replacement = staging_dir.join(REPLACEMENT_EXE_NAME);
-    // Valid MZ magic header to pass validation, but corrupt image that cannot be spawned by OS
-    fs::write(&broken_replacement, b"MZ\x00\x00corrupt_payload_cannot_spawn").unwrap();
+    // Valid MZ magic header to pass validation, but invalid image that cannot spawn
+    fs::write(&broken_replacement, b"MZ\x00\x00corrupt_image_fails_spawn").unwrap();
 
-    // 4. Run helper with dummy inactive parent PID
-    let result = run_helper_logic(&helper_exe, 999999, "Echo AI.exe", 1000);
-    assert!(result.is_err(), "Helper must report failure when relaunch fails");
+    // Spawn helper subprocess with dummy inactive PID and rollback relaunch argument
+    let rollback_marker = temp.path().join("rollback_status.txt");
+    let mut helper_cmd = Command::new(&helper_exe);
+    helper_cmd
+        .arg("--portable-update-helper")
+        .arg("--parent-pid")
+        .arg("999999")
+        .arg("--target-exe-name")
+        .arg("Echo AI.exe")
+        .arg("--rollback-arg")
+        .arg("--portable-fixture-marker")
+        .arg("--rollback-arg")
+        .arg("--marker")
+        .arg("--rollback-arg")
+        .arg(&rollback_marker)
+        .arg("--rollback-arg")
+        .arg("--text")
+        .arg("--rollback-arg")
+        .arg("ORIGINAL_ACTIVE");
 
-    // 5. Verify rollback: original executable must be restored!
+    let helper_status = helper_cmd.status().expect("Failed to execute helper subprocess");
+    assert!(
+        !helper_status.success(),
+        "Production helper subprocess must report failure when relaunch fails"
+    );
+
+    // Verify rollback: original executable restored!
     let restored_bytes = fs::read(&target_exe).unwrap();
     assert_eq!(
         restored_bytes, original_bytes,
         "Original executable must be restored from backup after relaunch failure"
     );
 
-    // Verify .echo-ai data remained completely intact
+    // Wait for relaunched original marker
+    let rollback_start = Instant::now();
+    while rollback_start.elapsed() < Duration::from_secs(3) {
+        if rollback_marker.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        fs::read(&rollback_marker).unwrap_or_default(),
+        b"ORIGINAL_ACTIVE",
+        "Relaunched original executable must write distinct rollback marker"
+    );
+
     assert_eq!(
         fs::read(&settings_file).unwrap(),
         initial_settings,
@@ -224,89 +310,138 @@ fn test_smoke_helper_rollback_on_relaunch_failure() {
 }
 
 #[test]
-fn test_smoke_helper_rejects_arbitrary_target() {
+fn test_smoke_production_helper_subprocess_rejects_arbitrary_target() {
     let temp = tempfile::tempdir().unwrap();
-    let current_test_exe = std::env::current_exe().unwrap();
+    let staging_dir = temp.path().join(STAGING_DIR_NAME);
+    fs::create_dir_all(&staging_dir).unwrap();
 
-    // 1. Helper in arbitrary directory (not named .portable-update-staging)
-    let arbitrary_dir = temp.path().join("arbitrary_staging");
-    fs::create_dir_all(&arbitrary_dir).unwrap();
-    let helper_exe = arbitrary_dir.join("updater-helper.exe");
-    fs::copy(&current_test_exe, &helper_exe).unwrap();
+    let prod_bin = find_production_binary();
+    let helper_exe = staging_dir.join(HELPER_EXE_NAME);
+    fs::copy(&prod_bin, &helper_exe).unwrap();
 
-    let res1 = run_helper_logic(&helper_exe, 999999, "Echo AI.exe", 1000);
-    assert!(res1.is_err(), "Helper must reject execution from unconstrained directory");
-    assert!(res1.unwrap_err().contains("Helper must be run from"));
+    // Attempt path traversal
+    let mut cmd1 = Command::new(&helper_exe);
+    cmd1.arg("--portable-update-helper")
+        .arg("--parent-pid")
+        .arg("999999")
+        .arg("--target-exe-name")
+        .arg("../malicious.exe");
 
-    // 2. Target executable name containing path traversal
-    let valid_staging = temp.path().join(STAGING_DIR_NAME);
-    fs::create_dir_all(&valid_staging).unwrap();
-    let valid_helper = valid_staging.join(HELPER_EXE_NAME);
-    fs::copy(&current_test_exe, &valid_helper).unwrap();
+    let status1 = cmd1.status().expect("Helper execution failed");
+    assert!(!status1.success(), "Helper must reject path traversal");
 
-    let res2 = run_helper_logic(&valid_helper, 999999, "../Windows/System32/calc.exe", 1000);
-    assert!(res2.is_err(), "Helper must reject path traversal in target executable name");
+    // Attempt non-exe
+    let mut cmd2 = Command::new(&helper_exe);
+    cmd2.arg("--portable-update-helper")
+        .arg("--parent-pid")
+        .arg("999999")
+        .arg("--target-exe-name")
+        .arg("malicious.bat");
 
-    let res3 = run_helper_logic(&valid_helper, 999999, "calc.bat", 1000);
-    assert!(res3.is_err(), "Helper must reject non-exe target executable name");
+    let status2 = cmd2.status().expect("Helper execution failed");
+    assert!(!status2.success(), "Helper must reject non-exe target");
 }
 
-#[test]
-fn test_smoke_minisign_signature_verification() {
-    use minisign_verify::{PublicKey, Signature};
+#[tokio::test]
+async fn test_smoke_real_local_http_signature_verification_gate() {
+    use tauri_plugin_updater::UpdaterExt;
 
+    let app = tauri::test::mock_app();
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("EchoAI_HttpTest");
+    fs::create_dir_all(&app_dir).unwrap();
+
+    let target_exe = app_dir.join("Echo AI.exe");
+    fs::write(&target_exe, b"MZ\x90\x00current_binary_content").unwrap();
+
+    let echo_ai_dir = app_dir.join(".echo-ai");
+    fs::create_dir_all(&echo_ai_dir).unwrap();
+    let settings_file = echo_ai_dir.join("settings.json");
+    fs::write(&settings_file, b"{\"safe\": true}").unwrap();
+
+    // Minisign test key vector from minisign-verify
     let pubkey_str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
     let sig_str = "untrusted comment: signature from minisign secret key\n\
 RUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\n\
-trusted comment: timestamp:1633700835\tfile:test\tprehashed\n\
-wLMDjy9FLAuxZ3q4NlEvkgtyhrr0gtTu6KC4KBJdITbbOeAi1zBIYo0v4iTgt8jJpIidRJnp94ABQkJAgAooBQ==";
+trusted comment: timestamp:1556193335\tfile:test\n\
+y/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==";
 
-    let valid_content = b"test";
-
-    let pubkey = PublicKey::from_base64(pubkey_str).expect("Valid public key decode");
-    let sig = Signature::decode(sig_str).expect("Valid signature decode");
-
-    // 1. Valid signature verifies successfully
-    assert!(pubkey.verify(&valid_content[..], &sig, false).is_ok());
-
-    // 2. Tampered content fails signature verification
-    let tampered_content = b"test_tampered";
-    assert!(
-        pubkey.verify(&tampered_content[..], &sig, false).is_err(),
-        "Tampered payload must fail minisign signature verification"
+    // Start local HTTP server serving TAMPERED archive bytes
+    let tampered_payload = b"tampered_archive_bytes_fail_signature".to_vec();
+    let manifest = format!(
+        r#"{{
+            "version": "1.2.31",
+            "notes": "Security test update",
+            "pub_date": "2026-10-03T00:00:00Z",
+            "platforms": {{
+                "windows-x86_64-portable": {{
+                    "signature": "{}",
+                    "url": "ENDPOINT_URL/download"
+                }}
+            }}
+        }}"#,
+        sig_str.replace('\n', "\\n")
     );
 
-    // 3. Corrupted signature fails verification
-    let mut bad_sig_str = sig_str.to_string();
-    bad_sig_str = bad_sig_str.replace("RUQf6", "RUQf9");
-    let bad_sig = Signature::decode(&bad_sig_str);
-    if let Ok(s) = bad_sig {
-        assert!(pubkey.verify(&valid_content[..], &s, false).is_err());
-    }
+    let (server_base, shutdown_tx) = start_mock_updater_server(manifest, tampered_payload).await;
+    let manifest_url = format!("{server_base}/manifest");
+
+    let updater = app
+        .updater_builder()
+        .target("windows-x86_64-portable")
+        .endpoints(vec![url::Url::parse(&manifest_url).unwrap()])
+        .unwrap()
+        .pubkey(pubkey_str)
+        .build()
+        .unwrap();
+
+    let channel = tauri::ipc::Channel::new(|_body| Ok(()));
+
+    // Call verify_and_stage_portable_update: must download via Tauri Update.download and verify signature
+    let res = verify_and_stage_portable_update(
+        &app.app_handle(),
+        "1.2.31",
+        &channel,
+        Some(updater),
+        &target_exe,
+        &app_dir,
+        "Echo AI.exe",
+    )
+    .await;
+
+    // Signature verification must FAIL before any staging occurs!
+    assert!(res.is_err(), "Tampered payload must fail signature verification");
+    let err_msg = res.unwrap_err();
+    assert!(
+        err_msg.contains("signature") || err_msg.contains("download"),
+        "Error message should mention signature or download failure: {err_msg}"
+    );
+
+    // Staging directory must NOT have been created!
+    let staging_dir = app_dir.join(STAGING_DIR_NAME);
+    assert!(!staging_dir.exists(), "Staging directory must not be created on signature failure");
+
+    // Target executable and data must be completely untouched
+    assert_eq!(fs::read(&target_exe).unwrap(), b"MZ\x90\x00current_binary_content");
+    assert_eq!(fs::read(&settings_file).unwrap(), b"{\"safe\": true}");
+
+    let _ = shutdown_tx.send(());
 }
 
 #[test]
 fn test_smoke_archive_validation_bounds() {
-    // 1. Traversal archive
-    let traversal_zip = build_test_zip(&[
-        ("../evil.exe", b"MZ\x00\x00data"),
-    ]);
+    let traversal_zip = build_test_zip(&[("../evil.exe", b"MZ\x00\x00data")]);
     assert!(validate_and_extract_payload(&traversal_zip, "Echo AI.exe").is_err());
 
-    // 2. Data payload archive
     let data_zip = build_test_zip(&[
         ("Echo AI.exe", b"MZ\x00\x00data"),
         (".echo-ai/bad.db", b"data"),
     ]);
     assert!(validate_and_extract_payload(&data_zip, "Echo AI.exe").is_err());
 
-    // 3. Executable missing PE header
-    let invalid_pe_zip = build_test_zip(&[
-        ("Echo AI.exe", b"NOT_PE_HEADER"),
-    ]);
+    let invalid_pe_zip = build_test_zip(&[("Echo AI.exe", b"NOT_PE_HEADER")]);
     assert!(validate_and_extract_payload(&invalid_pe_zip, "Echo AI.exe").is_err());
 
-    // 4. Valid archive
     let valid_zip = build_test_zip(&[
         ("Echo AI.exe", b"MZ\x90\x00sample_valid_executable"),
         (".portable", b"marker"),
