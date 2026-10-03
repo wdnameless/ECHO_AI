@@ -15,7 +15,7 @@ import {
   ScrollArea,
 } from "@/components/ui";
 import { Markdown } from "@/components/Markdown";
-import { Update } from "@tauri-apps/plugin-updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useWindowResize } from "@/hooks";
 import {

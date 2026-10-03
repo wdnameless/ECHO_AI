@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { check, type Update, type DownloadEvent } from "@tauri-apps/plugin-updater";
+import { check } from "@tauri-apps/plugin-updater";
+import type { Update, DownloadEvent } from "@tauri-apps/plugin-updater";
 import { getPaths } from "@/lib/storage/app-paths";
 
 /**
