@@ -77,7 +77,9 @@ pub fn show_native_error_dialog(title: &str, message: &str) {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn show_native_error_dialog(_title: &str, _message: &str) {}
+pub fn show_native_error_dialog(title: &str, message: &str) {
+    eprintln!("{title}: {message}");
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", content = "data")]
@@ -963,47 +965,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_helper_relaunch_intact_original_on_first_rename_failure() {
-        let temp = tempfile::tempdir().unwrap();
-        let target_dir = temp.path().join("app_root");
-        fs::create_dir_all(&target_dir).unwrap();
-
-        let target_exe = target_dir.join("TargetApp.exe");
-        let original_bytes = b"MZ\x00\x00intact_target_original_binary";
-        fs::write(&target_exe, original_bytes).unwrap();
-
-        let staging = target_dir.join(STAGING_DIR_NAME);
-        fs::create_dir_all(&staging).unwrap();
-
-        let helper = staging.join("updater-helper.exe");
-        fs::write(&helper, b"MZ\x00\x00helper").unwrap();
-
-        let replacement = staging.join(REPLACEMENT_EXE_NAME);
-        fs::write(&replacement, b"MZ\x00\x00replacement").unwrap();
-
-        // Lock target_exe on Windows by opening it exclusively
-        let _file_lock = fs::OpenOptions::new().read(true).write(true).open(&target_exe);
-
-        let res = run_helper_logic(&helper, 999999, "TargetApp.exe", 1000, &[], &[]);
-        if let Err(e) = res {
-            assert!(
-                e.contains("Failed to move target executable to backup")
-                    || e.contains("Relaunched intact original executable")
-                    || e.contains("Intact original executable"),
-                "Error must indicate failure to move target to backup: {e}"
-            );
-            assert_eq!(
-                fs::read(&target_exe).unwrap(),
-                original_bytes,
-                "Target executable must remain completely intact"
-            );
-            assert!(
-                !staging.join(BACKUP_EXE_NAME).exists(),
-                "Backup executable must not exist if initial rename failed"
-            );
-        }
-    }
 
     #[cfg(target_os = "windows")]
     #[test]

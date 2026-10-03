@@ -426,6 +426,104 @@ fn test_smoke_production_helper_subprocess_rollback() {
 }
 
 #[test]
+fn test_smoke_production_helper_subprocess_relaunch_intact_original_on_first_rename_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("EchoAI_FirstRenameFailure");
+    fs::create_dir_all(&app_dir).unwrap();
+
+    let prod_bin = find_production_binary();
+
+    // 1. Compile valid std fixture TargetApp.exe
+    let target_exe = app_dir.join("TargetApp.exe");
+    compile_std_fixture_exe(&target_exe);
+    let original_bytes = fs::read(&target_exe).unwrap();
+
+    // 2. User data in .echo-ai
+    let echo_ai_dir = app_dir.join(".echo-ai");
+    fs::create_dir_all(&echo_ai_dir).unwrap();
+    let settings_file = echo_ai_dir.join("settings.json");
+    let initial_settings = b"{\"settings\":\"preserved\"}";
+    fs::write(&settings_file, initial_settings).unwrap();
+
+    // 3. Staging setup with helper and valid replacement
+    let staging_dir = app_dir.join(STAGING_DIR_NAME);
+    fs::create_dir_all(&staging_dir).unwrap();
+
+    let helper_exe = staging_dir.join(HELPER_EXE_NAME);
+    fs::copy(&prod_bin, &helper_exe).unwrap();
+
+    let replacement_exe = staging_dir.join(REPLACEMENT_EXE_NAME);
+    compile_std_fixture_exe(&replacement_exe);
+
+    // 4. Hold READ-ONLY handle with Windows OpenOptionsExt.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE) (NO FILE_SHARE_DELETE)
+    #[cfg(target_os = "windows")]
+    let _locked_handle = {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x00000001;
+        const FILE_SHARE_WRITE: u32 = 0x00000002;
+        let mut opts = fs::OpenOptions::new();
+        opts.read(true);
+        opts.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
+        opts.open(&target_exe).expect("Handle open with FILE_SHARE_READ|FILE_SHARE_WRITE must succeed")
+    };
+
+    // 5. Launch built production helper with rollback arg for distinct intact-original marker
+    let intact_marker = temp.path().join("intact_original_marker.txt");
+    let mut helper_cmd = Command::new(&helper_exe);
+    helper_cmd
+        .arg("--portable-update-helper")
+        .arg("--parent-pid")
+        .arg("999999")
+        .arg("--target-exe-name")
+        .arg("TargetApp.exe")
+        .arg("--rollback-arg")
+        .arg("--marker")
+        .arg("--rollback-arg")
+        .arg(&intact_marker)
+        .arg("--rollback-arg")
+        .arg("--text")
+        .arg("--rollback-arg")
+        .arg("INTACT_ORIGINAL_ACTIVE");
+
+    let helper_status = helper_cmd.status().expect("Failed to execute helper subprocess");
+    assert!(
+        !helper_status.success(),
+        "Production helper must exit non-zero when first swap fails"
+    );
+
+    // 6. Wait for and assert intact-original marker
+    let start = Instant::now();
+    while start.elapsed() < Duration::from_secs(3) {
+        if intact_marker.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    assert_eq!(
+        fs::read(&intact_marker).unwrap_or_default(),
+        b"INTACT_ORIGINAL_ACTIVE",
+        "Relaunched intact original executable must write distinct intact marker"
+    );
+
+    // 7. Verify original executable bytes, user data, and backup absence
+    assert_eq!(
+        fs::read(&target_exe).unwrap(),
+        original_bytes,
+        "Target executable bytes must remain completely intact"
+    );
+    assert_eq!(
+        fs::read(&settings_file).unwrap(),
+        initial_settings,
+        "User data in .echo-ai must remain completely untouched"
+    );
+    assert!(
+        !staging_dir.join(BACKUP_EXE_NAME).exists(),
+        "Backup file must not exist when first rename fails"
+    );
+}
+
+#[test]
 fn test_smoke_production_helper_subprocess_rejects_arbitrary_target() {
     let temp = tempfile::tempdir().unwrap();
     let staging_dir = temp.path().join(STAGING_DIR_NAME);
