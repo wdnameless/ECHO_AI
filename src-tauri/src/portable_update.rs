@@ -79,18 +79,13 @@ pub fn clean_staging_dir(staging_dir: &Path) {
     if !staging_dir.is_dir() || is_reparse_point_or_symlink(staging_dir) {
         return;
     }
-    let target_dir = staging_dir.parent();
-    let can_delete_backup = target_dir
-        .map(|td| td.join("Echo AI.exe").is_file() || td.join("pluely.exe").is_file())
-        .unwrap_or(false);
 
     if let Ok(entries) = fs::read_dir(staging_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                // NEVER delete backup.exe in generic cleanup! It is an unresolved backup/lifeboat.
                 if name == REPLACEMENT_EXE_NAME || name == HELPER_EXE_NAME || name == "failed_replacement.exe" {
-                    let _ = fs::remove_file(&path);
-                } else if name == BACKUP_EXE_NAME && can_delete_backup {
                     let _ = fs::remove_file(&path);
                 }
             }
@@ -355,7 +350,10 @@ pub fn run_helper_logic(
 
     let backup_exe = staging_dir.join(BACKUP_EXE_NAME);
     if backup_exe.exists() {
-        let _ = fs::remove_file(&backup_exe);
+        return Err(format!(
+            "An unresolved backup executable already exists at '{}'; refusing update to prevent data loss. Resolve or remove it manually before updating.",
+            backup_exe.display()
+        ));
     }
 
     rename_with_retry(&target_exe, &backup_exe, 25, 100)
@@ -370,10 +368,14 @@ pub fn run_helper_logic(
                 for arg in rollback_args {
                     fallback_cmd.arg(arg);
                 }
-                let _ = fallback_cmd.spawn();
-                Err(format!(
-                    "Failed to move replacement executable into place: {e}. Restored and relaunched original executable."
-                ))
+                match fallback_cmd.spawn() {
+                    Ok(_) => Err(format!(
+                        "Failed to move replacement executable into place: {e}. Restored and relaunched original executable."
+                    )),
+                    Err(spawn_err) => Err(format!(
+                        "Failed to move replacement executable into place: {e}. Restored original executable, but failed to relaunch it: {spawn_err}."
+                    )),
+                }
             }
             Err(restore_err) => Err(format!(
                 "CRITICAL: Failed to move replacement executable ({e}) AND failed to restore backup ({restore_err}). Backup preserved at '{}'.",
@@ -404,10 +406,14 @@ pub fn run_helper_logic(
                     for arg in rollback_args {
                         fallback_cmd.arg(arg);
                     }
-                    let _ = fallback_cmd.spawn();
-                    Err(format!(
-                        "Failed to relaunch replaced executable: {e}. Rolled back and relaunched original executable."
-                    ))
+                    match fallback_cmd.spawn() {
+                        Ok(_) => Err(format!(
+                            "Failed to relaunch replaced executable: {e}. Rolled back and relaunched original executable."
+                        )),
+                        Err(spawn_err) => Err(format!(
+                            "Failed to relaunch replaced executable: {e}. Rolled back to original executable, but failed to relaunch it: {spawn_err}."
+                        )),
+                    }
                 }
                 Err(restore_err) => {
                     Err(format!(
@@ -562,6 +568,12 @@ pub async fn verify_and_stage_portable_update<R: tauri::Runtime>(
     if staging_dir.exists() {
         if is_reparse_point_or_symlink(&staging_dir) {
             return Err("Staging path is a symlink or reparse point; refusing update".to_string());
+        }
+        if staging_dir.join(BACKUP_EXE_NAME).exists() {
+            return Err(format!(
+                "An unresolved backup executable already exists in staging ('{}'); refusing update to prevent data loss. Resolve or remove it manually before updating.",
+                staging_dir.join(BACKUP_EXE_NAME).display()
+            ));
         }
         clean_staging_dir(&staging_dir);
     }
@@ -810,6 +822,62 @@ mod tests {
         assert!(user_file.exists());
         assert!(backup_file.exists(), "Backup must NOT be deleted if target exe is missing");
         assert!(staging.exists());
+    }
+
+    #[test]
+    fn test_clean_staging_dir_never_deletes_backup_even_with_sibling_exe() {
+        let temp = tempfile::tempdir().unwrap();
+        let target_dir = temp.path().join("app_root");
+        fs::create_dir_all(&target_dir).unwrap();
+
+        // Target directory has sibling applications
+        fs::write(target_dir.join("pluely.exe"), b"sibling").unwrap();
+        fs::write(target_dir.join("Echo AI.exe"), b"sibling2").unwrap();
+
+        let staging = target_dir.join(STAGING_DIR_NAME);
+        fs::create_dir_all(&staging).unwrap();
+
+        let replacement = staging.join(REPLACEMENT_EXE_NAME);
+        fs::write(&replacement, b"replacement").unwrap();
+
+        let backup = staging.join(BACKUP_EXE_NAME);
+        fs::write(&backup, b"pre_existing_backup").unwrap();
+
+        clean_staging_dir(&staging);
+
+        assert!(!replacement.exists(), "replacement.exe must be removed");
+        assert!(backup.exists(), "backup.exe must NEVER be removed by generic cleanup even if sibling exes exist");
+        assert_eq!(fs::read(&backup).unwrap(), b"pre_existing_backup");
+    }
+
+    #[test]
+    fn test_helper_fails_closed_when_unresolved_backup_exists() {
+        let temp = tempfile::tempdir().unwrap();
+        let target_dir = temp.path().join("app_root");
+        fs::create_dir_all(&target_dir).unwrap();
+
+        let target_exe = target_dir.join("CustomApp.exe");
+        fs::write(&target_exe, b"MZ\x00\x00target").unwrap();
+
+        let staging = target_dir.join(STAGING_DIR_NAME);
+        fs::create_dir_all(&staging).unwrap();
+
+        let helper = staging.join("updater-helper.exe");
+        fs::write(&helper, b"MZ\x00\x00helper").unwrap();
+
+        let replacement = staging.join(REPLACEMENT_EXE_NAME);
+        fs::write(&replacement, b"MZ\x00\x00replacement").unwrap();
+
+        let existing_backup = staging.join(BACKUP_EXE_NAME);
+        fs::write(&existing_backup, b"prior_backup_content").unwrap();
+
+        let res = run_helper_logic(&helper, 999999, "CustomApp.exe", 1000, &[], &[]);
+        assert!(res.is_err(), "Helper must fail closed when unresolved backup exists");
+        assert_eq!(
+            fs::read(&existing_backup).unwrap(),
+            b"prior_backup_content",
+            "Prior backup must be preserved completely untouched"
+        );
     }
 
     #[cfg(target_os = "windows")]
