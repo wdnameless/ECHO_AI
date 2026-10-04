@@ -59,7 +59,13 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 log = "0.4"
 dirs = "6"
+zip = { version = "4.3.0", default-features = false, features = ["deflate-flate2"] }
+semver = "1"
 
+[dev-dependencies]
+tempfile = "3"
+minisign-verify = "0.2"
+tauri = { version = "2", features = ["test"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-macos-permissions = "2"
 cidre = "0.11.3"

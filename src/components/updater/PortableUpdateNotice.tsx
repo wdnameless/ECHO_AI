@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { check } from "@tauri-apps/plugin-updater";
+import type { Update, DownloadEvent } from "@tauri-apps/plugin-updater";
 import { getPaths } from "@/lib/storage/app-paths";
 
 /**
@@ -14,11 +16,7 @@ export const PORTABLE_UPDATE_TARGET = "windows-x86_64-portable";
 
 /**
  * True when the running copy keeps its data next to the executable.
- *
- * A portable install used to be updated into the normal install location, not
- * in place, so anything that offers an update has to know which layout it is
- * talking to. Since portable in-place updates this decides WHICH package the
- * update button fetches, not whether to show a warning.
+ * Used for notice display; it is not authoritative for selecting a package.
  */
 export function useIsPortable(): boolean {
   const [isPortable, setIsPortable] = useState(false);
@@ -28,9 +26,9 @@ export function useIsPortable(): boolean {
     void (async () => {
       try {
         const paths = await getPaths();
-        if (!cancelled) setIsPortable(paths.root_kind === "portable");
+        if (!cancelled) setIsPortable(paths?.root_kind === "portable");
       } catch {
-        /* an unknown layout is treated as a normal install */
+        /* on layout resolution error, do not show portable notice */
       }
     })();
     return () => {
@@ -44,16 +42,51 @@ export function useIsPortable(): boolean {
 /**
  * Checks for updates against the right target for this layout.
  *
- * Portable copies ask for the zip target; installed copies use the default
- * (MSI/NSIS). One call site instead of two `check()` variants scattered over
- * the bar popover and Settings.
+ * Resolves actual native paths for EACH check. A portable copy checks the
+ * zip target, an installed copy checks the default MSI/NSIS target.
+ * Unknown layout rejects; no caller boolean determines target.
  */
-export async function checkForUpdateForLayout(
-  isPortable: boolean
-): Promise<Update | null> {
-  return isPortable
-    ? check({ target: PORTABLE_UPDATE_TARGET })
-    : check();
+export async function checkForUpdateForLayout(): Promise<Update | null> {
+  const paths = await getPaths();
+  if (paths?.root_kind === "portable") {
+    return check({ target: PORTABLE_UPDATE_TARGET });
+  }
+  if (paths?.root_kind === "appdata") {
+    return check();
+  }
+  throw new Error(`Unknown storage layout: ${String(paths?.root_kind)}`);
+}
+
+/**
+ * Installs update according to current storage layout.
+ *
+ * Re-resolves layout at install time; never relies on stale rendered state.
+ * - Installed: invokes update.downloadAndInstall, returns true (caller relaunches).
+ * - Portable: invokes install_portable_update with expectedVersion and IPC Channel,
+ *   forwards progress events, returns false (native helper owns restart).
+ * - Unknown layout: rejects without modifying app files.
+ */
+export async function installUpdateForLayout(
+  update: Update,
+  onEvent?: (event: DownloadEvent) => void
+): Promise<boolean> {
+  const paths = await getPaths();
+  if (paths?.root_kind === "portable") {
+    const channel = new Channel<DownloadEvent>();
+    if (onEvent) {
+      channel.onmessage = onEvent;
+    }
+    await invoke("install_portable_update", {
+      expectedVersion: update.version,
+      onEvent: channel,
+    });
+    return false;
+  }
+  if (paths?.root_kind === "appdata") {
+    await update.downloadAndInstall(onEvent);
+    return true;
+  }
+  throw new Error(`Unknown storage layout: ${String(paths?.root_kind)}`);
 }
 
 /**

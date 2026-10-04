@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "recordedAt": "2026-10-03",
+  "target": "http://127.0.0.1:7886",
+  "interactions": [
+    {
+      "key": "GET /signature.sig [-]",
+      "request": {
+        "method": "GET",
+        "url": "/signature.sig",
+        "headers": {
+          "host": "127.0.0.1:34781",
+          "accept": "*/*",
+          "accept-language": "*",
+          "sec-fetch-mode": "cors",
+          "user-agent": "node",
+          "accept-encoding": "gzip, deflate"
+        },
+        "body": null
+      },
+      "response": {
+        "status": 200,
+        "headers": { "content-type": "text/plain; charset=utf-8" },
+        "body": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUbm5JdEhQY2FoY2dIVDJMV3dZNWZzdjBNSXo1K2pWS3Y3dndNRlZocEF5YVRQZmZuN3ZpUk85UVRCazFhUHNLc1dXNmFicWk1ckJ0Nmo5amlHTVlTYkxRRFd4cEM4Umc4PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkwNjY0ODE5CWZpbGU6RWNobyBBSV8xLjIuMzBfeDY0LXNldHVwLmV4ZQpxNURRTjd4ZjFyQTdOZ3E2bVdVUW80QURaRXJmczVaSFkydGFXTHFxbE0rUDRGSUNpSDVQTWVZT2RGYnhSS1BKK0pZRy9uY1Q3R1lGNDBsdnR0K1hCQT09Cg=="
+      }
+    }
+  ]
+}

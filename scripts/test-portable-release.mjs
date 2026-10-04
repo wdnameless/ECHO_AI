@@ -1,0 +1,395 @@
+#!/usr/bin/env node
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+// Standard IEEE 802.3 CRC32 implementation (Node 20 compatible, zero dependencies)
+function crc32(buf) {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) {
+    crc ^= buf[i];
+    for (let j = 0; j < 8; j++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+// Fixture ZIP creator for test scenarios (Node 20 compatible)
+function createZip(entries) {
+  const parts = [];
+  const cdParts = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const nameBuf = Buffer.from(entry.name, 'utf8');
+    const content = Buffer.isBuffer(entry.content)
+      ? entry.content
+      : Buffer.from(entry.content || '', 'utf8');
+    const crc = crc32(content);
+
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0);
+    lh.writeUInt16LE(20, 4);
+    lh.writeUInt16LE(0, 6);
+    lh.writeUInt16LE(0, 8); // Store
+    lh.writeUInt16LE(0, 10);
+    lh.writeUInt16LE(0, 12);
+    lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(content.length, 18);
+    lh.writeUInt32LE(content.length, 22);
+    lh.writeUInt16LE(nameBuf.length, 26);
+    lh.writeUInt16LE(0, 28);
+    parts.push(lh, nameBuf, content);
+
+    const cdh = Buffer.alloc(46);
+    cdh.writeUInt32LE(0x02014b50, 0);
+    cdh.writeUInt16LE(20, 4);
+    cdh.writeUInt16LE(20, 6);
+    cdh.writeUInt16LE(0, 8);
+    cdh.writeUInt16LE(0, 10);
+    cdh.writeUInt16LE(0, 12);
+    cdh.writeUInt16LE(0, 14);
+    cdh.writeUInt32LE(crc, 16);
+    cdh.writeUInt32LE(content.length, 20);
+    cdh.writeUInt32LE(content.length, 24);
+    cdh.writeUInt16LE(nameBuf.length, 28);
+    cdh.writeUInt16LE(0, 30);
+    cdh.writeUInt16LE(0, 32);
+    cdh.writeUInt16LE(0, 34);
+    cdh.writeUInt16LE(0, 36);
+    cdh.writeUInt32LE(0, 38);
+    cdh.writeUInt32LE(offset, 42);
+    cdParts.push(cdh, nameBuf);
+
+    offset += 30 + nameBuf.length + content.length;
+  }
+
+  const cdOffset = offset;
+  const cdBuf = Buffer.concat(cdParts);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(0, 4);
+  eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12);
+  eocd.writeUInt32LE(cdOffset, 16);
+  eocd.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...parts, cdBuf, eocd]);
+}
+
+function runCli(args) {
+  const result = spawnSync(process.execPath, [join(process.cwd(), 'scripts', 'portable-release.mjs'), ...args], {
+    encoding: 'utf8',
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout || '',
+    stderr: result.stderr || '',
+  };
+}
+
+let passed = 0;
+let total = 0;
+
+function assert(condition, message) {
+  total++;
+  if (!condition) {
+    console.error(`FAIL: ${message}`);
+    throw new Error(`Assertion failed: ${message}`);
+  }
+  passed++;
+  console.log(`  PASS: ${message}`);
+}
+
+const tmpDir = mkdtempSync(join(tmpdir(), 'portable-release-test-'));
+
+try {
+  console.log('Running portable release regression and fixture test suite (Node 20 compatible)...');
+
+  // Valid minisign signature envelope
+  const rawMinisignEnvelope = [
+    'untrusted comment: signature from tauri secret key',
+    'RWTnnItHPcahcqKwHCs6vhkmePoe8oVrjy36j5g2esMx5vny5LluNZqQ0123456789abcdef0123456789abcdef0123456789abcdef',
+    'trusted comment: timestamp:1727956800\tfile:Echo.AI_1.2.30_portable_x64.zip',
+    'RWTnnItHPcahcqKwHCs6vhkmePoe8oVrjy36j5g2esMx5vny5LluNZqQ0123456789abcdef0123456789abcdef0123456789abcdef',
+  ].join('\n');
+
+  const base64MinisignEnvelope = Buffer.from(rawMinisignEnvelope, 'utf8').toString('base64');
+  const validExeContent = Buffer.from('MZ...valid-portable-executable-payload...', 'utf8');
+
+  // Test 1: Valid portable release workflow with base64 envelope
+  console.log('\n[Case 1] Valid portable release archive, minisign signature, and manifest');
+  {
+    const zipPath = join(tmpDir, 'Echo.AI_1.2.30_portable_x64.zip');
+    const sigPath = join(tmpDir, 'Echo.AI_1.2.30_portable_x64.zip.sig');
+    const manifestPath = join(tmpDir, 'latest.json');
+
+    const zipBuffer = createZip([
+      { name: 'Echo AI.exe', content: validExeContent },
+      { name: '.portable', content: 'portable' },
+    ]);
+    writeFileSync(zipPath, zipBuffer);
+    writeFileSync(sigPath, base64MinisignEnvelope + '\n');
+
+    const initialManifest = {
+      version: '1.2.30',
+      notes: 'Initial release with MSI/NSIS',
+      pub_date: '2026-10-03T12:00:00Z',
+      platforms: {
+        'windows-x86_64': {
+          signature: base64MinisignEnvelope,
+          url: 'https://github.com/wdnameless/ECHO_AI/releases/download/v1.2.30/Echo_AI_1.2.30_x64_en-US.msi',
+        },
+      },
+    };
+    writeFileSync(manifestPath, JSON.stringify(initialManifest, null, 2));
+
+    const valRes = runCli(['validate-archive', zipPath, sigPath, 'Echo AI.exe']);
+    assert(valRes.status === 0, 'validate-archive succeeds on valid archive and signature');
+
+    const patchRes = runCli(['patch-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', sigPath, 'wdnameless/ECHO_AI']);
+    assert(patchRes.status === 0, 'patch-manifest succeeds on valid inputs');
+
+    const checkRes = runCli(['validate-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', sigPath, 'wdnameless/ECHO_AI']);
+    assert(checkRes.status === 0, 'validate-manifest confirms patched manifest target');
+
+    const patched = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    assert(patched.platforms['windows-x86_64'] !== undefined, 'Preserves existing installed windows-x86_64 target');
+    assert(patched.platforms['windows-x86_64-portable'] !== undefined, 'Includes new windows-x86_64-portable target');
+    assert(patched.platforms['windows-x86_64-portable'].signature === base64MinisignEnvelope, 'Target signature matches canonical base64 envelope');
+    assert(
+      patched.platforms['windows-x86_64-portable'].url === 'https://github.com/wdnameless/ECHO_AI/releases/download/v1.2.30/Echo.AI_1.2.30_portable_x64.zip',
+      'Target URL matches expected release asset path'
+    );
+  }
+
+  // Test 1b: Canonicalization from raw multiline minisign text in .sig file
+  console.log('\n[Case 1b] Canonicalization of raw multiline minisign signature to single-line base64');
+  {
+    const rawSigPath = join(tmpDir, 'raw_multiline.sig');
+    const manifestPath = join(tmpDir, 'latest_canonical.json');
+
+    writeFileSync(rawSigPath, rawMinisignEnvelope + '\n');
+    const initialManifest = {
+      version: '1.2.30',
+      platforms: {
+        'windows-x86_64': {
+          signature: base64MinisignEnvelope,
+          url: 'https://example.com/app.msi',
+        },
+      },
+    };
+    writeFileSync(manifestPath, JSON.stringify(initialManifest, null, 2));
+
+    const patchRes = runCli(['patch-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', rawSigPath, 'wdnameless/ECHO_AI']);
+    assert(patchRes.status === 0, 'patch-manifest succeeds with raw multiline minisign input');
+
+    const patched = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    assert(
+      patched.platforms['windows-x86_64-portable'].signature === base64MinisignEnvelope,
+      'patch-manifest normalizes raw multiline minisign text into canonical base64 envelope'
+    );
+
+    const checkRes = runCli(['validate-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', rawSigPath, 'wdnameless/ECHO_AI']);
+    assert(checkRes.status === 0, 'validate-manifest verifies canonicalized signature matches');
+  }
+
+  // Test 2: Missing .portable marker
+  console.log('\n[Case 2] Missing .portable marker in archive root');
+  {
+    const badZipPath = join(tmpDir, 'missing_marker.zip');
+    const sigPath = join(tmpDir, 'missing_marker.zip.sig');
+    writeFileSync(sigPath, base64MinisignEnvelope);
+
+    const badZipBuffer = createZip([
+      { name: 'Echo AI.exe', content: validExeContent },
+    ]);
+    writeFileSync(badZipPath, badZipBuffer);
+
+    const res = runCli(['validate-archive', badZipPath, sigPath, 'Echo AI.exe']);
+    assert(res.status !== 0, 'validate-archive fails when .portable marker is missing');
+  }
+
+  // Test 3: Signature format validation (missing, empty, non-envelope text, arbitrary base64, corrupt lines)
+  console.log('\n[Case 3] Signature validation: missing, empty, arbitrary non-minisign text/base64, corrupt sig lines');
+  {
+    const zipPath = join(tmpDir, 'sig_test.zip');
+    const zipBuffer = createZip([
+      { name: 'Echo AI.exe', content: validExeContent },
+      { name: '.portable', content: 'portable' },
+    ]);
+    writeFileSync(zipPath, zipBuffer);
+
+    // Missing signature file
+    const resMissing = runCli(['validate-archive', zipPath, join(tmpDir, 'nonexistent.sig')]);
+    assert(resMissing.status !== 0, 'validate-archive fails when signature file does not exist');
+
+    // Empty signature file
+    const emptySigPath = join(tmpDir, 'empty.sig');
+    writeFileSync(emptySigPath, '   \n');
+    const resEmpty = runCli(['validate-archive', zipPath, emptySigPath]);
+    assert(resEmpty.status !== 0, 'validate-archive fails when signature file is empty');
+
+    // Non-minisign plain text
+    const plainTextSigPath = join(tmpDir, 'plain_text.sig');
+    writeFileSync(plainTextSigPath, 'arbitrary nonempty text');
+    const resPlainText = runCli(['validate-archive', zipPath, plainTextSigPath]);
+    assert(resPlainText.status !== 0, 'validate-archive fails on arbitrary plain text signature');
+
+    // Arbitrary base64 string without minisign headers
+    const randomBase64SigPath = join(tmpDir, 'random_base64.sig');
+    writeFileSync(randomBase64SigPath, Buffer.alloc(96, 1).toString('base64'));
+    const resRandomBase64 = runCli(['validate-archive', zipPath, randomBase64SigPath]);
+    assert(resRandomBase64.status !== 0, 'validate-archive fails on arbitrary base64 without minisign headers');
+
+    // Minisign envelope with corrupt signature line syntax (not base64)
+    const corruptLineSigPath = join(tmpDir, 'corrupt_line.sig');
+    const corruptLineEnvelope = [
+      'untrusted comment: signature from tauri secret key',
+      'NOT-VALID-BASE64-SIG-DATA!@#$',
+      'trusted comment: timestamp:1727956800\tfile:test.zip',
+      'RWTnnItHPcahcqKwHCs6vhkmePoe8oVrjy36j5g2esMx5vny5LluNZqQ0123456789abcdef0123456789abcdef0123456789abcdef',
+    ].join('\n');
+    writeFileSync(corruptLineSigPath, Buffer.from(corruptLineEnvelope, 'utf8').toString('base64'));
+    const resCorruptLine = runCli(['validate-archive', zipPath, corruptLineSigPath]);
+    assert(resCorruptLine.status !== 0, 'validate-archive fails when signature line data is invalid base64');
+  }
+
+  // Test 4: Manifest target and version mismatches
+  console.log('\n[Case 4] Manifest target mismatches: URL, signature, version equality, platform corruption');
+  {
+    const manifestPath = join(tmpDir, 'mismatch_latest.json');
+    const sigPath = join(tmpDir, 'mismatch.sig');
+    writeFileSync(sigPath, base64MinisignEnvelope);
+
+    // Mismatched manifest version
+    const wrongVersionManifest = {
+      version: '1.2.29', // Does not match expected 1.2.30
+      platforms: {
+        'windows-x86_64': { signature: base64MinisignEnvelope, url: 'https://example.com/app.msi' },
+        'windows-x86_64-portable': {
+          signature: base64MinisignEnvelope,
+          url: 'https://github.com/wdnameless/ECHO_AI/releases/download/v1.2.30/Echo.AI_1.2.30_portable_x64.zip',
+        },
+      },
+    };
+    writeFileSync(manifestPath, JSON.stringify(wrongVersionManifest));
+    const resWrongVer = runCli(['validate-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', sigPath, 'wdnameless/ECHO_AI']);
+    assert(resWrongVer.status !== 0, 'validate-manifest fails on manifest version mismatch');
+
+    // Mismatched signature in manifest
+    const differentEnvelope = Buffer.from(rawMinisignEnvelope.replace('1.2.30', '1.2.31'), 'utf8').toString('base64');
+    const badSigManifest = {
+      version: '1.2.30',
+      platforms: {
+        'windows-x86_64': { signature: base64MinisignEnvelope, url: 'https://example.com/app.msi' },
+        'windows-x86_64-portable': {
+          signature: differentEnvelope,
+          url: 'https://github.com/wdnameless/ECHO_AI/releases/download/v1.2.30/Echo.AI_1.2.30_portable_x64.zip',
+        },
+      },
+    };
+    writeFileSync(manifestPath, JSON.stringify(badSigManifest));
+    const resBadSig = runCli(['validate-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', sigPath, 'wdnameless/ECHO_AI']);
+    assert(resBadSig.status !== 0, 'validate-manifest fails on signature mismatch');
+
+    // Mismatched URL in manifest
+    const badUrlManifest = {
+      version: '1.2.30',
+      platforms: {
+        'windows-x86_64': { signature: base64MinisignEnvelope, url: 'https://example.com/app.msi' },
+        'windows-x86_64-portable': {
+          signature: base64MinisignEnvelope,
+          url: 'https://github.com/other/repo/releases/download/v1.2.30/wrong.zip',
+        },
+      },
+    };
+    writeFileSync(manifestPath, JSON.stringify(badUrlManifest));
+    const resBadUrl = runCli(['validate-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', sigPath, 'wdnameless/ECHO_AI']);
+    assert(resBadUrl.status !== 0, 'validate-manifest fails on URL mismatch');
+
+    // Missing installed platform preservation check
+    const corruptedInstalledManifest = {
+      version: '1.2.30',
+      platforms: {
+        'windows-x86_64': { signature: '' },
+        'windows-x86_64-portable': {
+          signature: base64MinisignEnvelope,
+          url: 'https://github.com/wdnameless/ECHO_AI/releases/download/v1.2.30/Echo.AI_1.2.30_portable_x64.zip',
+        },
+      },
+    };
+    writeFileSync(manifestPath, JSON.stringify(corruptedInstalledManifest));
+    const resCorrupt = runCli(['validate-manifest', manifestPath, '1.2.30', 'Echo.AI_1.2.30_portable_x64.zip', sigPath, 'wdnameless/ECHO_AI']);
+    assert(resCorrupt.status !== 0, 'validate-manifest fails if installed target is corrupted');
+  }
+
+  // Test 5: Root entries whitelist and shape violations
+  console.log('\n[Case 5] Archive shape violations: extra entries, paths, missing executable');
+  {
+    const sigPath = join(tmpDir, 'shape.sig');
+    writeFileSync(sigPath, base64MinisignEnvelope);
+
+    // Extra entry in root
+    const extraZipPath = join(tmpDir, 'extra.zip');
+    writeFileSync(extraZipPath, createZip([
+      { name: 'Echo AI.exe', content: validExeContent },
+      { name: '.portable', content: 'portable' },
+      { name: 'extra_payload.exe', content: 'extra' },
+    ]));
+    const resExtra = runCli(['validate-archive', extraZipPath, sigPath, 'Echo AI.exe']);
+    assert(resExtra.status !== 0, 'validate-archive fails on extra root entry');
+
+    // Directory separator in entry name
+    const nestedZipPath = join(tmpDir, 'nested.zip');
+    writeFileSync(nestedZipPath, createZip([
+      { name: 'sub/Echo AI.exe', content: validExeContent },
+      { name: '.portable', content: 'portable' },
+    ]));
+    const resNested = runCli(['validate-archive', nestedZipPath, sigPath, 'Echo AI.exe']);
+    assert(resNested.status !== 0, 'validate-archive fails on nested directory path in entry');
+
+    // Missing executable
+    const noExeZipPath = join(tmpDir, 'no_exe.zip');
+    writeFileSync(noExeZipPath, createZip([
+      { name: 'wrong_app.exe', content: validExeContent },
+      { name: '.portable', content: 'portable' },
+    ]));
+    const resNoExe = runCli(['validate-archive', noExeZipPath, sigPath, 'Echo AI.exe']);
+    assert(resNoExe.status !== 0, 'validate-archive fails when expected executable is missing');
+  }
+
+  // Test 6: Corrupted, empty, or truncated archive rejection
+  console.log('\n[Case 6] Corrupted, empty, and truncated archive rejection');
+  {
+    const sigPath = join(tmpDir, 'corrupt.sig');
+    writeFileSync(sigPath, base64MinisignEnvelope);
+
+    // Corrupt non-zip payload
+    const corruptZip = join(tmpDir, 'corrupt.zip');
+    writeFileSync(corruptZip, Buffer.from('corrupt non-zip raw file bytes'));
+    const resCorrupt = runCli(['validate-archive', corruptZip, sigPath]);
+    assert(resCorrupt.status !== 0, 'validate-archive fails on non-zip corrupted archive bytes');
+
+    // Empty archive file
+    const emptyZip = join(tmpDir, 'empty.zip');
+    writeFileSync(emptyZip, Buffer.alloc(0));
+    const resEmpty = runCli(['validate-archive', emptyZip, sigPath]);
+    assert(resEmpty.status !== 0, 'validate-archive fails on 0-byte empty archive');
+
+    // Truncated zip header (smaller than EOCD minimum 22 bytes)
+    const truncatedZip = join(tmpDir, 'truncated.zip');
+    writeFileSync(truncatedZip, Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    const resTruncated = runCli(['validate-archive', truncatedZip, sigPath]);
+    assert(resTruncated.status !== 0, 'validate-archive fails on truncated zip file');
+  }
+
+  console.log(`\nAll tests passed: ${passed}/${total}`);
+} finally {
+  try {
+    rmSync(tmpDir, { recursive: true, force: true });
+  } catch {}
+}

@@ -4241,11 +4241,13 @@ dependencies = [
  "libpulse-binding",
  "libpulse-simple-binding",
  "log",
+ "minisign-verify",
  "once_cell",
  "reqwest 0.12.23",
  "rfd",
  "ringbuf",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -4265,12 +4267,14 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-sql",
  "tauri-plugin-updater",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",
  "wasapi",
  "windows 0.61.3",
  "xcap",
+ "zip",
 ]
 
 [[package]]
@@ -8516,6 +8520,7 @@ checksum = "9aed4ac33e8eb078c89e6cbb1d5c4c7703ec6d299fc3e7c3695af8f8b423468b"
 dependencies = [
  "arbitrary",
  "crc32fast",
+ "flate2",
  "indexmap 2.10.0",
  "memchr",
 ]

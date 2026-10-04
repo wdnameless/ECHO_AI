@@ -11,6 +11,7 @@ mod shortcuts;
 mod tray;
 mod vocab;
 mod window;
+pub mod portable_update;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tauri_plugin_posthog::{init as posthog_init, PostHogConfig, PostHogOptions};
@@ -241,8 +242,10 @@ pub fn run() {
             models::delete_model,
             models::select_model,
             models::selected_model,
+            portable_update::install_portable_update,
         ])
         .setup(|app| {
+            portable_update::cleanup_old_staging_if_needed();
             // Setup main window positioning
             window::setup_main_window(app).expect("Failed to setup main window");
             // Auto-start the local Handy STT engine

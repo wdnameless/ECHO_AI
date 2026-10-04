@@ -15,10 +15,17 @@ import {
   ScrollArea,
 } from "@/components/ui";
 import { Markdown } from "@/components/Markdown";
-import { Update } from "@tauri-apps/plugin-updater";
+import type { Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { useWindowResize } from "@/hooks";
-import { PortableUpdateNotice, useIsPortable, checkForUpdateForLayout } from "./PortableUpdateNotice";
+import {
+  PortableUpdateNotice,
+  useIsPortable,
+  checkForUpdateForLayout,
+  installUpdateForLayout,
+} from "./PortableUpdateNotice";
+
+export * from "./PortableUpdateNotice";
 
 type UpdateState =
   | "checking"
@@ -39,6 +46,7 @@ interface DownloadProgress {
 export const Updater = () => {
   const [updateState, setUpdateState] = useState<UpdateState>("uptodate");
   const [update, setUpdate] = useState<Update | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [progress, setProgress] = useState<DownloadProgress>({
     downloaded: 0,
     contentLength: 0,
@@ -48,29 +56,27 @@ export const Updater = () => {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [manualClose, setManualClose] = useState(false);
 
-  // Portable copies are not updated in place: the installer puts a normal copy
-  // in the system location, and the portable data (settings, engine, models)
-  // does not move across. Warn before the button, not after the reboot.
+  // Keeps notice visible in popover when running from a portable directory.
   const isPortable = useIsPortable();
   const { resizeWindow } = useWindowResize();
 
   const checkForUpdates = async () => {
     try {
+      setErrorMessage(null);
       setUpdateState("checking");
 
-      // Portable copies fetch the zip target; installed copies the MSI/NSIS
-      // default. Same button, same flow — different package.
-      const foundUpdate = await checkForUpdateForLayout(isPortable);
+      const foundUpdate = await checkForUpdateForLayout();
       if (foundUpdate) {
         setUpdate(foundUpdate);
         setUpdateState("available");
       } else {
         setUpdateState("uptodate");
       }
-    } catch (err) {
+    } catch (err: unknown) {
       console.error("Failed to check for updates:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      setErrorMessage(message);
       setUpdateState("error");
-      setIsPopoverOpen(false);
     }
   };
 
@@ -78,10 +84,11 @@ export const Updater = () => {
     if (!update) return;
 
     try {
+      setErrorMessage(null);
       setUpdateState("downloading");
       setProgress({ downloaded: 0, contentLength: 0, percentage: 0 });
 
-      await update.downloadAndInstall((event) => {
+      const shouldRelaunch = await installUpdateForLayout(update, (event) => {
         switch (event.event) {
           case "Started":
             setProgress((prev) => ({
@@ -114,12 +121,16 @@ export const Updater = () => {
 
       setUpdateState("ready");
 
-      // Auto-relaunch after a short delay to show success state
-      setTimeout(async () => {
-        await relaunch();
-      }, 2000);
-    } catch (err) {
+      if (shouldRelaunch) {
+        // Auto-relaunch after a short delay to show success state
+        setTimeout(async () => {
+          await relaunch();
+        }, 2000);
+      }
+    } catch (err: unknown) {
       console.error("Failed to download/install update:", err);
+      const message = err instanceof Error ? err.message : String(err);
+      setErrorMessage(message);
       setUpdateState("failed");
       // Keep the popover open so user can try again
       setIsPopoverOpen(true);
@@ -178,6 +189,7 @@ export const Updater = () => {
           </>
         );
       case "error":
+      case "failed":
         return (
           <>
             <AlertCircle className="mr-2 h-4 w-4" />
@@ -225,7 +237,7 @@ export const Updater = () => {
   };
 
   // Only show updater when there's an update available or during active operations
-  if (updateState === "uptodate" || updateState === "error") {
+  if (updateState === "uptodate") {
     return null;
   }
 
@@ -237,11 +249,21 @@ export const Updater = () => {
           onClick={handleTriggerClick}
           className="cursor-pointer"
           disabled={updateState === "checking"}
-          title={`Update available: ${update?.version}`}
-          aria-label={`Update available: ${update?.version}`}
+          title={
+            updateState === "error"
+              ? "Update check failed"
+              : `Update available: ${update?.version ?? ""}`
+          }
+          aria-label={
+            updateState === "error"
+              ? "Update check failed"
+              : `Update available: ${update?.version ?? ""}`
+          }
         >
           {updateState === "checking" ? (
             <Loader2 className="h-4 w-4 animate-spin" />
+          ) : updateState === "error" ? (
+            <AlertCircle className="h-4 w-4 text-destructive" />
           ) : (
             <Download className="h-4 w-4" />
           )}
@@ -259,11 +281,12 @@ export const Updater = () => {
             {/* Update Header */}
             <div className="border-b border-input/50 pb-2">
               <h1 className="text-lg font-bold bg-gradient-to-r from-primary to-primary/70 bg-clip-text text-transparent">
-                Update Available
+                {updateState === "error" ? "Update Error" : "Update Available"}
               </h1>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                A new version ({update?.version}) is available. Here's what's
-                new:
+                {updateState === "error"
+                  ? "Failed to check or download updates. Please try again."
+                  : `A new version (${update?.version}) is available. Here's what's new:`}
               </p>
             </div>
 
@@ -284,11 +307,20 @@ export const Updater = () => {
 
         {/* Fixed Download Section */}
         <div className="border-t border-input/50 p-4 space-y-3">
+          {errorMessage && (
+            <p
+              role="alert"
+              className="flex items-center gap-1.5 text-xs text-destructive leading-relaxed"
+            >
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+              <span>{errorMessage}</span>
+            </p>
+          )}
           <Button
             onClick={getButtonOnClick()}
             disabled={getButtonDisabled()}
             className="w-full"
-            variant={updateState === "failed" ? "destructive" : "default"}
+            variant={updateState === "failed" || updateState === "error" ? "destructive" : "default"}
           >
             {getButtonContent()}
           </Button>
