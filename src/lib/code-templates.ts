@@ -298,3 +298,33 @@ export function matchCodeTemplate(question: string): CodeTemplate | null {
   const q = question.toLowerCase();
   return CODE_TEMPLATES.find((t) => t.keywords.some((k) => q.includes(k))) ?? null;
 }
+
+/**
+ * Finds the most recent code-flavored request in the dialogue, newest first.
+ *
+ * Why: the candidate presses "Код" AFTER the discussion moved on — the freshest
+ * line ("Mm-hmm", "Логично") has no code intent, but three messages ago the
+ * interviewer said "Напиши функцию на псевдопитоне". Answering the freshest
+ * line yields the generic fallback ("сначала каркас, потом детали") — correct
+ * code path, wrong question. Scanning back finds the real task.
+ *
+ * A line "matches" when a template hits it OR it carries an explicit code verb
+ * (напиши, write, implement, код, function, ...). Returns the text or null.
+ */
+const CODE_VERBS = [
+  "напиши", "написать", "пиши", "реализуй", "реализов",
+  "код", "функци", "function", "implement", "write the",
+  "write a", "code it", "псевдо", "алгоритм", "скрипт",
+  "компонент", "хук", "hook", "задани", "task",
+];
+
+export function findCodeRequestInHistory(texts: string[]): string | null {
+  for (let i = texts.length - 1; i >= 0; i--) {
+    const text = texts[i];
+    if (!text || !text.trim()) continue;
+    if (matchCodeTemplate(text)) return text;
+    const q = text.toLowerCase();
+    if (CODE_VERBS.some((v) => q.includes(v))) return text;
+  }
+  return null;
+}

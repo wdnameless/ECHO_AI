@@ -26,9 +26,13 @@ const BREAK_MARKERS = [
 export function formatSpokenAnswer(raw: string): string[] {
   if (!raw) return [];
 
+  // Fenced code passes through untouched: collapsing newlines would destroy
+  // indentation and glue the snippet into one prose line (the code-answer bug).
+  // The renderer splits fence from prose itself (see splitCodeAnswer).
+  if (/```/.test(raw)) return [raw];
+
   // Collapse newlines into single spaces, normalize whitespace
   const text = raw.replace(/\s+/g, " ").trim();
-  if (!text) return [];
 
   // Split into sentences
   const sentences = text

@@ -8,7 +8,7 @@ import {
 import { useAppBootstrap, useBarChrome } from "@/hooks";
 import { useApp } from "@/contexts";
 import { useTheme } from "@/contexts/theme.context";
-import { HeadphonesIcon, MicIcon, Eye, EyeOff, PinIcon, CodeIcon } from "lucide-react";
+import { HeadphonesIcon, MicIcon, Eye, EyeOff, PinIcon, CodeXmlIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ErrorBoundary } from "react-error-boundary";
 import { ErrorLayout } from "@/layouts";
@@ -266,7 +266,7 @@ const App = () => {
             onClick={() => window.dispatchEvent(new CustomEvent("code-mode-trigger"))}
             data-no-drag="true"
           >
-            <CodeIcon className="h-4 w-4 opacity-70" />
+            <CodeXmlIcon className="h-4 w-4 opacity-70" />
           </Button>
           {/* Opacity 20-100%: stealth visibility control (R03). */}
           <input

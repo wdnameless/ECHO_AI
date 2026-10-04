@@ -63,6 +63,15 @@ describe("ASR boilerplate scrub", () => {
     }
   });
 
+  it("scrubs purple-prose narration spliced into speech", () => {
+    // Live case: EN audio "Shooting him" came back with a Russian narration
+    // about suicide. The words around it are genuine and must survive.
+    expect(
+      scrubAsrHallucinations("Okay. Yeah. Shooting him. Фиолетовая тряпочка говорит о том, что он покончил с собой.")
+    ).toBe("Okay. Yeah. Shooting him.");
+    expect(scrubAsrHallucinations("Фиолетовый")).toBe("");
+  });
+
   it("treats nothing as nothing", () => {
     expect(scrubAsrHallucinations("")).toBe("");
     expect(scrubAsrHallucinations("   ")).toBe("");

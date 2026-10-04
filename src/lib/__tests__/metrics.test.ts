@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
+  buildMetricsDump,
   getMetrics,
   recordTtft,
   recordSttDuration,
@@ -121,6 +122,24 @@ describe("metrics module", () => {
       unsubscribe();
       recordTtft(800);
       expect(notifiedCount).toBe(2);
+    });
+  });
+
+  describe("session dump", () => {
+    it("renders numbers and context without transcripts", () => {
+      recordTtft(350);
+      recordSttDuration(120);
+      const dump = buildMetricsDump({
+        appVersion: "1.2.30",
+        sttModel: "parakeet-tdt-0.6b-v3-Q8_0.gguf",
+        llmModel: "gemini-3.6-flash-low",
+        asrLanguage: "ru",
+        speechModelLang: "ru",
+        answerLength: "auto",
+      });
+      expect(dump).toContain("350мс");
+      expect(dump).toContain("parakeet-tdt-0.6b-v3");
+      expect(dump).toContain("ru");
     });
   });
 });

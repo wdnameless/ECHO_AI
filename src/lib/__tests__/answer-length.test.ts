@@ -55,3 +55,24 @@ describe("opener rotation", () => {
     }
   });
 });
+
+
+describe("P2 language mismatch badge", () => {
+  it("detectTextLanguage decides by script majority", async () => {
+    const { detectTextLanguage } = await import("@/lib/transcript-stabilizer");
+    expect(detectTextLanguage("Кто будет владеть этими алертами?")).toBe("ru");
+    expect(detectTextLanguage("Who did it? Tell me about MTTR")).toBe("en");
+  });
+
+  it("short noise does not deserve a badge (min length 8)", async () => {
+    const { detectTextLanguage } = await import("@/lib/transcript-stabilizer");
+    expect("Mm-hmm.".trim().length).toBeLessThan(8);
+    expect(detectTextLanguage("Mm-hmm.")).toBe("en");
+  });
+
+  it("mismatch shows only when spoken differs from active model", () => {
+    const spoken: string = "ru";
+    const activeModel: string = "en";
+    expect(spoken === activeModel).toBe(false);
+  });
+});

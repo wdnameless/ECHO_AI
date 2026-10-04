@@ -91,6 +91,52 @@ export function getMetrics(): SystemMetrics {
 }
 
 /**
+ * Session dump: metrics + human-readable summary for debugging "у меня медленно".
+ *
+ * Pure string builder — the caller decides where it goes (clipboard per P1;
+ * file export stays OUT). No secrets, no audio, no transcripts: only timers
+ * and counters plus a context block the caller passes in.
+ */
+export function buildMetricsDump(context?: {
+  appVersion?: string | null;
+  sttModel?: string | null;
+  llmModel?: string | null;
+  asrLanguage?: string | null;
+  speechModelLang?: string | null;
+  answerLength?: string | null;
+}): string {
+  const m = metricsState;
+  const lines = [
+    "Echo AI — дамп сессии распознавания/ответов",
+    `Время: ${new Date().toISOString()}`,
+    "",
+    "[Контекст]",
+    `app: ${context?.appVersion ?? "-"}`,
+    `stt-модель: ${context?.sttModel ?? "-"}`,
+    `llm-модель: ${context?.llmModel ?? "-"}`,
+    `язык распознавания: ${context?.asrLanguage ?? "-"}`,
+    `сегмент RU/EN: ${context?.speechModelLang ?? "-"}`,
+    `длина ответов: ${context?.answerLength ?? "-"}`,
+    "",
+    "[STT инференс]",
+    `last: ${m.lastSttDurationMs ?? "-"}мс, avg: ${m.avgSttDurationMs ?? "-"}мс, замеров: ${m.sttSamplesCount}`,
+    "",
+    "[Живой проход (partial)]",
+    `last: ${m.lastPartialMs ?? "-"}мс, avg: ${m.avgPartialMs ?? "-"}мс, замеров: ${m.partialSamplesCount}`,
+    "",
+    "[Первые слова (first-text)]",
+    `last: ${m.lastFirstTextMs ?? "-"}мс`,
+    "",
+    "[Сеть/движок]",
+    `ws-reconnects: ${m.wsReconnectCount}, lost-segments: ${m.lostSegmentsCount}`,
+    "",
+    "[TTFT ответов ИИ]",
+    `last: ${m.lastTtftMs ?? "-"}мс, avg: ${m.avgTtftMs ?? "-"}мс, замеров: ${m.ttftSamplesCount}`,
+  ];
+  return lines.join("\n");
+}
+
+/**
  * Subscribe to metrics updates. Delivers current snapshot immediately.
  */
 export function onMetrics(cb: MetricsListener): () => void {
