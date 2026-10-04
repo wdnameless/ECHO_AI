@@ -126,7 +126,7 @@ const App = () => {
         <Card
           data-tauri-drag-region="true"
           onMouseDown={handleDragMouseDown}
-          className="w-full flex flex-row items-center gap-2 p-2 select-none"
+          className="w-full flex flex-row items-center gap-2 p-2 select-none min-w-0 overflow-hidden"
         >
           {/* Mode switcher */}
           <div
@@ -167,11 +167,11 @@ const App = () => {
           {systemAudio?.capturing ? (
             <div
               data-tauri-drag-region="true"
-              className="flex flex-row items-center gap-2 justify-between w-full"
+              className="flex flex-row items-center gap-2 justify-between w-full min-w-0 overflow-hidden"
             >
               <div
                 data-tauri-drag-region="true"
-                className="flex flex-1 items-center gap-2"
+                className="flex flex-1 items-center gap-2 min-w-0 overflow-hidden"
               >
                 <AudioVisualizer
                   isRecording={systemAudio?.capturing}
@@ -180,7 +180,7 @@ const App = () => {
               </div>
               <div
                 data-tauri-drag-region="true"
-                className="flex !w-fit items-center gap-2"
+                className="flex !w-fit items-center gap-2 min-w-0 max-w-full overflow-hidden shrink-0"
               >
                 <StatusIndicator
                   setupRequired={systemAudio.setupRequired}

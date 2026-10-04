@@ -28,7 +28,7 @@ export const StatusIndicator = ({
   }
 
   return (
-    <div className="flex flex-1 items-center gap-2 px-3 py-2 justify-end">
+    <div className="flex flex-1 items-center gap-2 px-3 py-2 justify-end min-w-0 overflow-hidden">
       {/* Priority: Error > AI Processing > Transcribing > Listening */}
       {error && !setupRequired ? (
         <div
@@ -39,19 +39,19 @@ export const StatusIndicator = ({
           <span className="text-xs font-medium truncate">{error}</span>
         </div>
       ) : isAIProcessing ? (
-        <div className="flex items-center gap-2 animate-pulse">
+        <div className="flex items-center gap-2 animate-pulse min-w-0">
           <LoaderIcon className="w-4 h-4 animate-spin" />
-          <span className="text-xs font-medium">Generating response...</span>
+          <span className="text-xs font-medium truncate">Generating response...</span>
         </div>
       ) : isProcessing ? (
-        <div className="flex items-center gap-2 animate-pulse">
+        <div className="flex items-center gap-2 animate-pulse min-w-0">
           <LoaderIcon className="w-4 h-4 animate-spin" />
-          <span className="text-xs font-medium">Transcribing...</span>
+          <span className="text-xs font-medium truncate">Transcribing...</span>
         </div>
       ) : capturing ? (
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0 overflow-hidden">
           {systemActive && (
-            <div className="flex items-center gap-1.5 text-green-600">
+            <div className="flex items-center gap-1.5 text-green-600 shrink-0">
               <HeadphonesIcon className="w-3.5 h-3.5" />
               <span className="text-[10px] font-medium">System</span>
               <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
@@ -60,14 +60,14 @@ export const StatusIndicator = ({
           {micActive && (
             <div
               className={cn(
-                "flex items-center gap-1.5",
+                "flex items-center gap-1.5 shrink-0",
                 micSpeaking ? "text-blue-600" : "text-green-600"
               )}
             >
               <MicIcon
                 className={cn("w-3.5 h-3.5", micSpeaking && "animate-pulse")}
               />
-              <span className="text-[10px] font-medium">
+              <span className="text-[10px] font-medium whitespace-nowrap">
                 {micSpeaking ? "You're speaking..." : "Mic"}
               </span>
               <div
