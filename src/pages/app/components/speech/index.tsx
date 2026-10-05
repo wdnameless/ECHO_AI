@@ -145,9 +145,9 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
           <div className="flex flex-col h-full max-w-full min-w-0 overflow-hidden">
             {/* Header - Top Control Toolbar (All actions consolidated at top!) */}
             <div className="flex-shrink-0 p-2.5 border-b border-border/50 bg-muted/10">
-              <div className="flex items-center justify-between gap-1.5 min-w-0 w-full">
+              <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 min-w-0 w-full">
                 {/* Left: Mode Switcher & VAD */}
-                <div className="flex items-center gap-1.5 min-w-0">
+                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 min-w-0">
                   {!setupRequired && (
                     <ModeSwitcher
                       isVadMode={isVadMode}
@@ -347,7 +347,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                 </div>
 
                 {/* Right: Quick Actions, Screenshot, Settings & New */}
-                <div className="flex items-center gap-1 shrink-0">
+                <div className="flex flex-wrap items-center gap-x-1 gap-y-1 shrink-0 ml-auto">
                   {/* Screenshot Button — остаётся видимой и объясняет причину,
                       когда возможность недоступна (R17), вместо исчезновения. */}
                   {supportsImages && isVadMode && !setupRequired && (
