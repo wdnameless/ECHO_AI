@@ -6,7 +6,9 @@ import {
   saveAutoAskConfig,
   shouldAutoAsk,
   AutoAskManager,
+  resolveAutoAskTarget,
 } from "../auto-ask";
+import { setAnswerMode } from "../answer-mode";
 import { safeLocalStorage } from "../storage/helper";
 
 describe("auto-ask", () => {
@@ -296,6 +298,47 @@ describe("auto-ask", () => {
       vi.advanceTimersByTime(60_000);
       m.dispatchNow(q);
       expect(asked).toHaveLength(2);
+      expect(asked).toHaveLength(2);
+    });
+  });
+
+  describe("AutoAsk routing (R02 livecode)", () => {
+    it("resolves route target based on answer mode", () => {
+      expect(resolveAutoAskTarget("livecode")).toBe("code");
+      expect(resolveAutoAskTarget("interview")).toBe("interview");
+      expect(resolveAutoAskTarget("thought")).toBe("interview");
+    });
+
+    it("routes auto-ask dispatch to onDispatchCode when livecode active", () => {
+      const onDispatch = vi.fn();
+      const onDispatchCode = vi.fn();
+      const manager = new AutoAskManager({
+        getConfig: () => ({ enabled: true, silenceDurationMs: 1000, mode: "auto" }),
+        getAnswerMode: () => "livecode",
+        onDispatch,
+        onDispatchCode,
+        isAIProcessing: () => false,
+      });
+
+      manager.dispatchNow("Напиши функцию троттлинга");
+      expect(onDispatchCode).toHaveBeenCalledWith("Напиши функцию троттлинга");
+      expect(onDispatch).not.toHaveBeenCalled();
+    });
+
+    it("routes auto-ask to standard onDispatch with target when in interview mode", () => {
+      const onDispatch = vi.fn();
+      const onDispatchCode = vi.fn();
+      const manager = new AutoAskManager({
+        getConfig: () => ({ enabled: true, silenceDurationMs: 1000, mode: "auto" }),
+        getAnswerMode: () => "interview",
+        onDispatch,
+        onDispatchCode,
+        isAIProcessing: () => false,
+      });
+
+      manager.dispatchNow("Расскажи про события в браузере");
+      expect(onDispatch).toHaveBeenCalledWith("Расскажи про события в браузере");
+      expect(onDispatchCode).not.toHaveBeenCalled();
     });
   });
 });

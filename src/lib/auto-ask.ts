@@ -1,7 +1,19 @@
 import { safeLocalStorage } from "./storage/helper";
 import { isFillerOrBackchannel } from "./speech-filter";
+import { getAnswerMode, type AnswerMode } from "./answer-mode";
 
 export type AutoAskMode = "auto" | "manual";
+
+export type AutoAskTarget = "interview" | "code";
+
+/**
+ * Resolves whether an auto-ask question should route into the standard interview
+ * prompt or into the livecode code prompt without manual clicks.
+ */
+export function resolveAutoAskTarget(mode?: AnswerMode): AutoAskTarget {
+  const current = mode ?? getAnswerMode();
+  return current === "livecode" ? "code" : "interview";
+}
 
 export interface AutoAskConfig {
   enabled: boolean;
@@ -123,8 +135,10 @@ export function shouldAutoAsk(params: ShouldAutoAskParams): boolean {
 
 export interface AutoAskManagerOptions {
   getConfig?: () => AutoAskConfig;
-  onDispatch: (text: string) => void | Promise<void>;
+  onDispatch: (text: string, target?: AutoAskTarget) => void | Promise<void>;
+  onDispatchCode?: (text: string) => void | Promise<void>;
   isAIProcessing: () => boolean;
+  getAnswerMode?: () => AnswerMode;
 }
 
 /**
@@ -207,7 +221,7 @@ export class AutoAskManager {
       return;
     }
     this.noteAsked(text);
-    void this.options.onDispatch(text);
+    this.dispatchTarget(text);
   }
 
   /** True when `text` repeats a question already dispatched. */
@@ -260,7 +274,7 @@ export class AutoAskManager {
       this.heldText = text;
       return;
     }
-    void this.options.onDispatch(text);
+    this.dispatchTarget(text);
   }
 
   /** True when a question is waiting for the current answer to finish. */
@@ -312,7 +326,7 @@ export class AutoAskManager {
     // the timer would still produce a second answer.
     if (this.isRepeatOfAsked(textToDispatch)) return;
     this.noteAsked(textToDispatch);
-    void this.options.onDispatch(textToDispatch);
+    this.dispatchTarget(textToDispatch);
   }
 
   private isEligible(text: string): boolean {
@@ -335,6 +349,20 @@ export class AutoAskManager {
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = null;
+    }
+  }
+
+  private dispatchTarget(text: string): void {
+    const mode = this.options.getAnswerMode
+      ? this.options.getAnswerMode()
+      : getAnswerMode();
+    const target = resolveAutoAskTarget(mode);
+    if (target === "code" && this.options.onDispatchCode) {
+      void this.options.onDispatchCode(text);
+    } else if (target === "code") {
+      void this.options.onDispatch(text, "code");
+    } else {
+      void this.options.onDispatch(text);
     }
   }
 }

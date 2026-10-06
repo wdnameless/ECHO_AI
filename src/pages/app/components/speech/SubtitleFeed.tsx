@@ -28,6 +28,12 @@ import {
   type SelfEvolutionStats,
 } from "@/lib/storage/user-facts";
 import { formatSpokenAnswer } from "@/lib/spoken-format";
+import {
+  splitCodeAnswer,
+  splitCodeForCopy,
+  type SplitCodeResult,
+} from "@/lib/code-answer";
+export { splitCodeAnswer, splitCodeForCopy, type SplitCodeResult };
 import { HoverTranslate } from "@/lib/hover-translate";
 import { resolveProviderModel } from "@/lib/functions/ai-response.function";
 import { addCorrection, applyCorrections } from "@/lib/vocab";
@@ -215,18 +221,6 @@ const StreamingAiRow = memo(function StreamingAiRow({
   );
 });
 
-/** Splits a code answer into fence block + spoken prose. */
-export function splitCodeAnswer(text: string): {
-  code: string | null;
-  lang: string;
-  prose: string[];
-} {
-  const m = text.match(/```(\w*)\n([\s\S]*?)```/);
-  if (!m) return { code: null, lang: "", prose: formatSpokenAnswer(text) };
-  const [, lang, code] = m;
-  const rest = (text.slice(0, m.index) + text.slice(m.index! + m[0].length)).trim();
-  return { code: code.replace(/\n$/, ""), lang: lang || "ts", prose: formatSpokenAnswer(rest) };
-}
 
 /** Code block with tab stops, copy-snippet button, and spoken narration below. */
 const CodeAnswerBody = memo(function CodeAnswerBody({
@@ -284,7 +278,7 @@ const AnswerBody = memo(function AnswerBody({
   codeCopied?: boolean;
 }) {
   const split = splitCodeAnswer(text);
-  if (!split.code) {
+  if (split.code === null) {
     return (
       <div
         className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
@@ -310,10 +304,6 @@ const AnswerBody = memo(function AnswerBody({
 });
 
 /** Extracts the raw snippet for the copy button (fence stripped, tabs kept). */
-export function splitCodeForCopy(text: string): string {
-  const { code } = splitCodeAnswer(text);
-  return code ?? text;
-}
 
 const AiFeedRow = memo(function AiFeedRow({
   id,

@@ -5,6 +5,7 @@ import type { ChatConversation } from "../useConversationStore";
 import { fetchAIResponse } from "@/lib/functions";
 import { shouldUsePluelyAPI } from "@/lib/functions";
 import type { TYPE_PROVIDER } from "@/types";
+import { setAnswerMode } from "@/lib/answer-mode";
 
 vi.mock("@/lib/functions", () => ({
   fetchAIResponse: vi.fn(),
@@ -52,6 +53,7 @@ describe("useAIStreaming", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    setAnswerMode("interview");
   });
 
   function createHookProps() {
@@ -473,5 +475,65 @@ describe("useAIStreaming", () => {
     expect(result.current.lastAIResponse).toBe("unfinished");
     expect(onError).toHaveBeenLastCalledWith("provider failed after partial");
     expect(addInteraction).not.toHaveBeenCalled();
+  });
+
+  describe("Livecoding mode routing and plan fallback (R02)", () => {
+    it("voice task routes into code prompt automatically when livecode mode active", async () => {
+      setAnswerMode("livecode");
+      async function* makeStream() {
+        yield "```ts\nfunction solve() {}\n```\nОбъяснение";
+      }
+      vi.mocked(fetchAIResponse).mockReturnValue(makeStream());
+
+      const props = createHookProps();
+      const { result } = renderHook(() => useAIStreaming(props));
+
+      await act(async () => {
+        await result.current.triggerAIForQuestion("Напиши алгоритм дейкстры на графе", "them");
+      });
+
+      expect(fetchAIResponse).toHaveBeenCalled();
+      const callArgs = vi.mocked(fetchAIResponse).mock.calls[0][0];
+      expect(callArgs.systemPrompt).toMatch(/live-coding assistant/i);
+      expect(callArgs.systemPrompt).toMatch(/interviewer dictates a coding task by voice/i);
+    });
+
+    it("interview mode default remains unchanged", async () => {
+      setAnswerMode("interview");
+      async function* makeStream() {
+        yield "Обычный ответ на вопрос";
+      }
+      vi.mocked(fetchAIResponse).mockReturnValue(makeStream());
+
+      const props = createHookProps();
+      const { result } = renderHook(() => useAIStreaming(props));
+
+      await act(async () => {
+        await result.current.triggerAIForQuestion("Расскажи про свой стек технологий", "them");
+      });
+
+      expect(fetchAIResponse).toHaveBeenCalled();
+      const callArgs = vi.mocked(fetchAIResponse).mock.calls[0][0];
+      expect(callArgs.systemPrompt).toBe("You are a helpful assistant");
+    });
+
+    it("plan fallback triggers LLM generation instead of static dummy for unknown task", async () => {
+      async function* makeStream() {
+        yield "Используем очередь с приоритетом и массив расстояний.";
+      }
+      vi.mocked(fetchAIResponse).mockReturnValue(makeStream());
+
+      const props = createHookProps();
+      const { result } = renderHook(() => useAIStreaming(props));
+
+      await act(async () => {
+        await result.current.triggerCodeAnswer("Напиши алгоритм дейкстры на графе", "plan", "them");
+      });
+
+      expect(fetchAIResponse).toHaveBeenCalled();
+      const callArgs = vi.mocked(fetchAIResponse).mock.calls[0][0];
+      expect(callArgs.systemPrompt).toMatch(/1-2 sentence high-level plan/i);
+      expect(callArgs.systemPrompt).toMatch(/NO code blocks/i);
+    });
   });
 });

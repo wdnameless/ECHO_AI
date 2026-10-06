@@ -17,9 +17,11 @@ import { startQuestion, recordFirstToken } from "@/lib/metrics";
 import { DEFAULT_SYSTEM_PROMPT } from "@/config";
 import {
   buildCodePlan,
+  buildCodePlanSystemPrompt,
   buildCodeFull,
   buildCodeSystemPrompt,
 } from "@/lib/code-answer";
+import { getAnswerMode } from "@/lib/answer-mode";
 import type { Message } from "@/types/completion";
 import type { TYPE_PROVIDER } from "@/types";
 import type { ChatMessage, ChatConversation } from "./useConversationStore";
@@ -260,7 +262,68 @@ export function useAIStreaming({
       pendingScreenshotRef, setPendingScreenshot, clearFiller, getActiveFiller, addInteraction]
   );
 
+  // Live-coding answer, two stages (R01/R02). Bypasses filler and cooldown guards
+  // when called manually or routes from auto-ask. Stage "plan" renders immediately
+  // on template match, or falls back to LLM generation (instead of static dummy).
+  // Stage "full" renders template snippet immediately, or streams with code prompt.
+  const triggerCodeAnswer = useCallback(
+    async (
+      question: string,
+      stage: "plan" | "full",
+      source: "me" | "them" = "them"
+    ) => {
+      startQuestion();
+      abortAI();
+      const previousMessages = buildHistory(conversation.messages);
+      if (stage === "plan") {
+        const answer = buildCodePlan(question);
+        if (answer.text) {
+          setLastAIResponse(answer.text);
+          lastAIResponseAtRef.current = Date.now();
+          addInteraction(question, answer.text, source);
+          return;
+        }
+        const { prompt } = buildCodePlanSystemPrompt(question);
+        await processWithAI(
+          question,
+          prompt,
+          previousMessages,
+          [],
+          source
+        );
+        return;
+      }
+      const full = buildCodeFull(question);
+      const hasScreenshot = !!pendingScreenshotRef.current;
+      // Screenshot forces the model path: a template match would otherwise
+      // return early and drop the screenshot (it was captured for THIS answer).
+      if (full.text && !hasScreenshot) {
+        setLastAIResponse(full.text);
+        lastAIResponseAtRef.current = Date.now();
+        addInteraction(question, full.text, source);
+        return;
+      }
+      const { prompt } = buildCodeSystemPrompt(question, hasScreenshot);
+      await processWithAI(
+        question,
+        prompt,
+        previousMessages,
+        pendingScreenshotRef.current ? [pendingScreenshotRef.current] : [],
+        source
+      );
+    },
+    [
+      buildHistory,
+      abortAI,
+      conversation,
+      processWithAI,
+      pendingScreenshotRef,
+      addInteraction,
+    ]
+  );
+
   // Runs all the guards (filler/cooldown) and starts the AI response.
+  // When livecode toggle is active, persistent mode routes auto-ask into code prompt.
   const triggerAIForQuestion = useCallback(
     async (question: string, source: "me" | "them") => {
       // Check if the transcription is a meaningful query/question rather than
@@ -269,6 +332,12 @@ export function useAIStreaming({
         console.log(
           `[Echo AI] Skipping AI processing for conversational filler/backchannel: "${question}"`
         );
+        return;
+      }
+
+      // Persistent livecode toggle routes auto-ask into code prompt without manual clicks
+      if (getAnswerMode() === "livecode") {
+        await triggerCodeAnswer(question, "full", source);
         return;
       }
 
@@ -322,55 +391,7 @@ export function useAIStreaming({
       processWithAI,
       pendingScreenshotRef,
       clearFiller,
-    ]
-  );
-
-  // Manual live-coding answer, two stages (R01/R02). Bypasses the filler and
-  // cooldown guards: a hand-raised "Код" is never a backchannel. Stage "plan"
-  // renders instantly from the template; stage "full" streams the model only
-  // when no template matched (template path needs no model call at all).
-  const triggerCodeAnswer = useCallback(
-    async (
-      question: string,
-      stage: "plan" | "full",
-      source: "me" | "them" = "them"
-    ) => {
-      startQuestion();
-      abortAI();
-      const previousMessages = buildHistory(conversation.messages);
-      if (stage === "plan") {
-        const answer = buildCodePlan(question);
-        setLastAIResponse(answer.text);
-        lastAIResponseAtRef.current = Date.now();
-        addInteraction(question, answer.text, source);
-        return;
-      }
-      const full = buildCodeFull(question);
-      const hasScreenshot = !!pendingScreenshotRef.current;
-      // Screenshot forces the model path: a template match would otherwise
-      // return early and drop the screenshot (it was captured for THIS answer).
-      if (full.text && !hasScreenshot) {
-        setLastAIResponse(full.text);
-        lastAIResponseAtRef.current = Date.now();
-        addInteraction(question, full.text, source);
-        return;
-      }
-      const { prompt } = buildCodeSystemPrompt(question, hasScreenshot);
-      await processWithAI(
-        question,
-        prompt,
-        previousMessages,
-        pendingScreenshotRef.current ? [pendingScreenshotRef.current] : [],
-        source
-      );
-    },
-    [
-      buildHistory,
-      abortAI,
-      conversation,
-      processWithAI,
-      pendingScreenshotRef,
-      addInteraction,
+      triggerCodeAnswer,
     ]
   );
   const stallWait = useCallback(() => {
