@@ -6,7 +6,10 @@ Ubiquitous language (Wave 0 + Wave 1 recon):
 |---|---|---|
 | Ход мыслей (thought-trace) | Компактное обоснование поверх ответа: почему так, на что опирался | `buildEnhancedSystemPrompt` + новый thought-блок |
 | Лайвкодинг | Голосовой режим: задача → диктуемый код с устным объяснением | `triggerCodeAnswer`, `buildCodePlan/Full` |
-| Режим ответа | Тумблер interview/thought/livecode в тулбаре | `speech/index.tsx` + store по образцу `answer-length-override.ts` |
+| AnswerMode | `"interview" \| "thought" \| "livecode"` — единый стор режима ответа | `src/lib/answer-mode.ts:3` |
+| AutoAskTarget | `"interview" \| "code"` — цель автораспределения вопроса | `src/lib/auto-ask.ts:7` |
+| SplitCodeResult | `{ code, lang, prose }` — результат парсинга fences | `src/lib/code-answer.ts:123` |
+| ThoughtContainer | Янтарный блок обоснования поверх ответа в ленте | `SubtitleFeed.tsx:239` |
 | Вопрос | Собранная из ASR-сегментов реплика собеседника | `question-assembler.ts` |
 | Промпт | Слоёная инструкция: база + длина + humanizer + RAG + факты | `ai-response.function.ts:200` |
 | Лента | Поток субтитров с ответами и кодом | `SubtitleFeed.tsx` |
