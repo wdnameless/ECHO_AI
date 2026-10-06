@@ -16,7 +16,7 @@ vi.mock("@/lib/metrics", () => ({
   buildMetricsDump: () => "",
 }));
 vi.mock("@/lib/fast-translator", () => ({
-  translateFast: vi.fn(async (text: string) => `trans:${text}`),
+  fastTranslate: vi.fn(async (text: string) => `trans:${text}`),
 }));
 vi.mock("@/contexts", () => ({
   useApp: () => ({
