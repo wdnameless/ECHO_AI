@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Button, ScrollArea } from "@/components";
 import { useAppVersion } from "@/lib/version";
@@ -13,6 +13,7 @@ import {
   SettingsIcon,
   MicIcon,
   SparklesIcon,
+  CodeIcon,
 } from "lucide-react";
 import { ModeSwitcher } from "./ModeSwitcher";
 import { ResultsSection } from "./ResultsSection";
@@ -29,6 +30,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp } from "@/contexts";
 import { canUseFeature, isDevBuild } from "@/lib/entitlements";
+import { getAnswerMode, setAnswerMode, type AnswerMode } from "@/lib/answer-mode";
 
 export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const {
@@ -80,6 +82,24 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     }
   };
 
+
+  const [answerMode, setAnswerModeState] = useState<AnswerMode>(() => getAnswerMode());
+
+  useEffect(() => {
+    const onModeChange = () => setAnswerModeState(getAnswerMode());
+    window.addEventListener("answer-mode-changed", onModeChange);
+    window.addEventListener("storage", onModeChange);
+    return () => {
+      window.removeEventListener("answer-mode-changed", onModeChange);
+      window.removeEventListener("storage", onModeChange);
+    };
+  }, []);
+
+  const handleToggleAnswerMode = (target: "thought" | "livecode") => {
+    const next = answerMode === target ? "interview" : target;
+    setAnswerMode(next);
+    setAnswerModeState(next);
+  };
 
   const [conversationMode, setConversationMode] = useState(false);
   const appVersion = useAppVersion();
@@ -288,6 +308,53 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                           </button>
                         ))}
                       </div>
+                      {/* Режимы ответа: Ход мыслей / Лайвкодинг (R01/R02) */}
+                      <div
+                        className="flex items-center bg-muted rounded-md p-0.5 gap-0.5 shrink-0"
+                        title="Режим ответа: Ход мыслей (компактное обоснование) или Лайвкодинг (диктуемый код)"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleToggleAnswerMode("thought")}
+                          className={cn(
+                            "px-2 py-1 text-[11px] font-medium rounded transition-all flex items-center gap-1",
+                            answerMode === "thought"
+                              ? "bg-violet-600 text-white shadow-sm"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                          title={
+                            answerMode === "thought"
+                              ? "Ход мыслей включён (нажмите для выключения)"
+                              : "Включить ход мыслей"
+                          }
+                          data-testid="toggle-thought-mode"
+                          aria-pressed={answerMode === "thought"}
+                        >
+                          <SparklesIcon className="w-3 h-3" />
+                          Ход мыслей
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleAnswerMode("livecode")}
+                          className={cn(
+                            "px-2 py-1 text-[11px] font-medium rounded transition-all flex items-center gap-1",
+                            answerMode === "livecode"
+                              ? "bg-amber-600 text-white shadow-sm"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                          title={
+                            answerMode === "livecode"
+                              ? "Лайвкодинг включён (нажмите для выключения)"
+                              : "Включить режим лайвкодинга"
+                          }
+                          data-testid="toggle-livecode-mode"
+                          aria-pressed={answerMode === "livecode"}
+                        >
+                          <CodeIcon className="w-3 h-3" />
+                          Лайвкодинг
+                        </button>
+                      </div>
+
 
                       {/* Кнопка ответа на последнюю реплику собеседника */}
                       <Button
