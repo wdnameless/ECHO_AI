@@ -20,6 +20,8 @@ import {
   buildCodeFull,
   buildCodeSystemPrompt,
 } from "@/lib/code-answer";
+import { getAnswerMode } from "@/lib/answer-mode";
+import { THOUGHT_TRACE_PROMPT } from "@/lib/functions/ai-response.function";
 import type { Message } from "@/types/completion";
 import type { TYPE_PROVIDER } from "@/types";
 import type { ChatMessage, ChatConversation } from "./useConversationStore";
@@ -190,6 +192,7 @@ export function useAIStreaming({
           userMessage: transcription,
           imagesBase64,
           signal,
+          mode: getAnswerMode(),
           onEvent: (event) => {
             if (!isCurrent()) return;
             activeProviderIdRef.current = event.providerId;
@@ -298,10 +301,14 @@ export function useAIStreaming({
       if (!pendingUtteranceId) {
         setFillerForInterviewer(question);
       }
-      const effectiveSystemPrompt = useSystemPrompt
+      const mode = getAnswerMode();
+      let effectiveSystemPrompt = useSystemPrompt
         ? systemPrompt || DEFAULT_SYSTEM_PROMPT
         : contextContent || DEFAULT_SYSTEM_PROMPT;
 
+      if (mode === "thought" && !effectiveSystemPrompt.includes("THOUGHT-TRACE MODE")) {
+        effectiveSystemPrompt = `${effectiveSystemPrompt}\n\n${THOUGHT_TRACE_PROMPT}`;
+      }
       const previousMessages = buildHistory(conversation.messages);
 
       await processWithAI(

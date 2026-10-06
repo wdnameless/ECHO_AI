@@ -214,6 +214,43 @@ const StreamingAiRow = memo(function StreamingAiRow({
     </div>
   );
 });
+/** Splits an answer into compact justification thought block + spoken response. */
+export function splitThoughtAnswer(text: string): {
+  thought: string | null;
+  answer: string;
+} {
+  const m = text.match(/<\s*thought\s*>([\s\S]*?)(?:<\s*\/thought\s*>|$)/i);
+  if (!m) return { thought: null, answer: text };
+  const thought = m[1].trim();
+  const hasClosing = /<\s*\/thought\s*>/i.test(m[0]);
+  const answer = hasClosing
+    ? text.slice(m.index! + m[0].length).trim()
+    : "";
+  return { thought: thought || null, answer };
+}
+
+/** Thought trace container rendered inline on top of the answer. */
+export const ThoughtContainer = memo(function ThoughtContainer({
+  thought,
+}: {
+  thought: string;
+}) {
+  return (
+    <div
+      data-testid="thought-container"
+      className="rounded-md border border-amber-500/30 bg-amber-500/5 dark:bg-amber-500/10 p-2 space-y-1 text-[0.8em] text-foreground/90 transition-all mb-1.5"
+    >
+      <div className="flex items-center gap-1.5 text-[0.72em] font-medium text-amber-600 dark:text-amber-400 uppercase tracking-wide">
+        <SparklesIcon className="w-3 h-3" />
+        <span>Ход мыслей</span>
+      </div>
+      <div className="leading-relaxed text-muted-foreground italic select-text">
+        {thought}
+      </div>
+    </div>
+  );
+});
+
 
 /** Splits a code answer into fence block + spoken prose. */
 export function splitCodeAnswer(text: string): {
@@ -273,7 +310,7 @@ const CodeAnswerBody = memo(function CodeAnswerBody({
   );
 });
 
-/** Routes code answers to the block renderer, prose to paragraphs. */
+/** Routes code answers to the block renderer, prose to paragraphs, with thought container rendered inline. */
 const AnswerBody = memo(function AnswerBody({
   text,
   onCopyCode,
@@ -283,35 +320,40 @@ const AnswerBody = memo(function AnswerBody({
   onCopyCode?: () => void;
   codeCopied?: boolean;
 }) {
-  const split = splitCodeAnswer(text);
-  if (!split.code) {
-    return (
-      <div
-        className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
-        style={{ wordBreak: "break-word", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
-      >
-        {split.prose.map((p, i) => (
-          <p key={i} className="leading-relaxed">
-            {p}
-          </p>
-        ))}
-      </div>
-    );
-  }
+  const { thought, answer } = splitThoughtAnswer(text);
+  const contentText = thought !== null ? answer : text;
+  const split = splitCodeAnswer(contentText);
   return (
-    <CodeAnswerBody
-      code={split.code}
-      lang={split.lang}
-      prose={split.prose}
-      onCopyCode={onCopyCode ?? (() => {})}
-      codeCopied={codeCopied ?? false}
-    />
+    <div className="min-w-0 w-full space-y-1.5">
+      {thought && <ThoughtContainer thought={thought} />}
+      {!split.code ? (
+        <div
+          className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
+          style={{ wordBreak: "break-word", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
+        >
+          {split.prose.map((p, i) => (
+            <p key={i} className="leading-relaxed">
+              {p}
+            </p>
+          ))}
+        </div>
+      ) : (
+        <CodeAnswerBody
+          code={split.code}
+          lang={split.lang}
+          prose={split.prose}
+          onCopyCode={onCopyCode ?? (() => {})}
+          codeCopied={codeCopied ?? false}
+        />
+      )}
+    </div>
   );
 });
 
 /** Extracts the raw snippet for the copy button (fence stripped, tabs kept). */
 export function splitCodeForCopy(text: string): string {
-  const { code } = splitCodeAnswer(text);
+  const { answer } = splitThoughtAnswer(text);
+  const { code } = splitCodeAnswer(answer || text);
   return code ?? text;
 }
 
