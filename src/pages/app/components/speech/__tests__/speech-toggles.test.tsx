@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { SystemAudio } from "../index";
 import { getAnswerMode, setAnswerMode } from "@/lib/answer-mode";
-import { safeLocalStorage } from "@/lib/storage/helper";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn().mockResolvedValue(undefined),
@@ -58,11 +57,20 @@ type SystemAudioProps = React.ComponentProps<typeof SystemAudio>;
 
 function createProps(): SystemAudioProps {
   return {
+    isMicProcessing: false,
+    isSystemProcessing: false,
+    lastTranscription: "",
+    liveSegments: [],
+    respondToMic: false,
+    setRespondToMic: vi.fn(),
+    useSystemPrompt: true,
+    setUseSystemPrompt: vi.fn(),
     askAIForTranscript: vi.fn(),
     activeFiller: null,
     pendingUtteranceId: null,
-    capturing: false,
-    error: null,
+    capturing: true,
+    error: "",
+    clearError: vi.fn(),
     isProcessing: false,
     isAIProcessing: false,
     myLastTranscription: "",
@@ -75,25 +83,32 @@ function createProps(): SystemAudioProps {
       createdAt: 1000,
       updatedAt: 1000,
     },
+    setConversation: vi.fn(),
+    processWithAI: vi.fn(),
     recordingProgress: 0,
     vadConfig: {
-      vadThreshold: 0.5,
-      silenceDurationMs: 500,
-      speechPadMs: 100,
-      minSpeechDurationMs: 250,
-      sensitivity_rms: 0.01,
+      enabled: true,
+      hop_size: 1024,
+      sensitivity_rms: 0.012,
+      peak_threshold: 0.035,
+      silence_chunks: 12,
+      min_speech_chunks: 7,
+      pre_speech_chunks: 12,
+      noise_gate_threshold: 0.003,
+      max_recording_duration_secs: 180,
     },
-    useSystemPrompt: true,
     contextContent: "",
+    setContextContent: vi.fn(),
     isContinuousMode: false,
     setIsContinuousMode: vi.fn(),
     isRecordingInContinuousMode: false,
     setupRequired: false,
-    setIsPopoverOpen: vi.fn(),
-    setUseSystemPrompt: vi.fn(),
-    setContextContent: vi.fn(),
-    updateVadConfiguration: vi.fn(),
+    handleSetup: vi.fn(),
     startCapture: vi.fn(),
+    stopCapture: vi.fn(),
+    isPopoverOpen: false,
+    setIsPopoverOpen: vi.fn(),
+    updateVadConfiguration: vi.fn(),
     startContinuousRecording: vi.fn(),
     startNewConversation: vi.fn(),
     setPendingScreenshot: vi.fn(),
@@ -116,10 +131,7 @@ function createProps(): SystemAudioProps {
     micListening: false,
     micSpeaking: false,
     micStream: null,
-    micBridge: {
-      pushAudioChunk: vi.fn(),
-      reset: vi.fn(),
-    },
+    micBridge: null,
     pendingScreenshot: null,
     isStalled: false,
     aiStatusMessage: "",
@@ -132,7 +144,7 @@ function createProps(): SystemAudioProps {
 
 describe("R01 & R02: Speech toolbar answer-mode toggles", () => {
   beforeEach(() => {
-    safeLocalStorage.clear();
+    window.localStorage.clear();
     setAnswerMode("interview");
   });
 

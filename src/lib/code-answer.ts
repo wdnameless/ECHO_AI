@@ -11,7 +11,7 @@
  */
 
 import { matchCodeTemplate, type CodeTemplate } from "./code-templates";
-
+import { formatSpokenAnswer } from "./spoken-format";
 export type CodeStage = "plan" | "full";
 
 /** What the UI renders for a code answer. */
@@ -25,7 +25,7 @@ export interface CodeAnswer {
   lang?: string;
 }
 const CODE_SYSTEM_PROMPT = [
-  "You are a live-coding assistant on a job interview. The candidate retypes",
+  "You are a live-coding assistant on a job interview. The interviewer dictates a coding task by voice (without IDE or screen access). The candidate retypes",
   "your answer by hand into an editor while speaking aloud.",
   "Rules:",
   "- Output a single fenced code block with the solution, then a BLANK LINE,",
@@ -37,6 +37,15 @@ const CODE_SYSTEM_PROMPT = [
   "- Code must be complete, runnable, and free of placeholder comments.",
   "- Prefer TypeScript + React idioms; keep it short enough to retype in 2-3 minutes.",
   "- Answer in the same language the question was asked in (code comments match).",
+].join(" ");
+
+const CODE_PLAN_SYSTEM_PROMPT = [
+  "You are a live-coding assistant on a job interview. The interviewer dictates a coding task by voice.",
+  "Rules:",
+  "- Output ONLY a concise 1-2 sentence high-level plan or algorithm approach (NO code blocks, no backticks, no markdown headings, no bullet lists).",
+  "- Keep it under 120 characters, suitable to speak aloud immediately before typing.",
+  "- No conversational openers, no stories.",
+  "- Answer in the same language the question was asked in.",
 ].join(" ");
 
 /**
@@ -59,13 +68,32 @@ export function buildCodeSystemPrompt(question: string, withScreenshot = false):
     template,
   };
 }
+/**
+ * Builds the system prompt for stage 1 plan fallback when no static template matches.
+ * Prompts the model to generate a concise 1-2 sentence high-level approach.
+ */
+export function buildCodePlanSystemPrompt(question: string): {
+  prompt: string;
+  template: CodeTemplate | null;
+} {
+  const template = matchCodeTemplate(question);
+  if (!template) return { prompt: CODE_PLAN_SYSTEM_PROMPT, template: null };
+  return {
+    prompt: `${CODE_PLAN_SYSTEM_PROMPT}\n\n[REFERENCE PLAN]\n${template.plan}`,
+    template,
+  };
+}
+
 
 /** Stage 1: immediate plan phrase. Template plan or a generic fallback. */
 export function buildCodePlan(question: string): CodeAnswer {
   const template = matchCodeTemplate(question);
+  if (!template) {
+    return { stage: "plan", text: "", template: null };
+  }
   return {
     stage: "plan",
-    text: template?.plan ?? "Пишем аккуратно по шагам: сначала каркас, потом детали.",
+    text: template.plan,
     template,
   };
 }
@@ -90,4 +118,57 @@ export function buildCodeFull(question: string): CodeAnswer {
     copyText: template.snippet,
     lang: "ts",
   };
+}
+
+export interface SplitCodeResult {
+  code: string | null;
+  lang: string;
+  prose: string[];
+}
+
+/**
+ * Splits a code answer into fence block + spoken prose.
+ * Tolerates unclosed fences during streaming so the code block renders unbroken.
+ */
+export function splitCodeAnswer(text: string): SplitCodeResult {
+  if (!text) return { code: null, lang: "", prose: [] };
+
+  // 1. Closed code block: ```lang\ncode```
+  const closedMatch = text.match(/```(\w*)\r?\n([\s\S]*?)```/);
+  if (closedMatch) {
+    const [, lang, code] = closedMatch;
+    const rest = (
+      text.slice(0, closedMatch.index) +
+      text.slice(closedMatch.index! + closedMatch[0].length)
+    ).trim();
+    return {
+      code: code.replace(/\r?\n$/, ""),
+      lang: lang || "ts",
+      prose: formatSpokenAnswer(rest),
+    };
+  }
+
+  // 2. Unclosed code block during streaming: ```lang\ncode... or ```lang
+  const unclosedMatch = text.match(/```(\w*)(?:\r?\n([\s\S]*))?$/);
+  if (unclosedMatch) {
+    const [, lang, code] = unclosedMatch;
+    const rest = text.slice(0, unclosedMatch.index).trim();
+    return {
+      code: code !== undefined ? code.replace(/\r?\n$/, "") : "",
+      lang: lang || "ts",
+      prose: formatSpokenAnswer(rest),
+    };
+  }
+
+  // 3. No code block found — plain spoken prose
+  return {
+    code: null,
+    lang: "",
+    prose: formatSpokenAnswer(text),
+  };
+}
+
+export function splitCodeForCopy(text: string): string {
+  const { code } = splitCodeAnswer(text);
+  return code ?? text;
 }

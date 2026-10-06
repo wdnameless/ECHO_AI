@@ -25,13 +25,12 @@ import {
   THOUGHT_TRACE_PROMPT,
 } from "../ai-response.function";
 import { setAnswerMode } from "@/lib/answer-mode";
-import { safeLocalStorage } from "@/lib/storage/helper";
 import { LONG_LENGTH_PROMPT, SHORT_LENGTH_PROMPT } from "@/lib/answer-length";
 import { HUMANIZER_INSTRUCTIONS } from "@/config/humanizer.rules";
 
 describe("R01: Thought trace system prompt", () => {
   beforeEach(() => {
-    safeLocalStorage.clear();
+    window.localStorage.clear();
     setAnswerMode("interview");
   });
 
@@ -62,7 +61,7 @@ describe("R01: Thought trace system prompt", () => {
   });
 
   it("skips humanizer rules and rotating openers in thought mode", async () => {
-    safeLocalStorage.setItem("humanizer_settings", JSON.stringify({ enabled: true, interviewMode: true }));
+    window.localStorage.setItem("humanizer_settings", JSON.stringify({ enabled: true, interviewMode: true }));
 
     setAnswerMode("interview");
     const interviewPrompt = await buildEnhancedSystemPrompt("", "Вопрос");

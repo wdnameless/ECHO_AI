@@ -124,14 +124,14 @@ describe("R01: SubtitleFeed thought container and parser", () => {
         messages: [
           {
             id: "msg-1",
-            text: "Расскажи про шардинг.",
-            sender: "them",
+            role: "user",
+            content: "Расскажи про шардинг.",
             timestamp: 1000,
           },
           {
             id: "msg-2",
-            text: "<thought>Шардинг нужен при исчерпании вертикального масштабирования.</thought>Шардирование делит данные по ключу шардирования между узлами.",
-            sender: "ai",
+            role: "assistant",
+            content: "<thought>Шардинг нужен при исчерпании вертикального масштабирования.</thought>Шардирование делит данные по ключу шардирования между узлами.",
             timestamp: 2000,
           },
         ],
@@ -171,8 +171,8 @@ describe("R01: SubtitleFeed thought container and parser", () => {
         messages: [
           {
             id: "msg-1",
-            text: "Обычный ответ без хода мыслей.",
-            sender: "ai",
+            role: "assistant",
+            content: "Обычный ответ без хода мыслей.",
             timestamp: 2000,
           },
         ],

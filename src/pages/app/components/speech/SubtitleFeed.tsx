@@ -27,7 +27,11 @@ import {
   getSelfEvolutionStats,
   type SelfEvolutionStats,
 } from "@/lib/storage/user-facts";
-import { formatSpokenAnswer } from "@/lib/spoken-format";
+import {
+  splitCodeAnswer,
+  type SplitCodeResult,
+} from "@/lib/code-answer";
+export { splitCodeAnswer, type SplitCodeResult };
 import { HoverTranslate } from "@/lib/hover-translate";
 import { resolveProviderModel } from "@/lib/functions/ai-response.function";
 import { addCorrection, applyCorrections } from "@/lib/vocab";
@@ -252,18 +256,6 @@ export const ThoughtContainer = memo(function ThoughtContainer({
 });
 
 
-/** Splits a code answer into fence block + spoken prose. */
-export function splitCodeAnswer(text: string): {
-  code: string | null;
-  lang: string;
-  prose: string[];
-} {
-  const m = text.match(/```(\w*)\n([\s\S]*?)```/);
-  if (!m) return { code: null, lang: "", prose: formatSpokenAnswer(text) };
-  const [, lang, code] = m;
-  const rest = (text.slice(0, m.index) + text.slice(m.index! + m[0].length)).trim();
-  return { code: code.replace(/\n$/, ""), lang: lang || "ts", prose: formatSpokenAnswer(rest) };
-}
 
 /** Code block with tab stops, copy-snippet button, and spoken narration below. */
 const CodeAnswerBody = memo(function CodeAnswerBody({
@@ -323,6 +315,20 @@ const AnswerBody = memo(function AnswerBody({
   const { thought, answer } = splitThoughtAnswer(text);
   const contentText = thought !== null ? answer : text;
   const split = splitCodeAnswer(contentText);
+  if (split.code === null && thought === null) {
+    return (
+      <div
+        className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
+        style={{ wordBreak: "break-word", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
+      >
+        {split.prose.map((p, i) => (
+          <p key={i} className="leading-relaxed">
+            {p}
+          </p>
+        ))}
+      </div>
+    );
+  }
   return (
     <div className="min-w-0 w-full space-y-1.5">
       {thought && <ThoughtContainer thought={thought} />}
@@ -350,7 +356,7 @@ const AnswerBody = memo(function AnswerBody({
   );
 });
 
-/** Extracts the raw snippet for the copy button (fence stripped, tabs kept). */
+/** Extracts the raw snippet for the copy button (fence stripped, tabs kept). Thought prefix stripped first. */
 export function splitCodeForCopy(text: string): string {
   const { answer } = splitThoughtAnswer(text);
   const { code } = splitCodeAnswer(answer || text);

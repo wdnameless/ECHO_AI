@@ -4,7 +4,6 @@ import { useAIStreaming, SelectedAIProviderConfig } from "../useAIStreaming";
 import type { ChatConversation } from "../useConversationStore";
 import { fetchAIResponse, shouldUsePluelyAPI } from "@/lib/functions";
 import { setAnswerMode } from "@/lib/answer-mode";
-import { safeLocalStorage } from "@/lib/storage/helper";
 import { THOUGHT_TRACE_PROMPT } from "@/lib/functions/ai-response.function";
 import type { TYPE_PROVIDER } from "@/types";
 
@@ -49,7 +48,7 @@ describe("R01: useAIStreaming thought branch", () => {
   const setPendingScreenshot = vi.fn();
 
   beforeEach(() => {
-    safeLocalStorage.clear();
+    window.localStorage.clear();
     setAnswerMode("interview");
     vi.mocked(shouldUsePluelyAPI).mockResolvedValue(false);
     async function* emptyStream() {
