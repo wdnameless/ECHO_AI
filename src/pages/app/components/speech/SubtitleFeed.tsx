@@ -27,11 +27,7 @@ import {
   getSelfEvolutionStats,
   type SelfEvolutionStats,
 } from "@/lib/storage/user-facts";
-import {
-  splitCodeAnswer,
-  type SplitCodeResult,
-} from "@/lib/code-answer";
-export { splitCodeAnswer, type SplitCodeResult };
+import { splitCodeAnswer } from "@/lib/code-answer";
 import { HoverTranslate } from "@/lib/hover-translate";
 import { resolveProviderModel } from "@/lib/functions/ai-response.function";
 import { addCorrection, applyCorrections } from "@/lib/vocab";
@@ -315,20 +311,6 @@ const AnswerBody = memo(function AnswerBody({
   const { thought, answer } = splitThoughtAnswer(text);
   const contentText = thought !== null ? answer : text;
   const split = splitCodeAnswer(contentText);
-  if (split.code === null && thought === null) {
-    return (
-      <div
-        className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
-        style={{ wordBreak: "break-word", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
-      >
-        {split.prose.map((p, i) => (
-          <p key={i} className="leading-relaxed">
-            {p}
-          </p>
-        ))}
-      </div>
-    );
-  }
   return (
     <div className="min-w-0 w-full space-y-1.5">
       {thought && <ThoughtContainer thought={thought} />}
