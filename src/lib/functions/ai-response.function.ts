@@ -20,6 +20,7 @@ import {
   LONG_LENGTH_PROMPT,
 } from "@/lib/answer-length";
 import { getAnswerLengthOverride } from "@/lib/answer-length-override";
+import { getAnswerMode, type AnswerMode } from "@/lib/answer-mode";
 import { MARKDOWN_FORMATTING_INSTRUCTIONS, STORAGE_KEYS } from "@/config/constants";
 import {
   getHumanizerSettings,
@@ -37,6 +38,16 @@ import { getRagContext } from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { detectLanguage } from "@/lib/language-detect";
 import { getAIProviderVariables } from "@/lib/storage/ai-providers";
+
+export const THOUGHT_TRACE_PROMPT =
+  "THOUGHT-TRACE MODE (ХОД МЫСЛЕЙ):\n" +
+  "Before your direct spoken answer, provide a compact justification block explaining your line of thought (strictly 2-3 phrases: why this approach, what trade-offs you considered, what you relied upon / на что опирался).\n" +
+  "Enclose this justification inside <thought>...</thought> tags at the very start of your response.\n" +
+  "Example format:\n" +
+  "<thought>\n" +
+  "Опираюсь на соображения масштабируемости и изоляции отказов. Для таких нагрузок лучше разделить сервис на независимые воркеры с очередью сообщений.\n" +
+  "</thought>\n" +
+  "Follow immediately with your natural spoken answer to the interviewer.";
 
 export type AIStreamEvent =
   | { type: "attempt"; providerId: string }
@@ -191,16 +202,23 @@ export function resolveProviderModel(
 // are cached and injected on the next turn.
 // ---------------------------------------------------------------------------
 
-async function buildEnhancedSystemPrompt(
+export async function buildEnhancedSystemPrompt(
   baseSystemPrompt?: string,
-  userMessage?: string
+  userMessage?: string,
+  mode?: AnswerMode
 ): Promise<string> {
+  const activeMode = mode ?? getAnswerMode();
   const responseSettings = getResponseSettings();
   const prompts: string[] = [];
 
   if (baseSystemPrompt) {
     prompts.push(baseSystemPrompt);
   }
+  // Thought trace justification block: inserted right after base prompt
+  if (activeMode === "thought" && !baseSystemPrompt?.includes("THOUGHT-TRACE MODE")) {
+    prompts.push(THOUGHT_TRACE_PROMPT);
+  }
+
 
   // Anti-filler & question intent instruction
   prompts.push(
@@ -214,43 +232,49 @@ async function buildEnhancedSystemPrompt(
   // explicit prefixes beat the heuristic; the settings preset is the fallback
   // when everything says "auto". The old path always pushed the preset, so a
   // detailed "почему" was answered in 35-55 words no matter what.
-  const answerLength = resolveAnswerLength(
-    userMessage || "",
-    getAnswerLengthOverride()
-  );
-  prompts.push(answerLength === "long" ? LONG_LENGTH_PROMPT : SHORT_LENGTH_PROMPT);
+  // Answer length: in thought mode, bypass SHORT cap so justification is not choked
+  if (activeMode === "thought") {
+    prompts.push(LONG_LENGTH_PROMPT);
+  } else {
+    const answerLength = resolveAnswerLength(
+      userMessage || "",
+      getAnswerLengthOverride()
+    );
+    prompts.push(answerLength === "long" ? LONG_LENGTH_PROMPT : SHORT_LENGTH_PROMPT);
+  }
 
   // Humanizer rules
-  const humanizer = getHumanizerSettings();
-  if (humanizer.enabled) {
-    prompts.push(HUMANIZER_INSTRUCTIONS);
-    if (humanizer.interviewMode) {
-      // Length lives above now: the interview cap (35-55) would strangle long
-      // answers back to short. Keep think-aloud + first-person, drop the cap.
-      prompts.push(
-        INTERVIEW_MODE_INSTRUCTIONS.replace(
-          /KEEP ANSWERS CONCISE: strictly 1-3 spoken sentences \(35-55 words maximum\)\. Get straight to the point\./,
-          "LENGTH: the ANSWER-LENGTH rule above decides (short = tight, long = full detail)."
-        )
-      );
-    }
-    if (humanizer.customStyle?.trim()) {
-      prompts.push(
-        `Match this personal speaking style: ${humanizer.customStyle.trim()}`
-      );
+  // Humanizer rules: skipped in thought mode so humanizer cap/formatting rules do not suppress thoughts
+  if (activeMode !== "thought") {
+    const humanizer = getHumanizerSettings();
+    if (humanizer.enabled) {
+      prompts.push(HUMANIZER_INSTRUCTIONS);
+      if (humanizer.interviewMode) {
+        prompts.push(
+          INTERVIEW_MODE_INSTRUCTIONS.replace(
+            /KEEP ANSWERS CONCISE: strictly 1-3 spoken sentences \(35-55 words maximum\)\. Get straight to the point\./,
+            "LENGTH: the ANSWER-LENGTH rule above decides (short = tight, long = full detail)."
+          )
+        );
+      }
+      if (humanizer.customStyle?.trim()) {
+        prompts.push(
+          `Match this personal speaking style: ${humanizer.customStyle.trim()}`
+        );
+      }
     }
   }
 
-  // Rotating opener: one per answer, never the same twice. Replaces the three
-  // hardcoded examples the model copied into every response («Ну, смотрите»).
-  const openerLang = detectLanguage(userMessage || "") === "russian" ? "ru" : "en";
-  const opener = pickAnswerOpener(openerLang);
-  if (opener) {
-    prompts.push(`Open with exactly this phrase, then answer: "${opener}"`);
-  } else {
-    prompts.push("Start straight into the answer with no introductory phrase.");
+  // Rotating opener: skipped in thought mode so response opens cleanly with <thought>
+  if (activeMode !== "thought") {
+    const openerLang = detectLanguage(userMessage || "") === "russian" ? "ru" : "en";
+    const opener = pickAnswerOpener(openerLang);
+    if (opener) {
+      prompts.push(`Open with exactly this phrase, then answer: "${opener}"`);
+    } else {
+      prompts.push("Start straight into the answer with no introductory phrase.");
+    }
   }
-
   // RAG context: resume and job description (fetched in parallel - they are
   // independent DB reads, no reason to serialize them).
   const resumeEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_RESUME_ENABLED) === "true";
@@ -500,11 +524,14 @@ async function* streamAIResponse(params: {
     );
 
     // Zero-reasoning by default: "minimal" gives the fastest first token.
-    // The user can still override via provider variables (e.g. REASONING_EFFORT=high)
-    // for complex questions.
-    const reasoningEffort =
-      userVariables["REASONING_EFFORT"] || "minimal";
-
+    // In thought mode, reasoning is not minimal ("medium").
+    const activeMode = getAnswerMode();
+    const defaultEffort = activeMode === "thought" ? "medium" : "minimal";
+    let reasoningEffort =
+      userVariables["REASONING_EFFORT"] || defaultEffort;
+    if (activeMode === "thought" && reasoningEffort === "minimal") {
+      reasoningEffort = "medium";
+    }
     const allVariables = {
       ...userVariables,
       SYSTEM_PROMPT: systemPrompt || "",
@@ -548,10 +575,11 @@ async function* streamAIResponse(params: {
       } else if (
         bodyObj.reasoning_effort === "0" ||
         bodyObj.reasoning_effort === "none" ||
-        bodyObj.reasoning_effort === "disabled"
+        bodyObj.reasoning_effort === "disabled" ||
+        (activeMode === "thought" && bodyObj.reasoning_effort === "minimal")
       ) {
-        // Normalize disabled reasoning to "minimal" for fastest first-token delivery
-        bodyObj.reasoning_effort = "minimal";
+        // Normalize disabled reasoning to "minimal" for fastest first-token delivery, or "medium" in thought mode
+        bodyObj.reasoning_effort = activeMode === "thought" ? "medium" : "minimal";
       }
 
       // Gemini rejects empty image fields with HTTP 400 ("Unable to process
@@ -805,6 +833,7 @@ export async function* fetchAIResponse(params: {
   userMessage: string;
   imagesBase64?: string[];
   signal?: AbortSignal;
+  mode?: AnswerMode;
 }): AsyncIterable<string> {
   const { userMessage, signal } = params;
   if (signal?.aborted) return;
@@ -840,7 +869,7 @@ export async function* fetchAIResponse(params: {
   if (signal?.aborted) return;
   let baseSystemPrompt: string;
   try {
-    baseSystemPrompt = await abortable(buildEnhancedSystemPrompt(params.systemPrompt, userMessage), signal);
+    baseSystemPrompt = await abortable(buildEnhancedSystemPrompt(params.systemPrompt, userMessage, params.mode), signal);
   } catch (error) {
     if (signal?.aborted) return;
     throw error;

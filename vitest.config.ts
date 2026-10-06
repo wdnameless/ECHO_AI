@@ -13,6 +13,6 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
-    exclude: ["**/node_modules/**", "**/dist/**", "**/src/lib/language-detect.test.ts"],
+    exclude: ["**/node_modules/**", "**/dist/**", "**/.tmp/**", "**/src/lib/language-detect.test.ts"],
   },
 });
