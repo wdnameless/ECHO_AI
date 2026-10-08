@@ -203,6 +203,11 @@ export async function resolveRedirect(
 /** Только для тестов: сброс зарегистрированного обработчика. */
 export function resetHostTrustPromptForTests(): void {
   promptHandler = null;
+  warmedOrigins.clear();
+}
+
+export function resetWarmedOriginsForTests(): void {
+  warmedOrigins.clear();
 }
 
 /**
@@ -256,6 +261,8 @@ export async function gatedFetch(
   } as RequestInit);
 }
 
+const warmedOrigins = new Set<string>();
+
 /** Warm only the origin: provider paths, userinfo, query and body never leave. */
 export async function warmProviderConnection(
   providerUrl: string,
@@ -265,11 +272,16 @@ export async function warmProviderConnection(
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("Provider warmup requires an HTTP(S) origin.");
   }
+  const origin = parsed.origin;
+  if (warmedOrigins.has(origin)) {
+    return;
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1500);
   try {
-    const response = await gatedFetch(`${parsed.origin}/`, { signal: controller.signal }, fetchImpl);
+    const response = await gatedFetch(`${origin}/`, { signal: controller.signal }, fetchImpl);
     await response.body?.cancel();
+    warmedOrigins.add(origin);
   } finally {
     clearTimeout(timeout);
   }

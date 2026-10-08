@@ -184,6 +184,17 @@ export function useQuestionPipeline({
       cancelGapTimerRef.current = null;
     };
   }, []);
+  useEffect(() => {
+    // Warmup at session start not trailing edge
+    if (!activeProviderUrlRef.current) {
+      activeProviderUrlRef.current = resolveActiveProviderUrl();
+    }
+    const warmUrl = activeProviderUrlRef.current;
+    if (warmUrl) {
+      void warmProviderConnection(warmUrl).catch(() => {});
+    }
+  }, []);
+
 
   const clearFiller = useCallback(() => {
     setActiveFiller(null);
@@ -335,13 +346,7 @@ export function useQuestionPipeline({
       const MAX_EXTENSIONS = 1;
 
       const arm = (delay: number) => {
-        if (!activeProviderUrlRef.current) {
-          activeProviderUrlRef.current = resolveActiveProviderUrl();
-        }
-        const warmUrl = activeProviderUrlRef.current;
-        if (warmUrl) {
-          void warmProviderConnection(warmUrl).catch(() => {});
-        }
+
         cancelGapTimerRef.current = setUnthrottledTimeout(() => {
           cancelGapTimerRef.current = null;
 

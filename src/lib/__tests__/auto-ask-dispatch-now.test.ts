@@ -62,4 +62,15 @@ describe("AutoAskManager.dispatchNow", () => {
     vi.advanceTimersByTime(5000);
     expect(onDispatch).toHaveBeenCalledTimes(1);
   });
+
+  it("dispatches immediately when onFinalizedTranscript has confirmedSilence", () => {
+    const onDispatch = vi.fn();
+    const manager = mk(onDispatch);
+
+    manager.onFinalizedTranscript("Tell me about distributed systems", { confirmedSilence: true });
+
+    // No timer advance: confirmed silence dispatches immediately
+    expect(onDispatch).toHaveBeenCalledTimes(1);
+    expect(onDispatch).toHaveBeenCalledWith("Tell me about distributed systems");
+  });
 });

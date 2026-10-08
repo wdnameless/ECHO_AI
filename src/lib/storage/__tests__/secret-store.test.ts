@@ -6,6 +6,7 @@ import {
   saveSecret,
   getSecret,
   removeSecret,
+  clearSecretCache,
   migrateSecretsFromLocalStorage,
   migrateCurlLiteralsToSecrets,
   extractLiteralSecret,
@@ -13,6 +14,7 @@ import {
   resetMigrationFlagForTests,
   SequentialSecretWriter,
 } from "../secret-store";
+import { invoke } from "@tauri-apps/api/core";
 
 /**
  * Фейковый бэкенд хранилища: держит секреты в памяти и ведёт себя как
@@ -63,6 +65,38 @@ describe("secret-store", () => {
       await saveSecret(secretKey.webSearch("brave"), "brave-key");
       await removeSecret(secretKey.webSearch("brave"));
       await expect(getSecret(secretKey.webSearch("brave"))).resolves.toBeNull();
+    });
+
+    it("caches secrets in memory and avoids redundant backend IPC calls", async () => {
+      const invokeMock = vi.mocked(invoke);
+      invokeMock.mockClear();
+      await saveSecret(secretKey.aiProvider("cached-p"), "sk-cached-val");
+
+      // First read: should come directly from memory without calling secure_storage_get_item
+      const val1 = await getSecret(secretKey.aiProvider("cached-p"));
+      expect(val1).toBe("sk-cached-val");
+      expect(invokeMock).not.toHaveBeenCalledWith("secure_storage_get_item", expect.anything());
+
+      // Second read: also served from memory cache
+      const val2 = await getSecret(secretKey.aiProvider("cached-p"));
+      expect(val2).toBe("sk-cached-val");
+      expect(invokeMock).not.toHaveBeenCalledWith("secure_storage_get_item", expect.anything());
+    });
+
+    it("deduplicates concurrent fetches for an uncached key", async () => {
+      const invokeMock = vi.mocked(invoke);
+      store.set("key:concurrent", "sk-concurrent");
+      clearSecretCache();
+      invokeMock.mockClear();
+
+      const [r1, r2] = await Promise.all([
+        getSecret("key:concurrent"),
+        getSecret("key:concurrent"),
+      ]);
+
+      expect(r1).toBe("sk-concurrent");
+      expect(r2).toBe("sk-concurrent");
+      expect(invokeMock).toHaveBeenCalledTimes(1);
     });
   });
 

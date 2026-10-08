@@ -3,6 +3,8 @@ import {
   nextReconnectDelay,
   closeSocketDetached,
   looksLikeStreamRefusal,
+  enqueueStreamSlot,
+  waitForStreamSlot,
 } from "../asr-ws-shared";
 
 /**
@@ -95,5 +97,12 @@ describe("looksLikeStreamRefusal", () => {
     expect(
       looksLikeStreamRefusal({ stoppedByUs: false, framesSent: 0, producedText: false })
     ).toBe(false);
+  });
+});
+
+describe("slot queue shared re-exports", () => {
+  it("exports slot queue coordination primitives", () => {
+    expect(typeof enqueueStreamSlot).toBe("function");
+    expect(typeof waitForStreamSlot).toBe("function");
   });
 });

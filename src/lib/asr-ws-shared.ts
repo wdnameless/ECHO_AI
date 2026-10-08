@@ -86,3 +86,10 @@ export function looksLikeStreamRefusal(state: {
     !state.stoppedByUs && state.framesSent > 0 && !state.producedText
   );
 }
+
+export {
+  enqueueStreamSlot,
+  cancelSlotQueue,
+  waitForStreamSlot,
+  getSlotQueueLength,
+} from "./asr-gate";
