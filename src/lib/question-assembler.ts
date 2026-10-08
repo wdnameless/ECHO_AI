@@ -144,11 +144,11 @@ const INTERROGATIVE_OPENING =
 export class QuestionAssembler {
   private pending: PendingState | null = null;
   private lastEmitted: { text: string; ts: number } | null = null;
-  private readonly gapMs: number;
-  private readonly maxWindowMs: number;
-  private readonly immediateOnQuestionMark: boolean;
-  private readonly similarityThreshold: number;
-  private readonly earlyEmitPauseMs?: number;
+  private gapMs: number;
+  private maxWindowMs: number;
+  private immediateOnQuestionMark: boolean;
+  private similarityThreshold: number;
+  private earlyEmitPauseMs?: number;
 
   constructor(opts: QuestionAssemblerOptions = {}) {
     const preset = opts.mode ? ASR_TIMING_PRESETS[opts.mode] : undefined;
@@ -164,6 +164,38 @@ export class QuestionAssembler {
   get current(): { source: string; text: string } | null {
     if (!this.pending) return null;
     return { source: this.pending.source, text: this.pending.segments.join(" ") };
+  }
+  get currentGapMs(): number {
+    return this.gapMs;
+  }
+
+  get currentMaxWindowMs(): number {
+    return this.maxWindowMs;
+  }
+
+  reconfigure(opts: QuestionAssemblerOptions = {}): void {
+    const preset = opts.mode ? ASR_TIMING_PRESETS[opts.mode] : undefined;
+    if (opts.flushGapMs !== undefined) this.gapMs = opts.flushGapMs;
+    else if (opts.gapMs !== undefined) this.gapMs = opts.gapMs;
+    else if (preset?.flushGapMs !== undefined) this.gapMs = preset.flushGapMs;
+
+    if (opts.maxWindowMs !== undefined) this.maxWindowMs = opts.maxWindowMs;
+    else if (preset?.maxWindowMs !== undefined) this.maxWindowMs = preset.maxWindowMs;
+
+    if (opts.immediateOnQuestionMark !== undefined)
+      this.immediateOnQuestionMark = opts.immediateOnQuestionMark;
+    else if (preset?.immediateOnQuestionMark !== undefined)
+      this.immediateOnQuestionMark = preset.immediateOnQuestionMark;
+
+    if (opts.duplicateSimilarityThreshold !== undefined)
+      this.similarityThreshold = opts.duplicateSimilarityThreshold;
+    else if (preset?.duplicateSimilarityThreshold !== undefined)
+      this.similarityThreshold = preset.duplicateSimilarityThreshold;
+
+    if (opts.earlyEmitPauseMs !== undefined)
+      this.earlyEmitPauseMs = opts.earlyEmitPauseMs;
+    else if (preset?.earlyEmitPauseMs !== undefined)
+      this.earlyEmitPauseMs = preset.earlyEmitPauseMs;
   }
 
   /**
