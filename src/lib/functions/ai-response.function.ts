@@ -347,7 +347,7 @@ async function* fetchPluelyAIResponse(params: {
     userMessage,
     systemPrompt,
     imageBase64: imagesBase64.length === 1 ? imagesBase64[0] : imagesBase64.length ? imagesBase64 : undefined,
-    history: history.length ? JSON.stringify([...history].reverse().map((msg) => ({
+    history: history.length ? JSON.stringify(history.map((msg) => ({
       role: msg.role, content: [{ type: "text", text: msg.content }],
     }))) : undefined,
     onEvent: channel,

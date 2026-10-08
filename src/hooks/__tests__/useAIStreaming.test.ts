@@ -205,6 +205,41 @@ describe("useAIStreaming", () => {
     expect(clearFiller).toHaveBeenCalled();
   });
 
+  it("displays filler in UI during streaming but saves clean response without filler to conversation history (R02)", async () => {
+    const props = createHookProps();
+    getActiveFiller.mockReturnValue("Минутку, думаю...");
+
+    async function* chunkStream() {
+      yield "Чистый ";
+      yield "ответ.";
+    }
+
+    vi.mocked(fetchAIResponse).mockReturnValue(chunkStream());
+
+    const { result } = renderHook(() => useAIStreaming(props));
+
+    await act(async () => {
+      await result.current.processWithAI(
+        "Расскажи про микросервисы",
+        "prompt",
+        [],
+        [],
+        "them"
+      );
+    });
+
+    // Filler must be visible in UI (displayResponse stitched into lastAIResponse)
+    expect(result.current.lastAIResponse).toBe("Минутку, думаю...\n\nЧистый ответ.");
+
+    // Filler must NOT be stored into interaction / database history
+    expect(addInteraction).toHaveBeenCalledWith(
+      "Расскажи про микросервисы",
+      "Чистый ответ.",
+      "them"
+    );
+    expect(clearFiller).toHaveBeenCalled();
+  });
+
   it("handles missing AI provider error gracefully", async () => {
     const props = createHookProps();
     props.selectedAIProvider = { provider: "", variables: {} };
