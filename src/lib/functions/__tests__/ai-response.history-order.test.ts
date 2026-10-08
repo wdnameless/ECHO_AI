@@ -50,6 +50,8 @@ describe("R01: Pluely API history order preservation", () => {
     ];
 
     const stream = fetchAIResponse({
+      provider: undefined,
+      selectedProvider: { provider: "pluely", variables: {} },
       userMessage: "Third question: give an example",
       history,
     });

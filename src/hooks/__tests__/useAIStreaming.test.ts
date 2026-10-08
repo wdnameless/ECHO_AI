@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useAIStreaming, SelectedAIProviderConfig } from "../useAIStreaming";
 import type { ChatConversation } from "../useConversationStore";
@@ -41,7 +41,7 @@ describe("useAIStreaming", () => {
 
   const buildHistory = vi.fn(() => []);
   const addInteraction = vi.fn();
-  const getActiveFiller = vi.fn(() => null);
+  const getActiveFiller: Mock<() => string | null> = vi.fn(() => null);
   const setFillerForInterviewer = vi.fn();
   const clearFiller = vi.fn();
   const onError = vi.fn();
@@ -49,6 +49,7 @@ describe("useAIStreaming", () => {
 
   beforeEach(() => {
     vi.mocked(shouldUsePluelyAPI).mockResolvedValue(false);
+    getActiveFiller.mockReturnValue(null);
   });
 
   afterEach(() => {
