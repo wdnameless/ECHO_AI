@@ -135,5 +135,76 @@ describe("ASR stream gate", () => {
       releaseStream("them");
       await expect(waitPromise).resolves.toBe(true);
     });
+
+    it("does not starve withNoStream when channels alternate rapidly in slot queue (R05)", async () => {
+      expect(tryAcquireStream("them")).toBe(true);
+
+      const meCallback = vi.fn();
+      enqueueStreamSlot("me", meCallback);
+
+      const httpWork = vi.fn().mockResolvedValue("transcribed-them-final");
+      const httpPending = withNoStream(httpWork);
+
+      // "them" finishes streaming and releases.
+      // "me" was already in slot queue, but HTTP work should not starve.
+      releaseStream("them");
+
+      // HTTP work resolves without false "model busy" error
+      await expect(httpPending).resolves.toBe("transcribed-them-final");
+      expect(httpWork).toHaveBeenCalledTimes(1);
+
+      // And after HTTP finishes, "me" gets the slot
+      expect(meCallback).toHaveBeenCalledTimes(1);
+      expect(tryAcquireStream("them")).toBe(false);
+    });
+
+    it("handles repeated channel alternation with interleaved HTTP transcriptions without false model busy (R05)", async () => {
+      expect(tryAcquireStream("them")).toBe(true);
+
+      // Channel 1 -> HTTP 1 while Channel 2 is queued
+      const meCalls: number[] = [];
+      enqueueStreamSlot("me", () => {
+        meCalls.push(1);
+      });
+
+      const http1 = vi.fn().mockResolvedValue("final-1");
+      const pending1 = withNoStream(http1);
+
+      releaseStream("them");
+      await expect(pending1).resolves.toBe("final-1");
+      expect(meCalls).toEqual([1]);
+
+      // Now "me" holds the stream. Queue "them" and HTTP 2
+      const themCalls: number[] = [];
+      enqueueStreamSlot("them", () => {
+        themCalls.push(2);
+      });
+
+      const http2 = vi.fn().mockResolvedValue("final-2");
+      const pending2 = withNoStream(http2);
+
+      releaseStream("me");
+      await expect(pending2).resolves.toBe("final-2");
+      expect(themCalls).toEqual([2]);
+    });
+
+    it("blocks tryAcquireStream while HTTP work is actively executing to prevent collision (R05)", async () => {
+      let resolveHttp: (val: string) => void;
+      const httpWork = () =>
+        new Promise<string>((resolve) => {
+          resolveHttp = resolve;
+        });
+
+      const pending = withNoStream(httpWork);
+      // While HTTP work is in-flight, stream cannot acquire
+      expect(tryAcquireStream("them")).toBe(false);
+      expect(tryAcquireStream("me")).toBe(false);
+
+      resolveHttp!("done");
+      await expect(pending).resolves.toBe("done");
+
+      // Free once HTTP finishes
+      expect(tryAcquireStream("them")).toBe(true);
+    });
   });
 });
