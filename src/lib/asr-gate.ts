@@ -141,31 +141,23 @@ export async function withNoStream<T>(
 ): Promise<T> {
   if (activeOwner === null) {
     httpActiveCount++;
-    try {
-      return await fn();
-    } finally {
-      httpActiveCount--;
-      if (httpActiveCount === 0 && waiters.size === 0) {
-        handoffNextSlot();
-      }
+  } else {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        waiters.delete(wake);
+        resolve();
+      }, timeoutMs);
+      const wake = () => {
+        clearTimeout(timer);
+        waiters.delete(wake);
+        httpActiveCount++;
+        resolve();
+      };
+      waiters.add(wake);
+    });
+    if (activeOwner !== null) {
+      throw new Error(`ASR model busy: stream active (owned by ${activeOwner})`);
     }
-  }
-
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(() => {
-      waiters.delete(wake);
-      resolve();
-    }, timeoutMs);
-    const wake = () => {
-      clearTimeout(timer);
-      waiters.delete(wake);
-      httpActiveCount++;
-      resolve();
-    };
-    waiters.add(wake);
-  });
-  if (activeOwner !== null) {
-    throw new Error(`ASR model busy: stream active (owned by ${activeOwner})`);
   }
 
   try {

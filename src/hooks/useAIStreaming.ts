@@ -142,7 +142,6 @@ export function useAIStreaming({
       clearTimeout(streamFlushTimerRef.current);
       streamFlushTimerRef.current = undefined;
       let buffer = "";
-      let displayResponse = "";
       let storedResponse = "";
       let firstChunk = true;
       let timer: NodeJS.Timeout | undefined;
@@ -205,7 +204,6 @@ export function useAIStreaming({
             setActiveProviderId(event.providerId);
             if (event.type === "restart") {
               clearFlush();
-              displayResponse = "";
               storedResponse = "";
               firstChunk = true;
               setLastAIResponse("");
@@ -227,11 +225,9 @@ export function useAIStreaming({
             recordFirstToken();
             const filler = typeof getActiveFiller === "function" ? getActiveFiller() : null;
             const stitched = filler?.trim() ? filler.trim() + "\n\n" : "";
-            displayResponse += stitched;
             buffer += stitched;
             clearFiller();
           }
-          displayResponse += chunk;
           storedResponse += chunk;
           buffer += chunk;
           if (!timer) {
@@ -246,7 +242,7 @@ export function useAIStreaming({
         }
         if (!isCurrent()) return;
         flush();
-        if (displayResponse && storedResponse) {
+        if (storedResponse) {
           lastAIResponseAtRef.current = Date.now();
           addInteraction(transcription, storedResponse, source);
         }
