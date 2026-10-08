@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useQuestionPipeline } from "../useQuestionPipeline";
+import { useQuestionPipeline, TURN_GATE_STATUS_EVENT } from "../useQuestionPipeline";
 import type { LiveSegment } from "../useConversationStore";
 import { selectFillerForText } from "@/lib/transcript-stabilizer";
 
@@ -506,6 +506,163 @@ describe("useQuestionPipeline", () => {
       expect(sent).toContain("используем");
       expect(onTriggerAI).toHaveBeenCalledTimes(1);
       expect(result.current.turnGateWaiting).toBe(false);
+    });
+
+    describe("R04: Turn-gate status reset on all dispatch paths", () => {
+      it("resets turn-gate on monologue-fallback dispatch (R04)", async () => {
+        const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+        const statusEvents: boolean[] = [];
+        const onStatus = (e: Event) => statusEvents.push(Boolean((e as CustomEvent).detail));
+        window.addEventListener(TURN_GATE_STATUS_EVENT, onStatus);
+
+        const { result } = renderHook(() =>
+          useQuestionPipeline({
+            onTriggerAI,
+            liveSegmentsRef: { current: [] },
+            profile: {
+              id: "profile-auto",
+              name: "Auto",
+              description: "",
+              systemPrompt: "prompt",
+              humanizerEnabled: true,
+              interviewMode: false,
+              customStyle: "",
+              ragResumeEnabled: false,
+              ragJobEnabled: false,
+              flushGapMs: 1000,
+              monologue: { mode: "auto", maxWindow: 20000 },
+            },
+          })
+        );
+
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Рассказ окончен.");
+        });
+        expect(result.current.turnGateWaiting).toBe(true);
+        expect(statusEvents).toContain(true);
+
+        // Fast-forward silence gap: assembler flush emits the finished
+        // statement, the timer branch dispatches and resets the gate.
+        await act(async () => {
+          vi.advanceTimersByTime(1100);
+        });
+
+        expect(onTriggerAI).toHaveBeenCalledTimes(1);
+        expect(onTriggerAI).toHaveBeenCalledWith("Рассказ окончен.", "them");
+        expect(result.current.turnGateWaiting).toBe(false);
+        expect(statusEvents[statusEvents.length - 1]).toBe(false);
+        window.removeEventListener(TURN_GATE_STATUS_EVENT, onStatus);
+      });
+
+      it("resets turn-gate on semi mode silence gap and confirmation (R04)", async () => {
+        const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+        const statusEvents: boolean[] = [];
+        const onStatus = (e: Event) => statusEvents.push(Boolean((e as CustomEvent).detail));
+        window.addEventListener(TURN_GATE_STATUS_EVENT, onStatus);
+
+        const { result } = renderHook(() =>
+          useQuestionPipeline({
+            onTriggerAI,
+            liveSegmentsRef: { current: [] },
+            profile: {
+              id: "profile-semi",
+              name: "Semi",
+              description: "",
+              systemPrompt: "prompt",
+              humanizerEnabled: true,
+              interviewMode: false,
+              customStyle: "",
+              ragResumeEnabled: false,
+              ragJobEnabled: false,
+              flushGapMs: 800,
+              monologue: { mode: "semi", maxWindow: 20000 },
+            },
+          })
+        );
+
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Полуавтоматический ввод");
+        });
+        expect(result.current.turnGateWaiting).toBe(true);
+
+        // Silence gap fires -> ready for confirmation, gate must clear
+        await act(async () => {
+          vi.advanceTimersByTime(900);
+        });
+        expect(result.current.isMonologueReady).toBe(true);
+        expect(result.current.turnGateWaiting).toBe(false);
+        expect(statusEvents[statusEvents.length - 1]).toBe(false);
+
+        // User confirms monologue -> gate remains false
+        await act(async () => {
+          await result.current.confirmMonologue();
+        });
+        expect(result.current.turnGateWaiting).toBe(false);
+        window.removeEventListener(TURN_GATE_STATUS_EVENT, onStatus);
+      });
+
+      it("resets turn-gate on manual mode silence gap and manual flush (R04)", async () => {
+        const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+        const statusEvents: boolean[] = [];
+        const onStatus = (e: Event) => statusEvents.push(Boolean((e as CustomEvent).detail));
+        window.addEventListener(TURN_GATE_STATUS_EVENT, onStatus);
+
+        const { result } = renderHook(() =>
+          useQuestionPipeline({
+            onTriggerAI,
+            liveSegmentsRef: { current: [] },
+            profile: {
+              id: "profile-manual",
+              name: "Manual",
+              description: "",
+              systemPrompt: "prompt",
+              humanizerEnabled: true,
+              interviewMode: false,
+              customStyle: "",
+              ragResumeEnabled: false,
+              ragJobEnabled: false,
+              flushGapMs: 800,
+              monologue: { mode: "manual", maxWindow: 20000 },
+            },
+          })
+        );
+
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Ручной режим монолога");
+        });
+        expect(result.current.turnGateWaiting).toBe(true);
+
+        // Gap fires -> gate must clear
+        await act(async () => {
+          vi.advanceTimersByTime(900);
+        });
+        expect(result.current.turnGateWaiting).toBe(false);
+        expect(statusEvents[statusEvents.length - 1]).toBe(false);
+
+        // User flushes manually
+        await act(async () => {
+          await result.current.flushMonologue();
+        });
+        expect(result.current.turnGateWaiting).toBe(false);
+        window.removeEventListener(TURN_GATE_STATUS_EVENT, onStatus);
+      });
+
+      it("resets turn-gate when resetQuestionAssembly is called (R04)", async () => {
+        const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+        const { result } = renderHook(() =>
+          useQuestionPipeline({ onTriggerAI, liveSegmentsRef: { current: [] } })
+        );
+
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Фраза до сброса");
+        });
+        expect(result.current.turnGateWaiting).toBe(true);
+
+        act(() => {
+          result.current.resetQuestionAssembly();
+        });
+        expect(result.current.turnGateWaiting).toBe(false);
+      });
     });
   });
 });

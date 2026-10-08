@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex};
 use tauri::AppHandle;
 use tauri_plugin_machine_uid::MachineUidExt;
 use uuid::Uuid;
@@ -44,12 +45,20 @@ pub struct SecureStorage {
     pub extra: HashMap<String, String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageItem {
-    key: String,
-    value: String,
+    pub key: String,
+    pub value: String,
 }
 
+impl StorageItem {
+    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StorageResult {
     license_key: Option<String>,
@@ -363,10 +372,31 @@ pub fn load_secure_storage(storage_path: &std::path::Path) -> Result<SecureStora
 
     let raw = fs::read(storage_path)
         .map_err(|e| format!("Failed to read storage file: {}", e))?;
+    if raw.is_empty() {
+        return Ok(SecureStorage::default());
+    }
+
     let is_legacy = is_legacy_format(&raw);
-    let decrypted = dpapi::unprotect(&raw)?;
-    let storage: SecureStorage = serde_json::from_slice(&decrypted)
-        .map_err(|e| format!("Failed to parse storage file: {}", e))?;
+    let decrypted = match dpapi::unprotect(&raw) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!(
+                "Warning: corrupt or truncated secure storage file {}: {e}. Recovering with empty storage.",
+                storage_path.display()
+            );
+            return Ok(SecureStorage::default());
+        }
+    };
+    let storage: SecureStorage = match serde_json::from_slice(&decrypted) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "Warning: failed to parse secure storage file {}: {e}. Recovering with empty storage.",
+                storage_path.display()
+            );
+            return Ok(SecureStorage::default());
+        }
+    };
 
     // R16: On successful load of a legacy plaintext file, rewrite it in protected format.
     // Failure to rewrite must not lose data or fail the load.
@@ -381,19 +411,63 @@ pub fn load_secure_storage(storage_path: &std::path::Path) -> Result<SecureStora
 
     Ok(storage)
 }
-fn save_secure_storage(storage_path: &std::path::Path, storage: &SecureStorage) -> Result<(), String> {
+static STORAGE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+pub fn save_secure_storage(storage_path: &std::path::Path, storage: &SecureStorage) -> Result<(), String> {
     let content = serde_json::to_vec(storage)
         .map_err(|e| format!("Failed to serialize storage: {}", e))?;
     let protected = dpapi::protect(&content)?;
-    fs::write(storage_path, protected)
-        .map_err(|e| format!("Failed to write storage file: {}", e))?;
+
+    // Ensure parent directory exists
+    if let Some(parent) = storage_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create storage directory {}: {}", parent.display(), e))?;
+        }
+    }
+
+    // Write to a temporary file in the same directory, then rename atomically.
+    // This prevents corruption and guarantees that an interrupted write never truncates the original file.
+    let temp_file_name = format!(
+        "{}.tmp.{}",
+        storage_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("storage"),
+        Uuid::new_v4()
+    );
+    let temp_path = storage_path
+        .parent()
+        .map(|p| p.join(&temp_file_name))
+        .unwrap_or_else(|| PathBuf::from(&temp_file_name));
+
+    if let Err(e) = fs::write(&temp_path, &protected) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!("Failed to write temporary storage file {}: {}", temp_path.display(), e));
+    }
+
+    if let Err(e) = fs::rename(&temp_path, storage_path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!(
+            "Failed to atomically commit storage file {} -> {}: {}",
+            temp_path.display(),
+            storage_path.display(),
+            e
+        ));
+    }
+
     Ok(())
 }
 
-#[tauri::command]
-pub async fn secure_storage_save(app: AppHandle, items: Vec<StorageItem>) -> Result<(), String> {
-    let storage_path = get_secure_storage_path(&app)?;
-    let mut storage = load_secure_storage(&storage_path)?;
+pub fn save_storage_items_internal(
+    storage_path: &std::path::Path,
+    items: Vec<StorageItem>,
+) -> Result<(), String> {
+    let _guard = STORAGE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let mut storage = load_secure_storage(storage_path)?;
 
     for item in items {
         match item.key.as_str() {
@@ -406,12 +480,48 @@ pub async fn secure_storage_save(app: AppHandle, items: Vec<StorageItem>) -> Res
         }
     }
 
-    save_secure_storage(&storage_path, &storage)
+    save_secure_storage(storage_path, &storage)
+}
+
+pub fn remove_storage_keys_internal(
+    storage_path: &std::path::Path,
+    keys: Vec<String>,
+) -> Result<(), String> {
+    let _guard = STORAGE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if !storage_path.exists() {
+        return Ok(());
+    }
+
+    let mut storage = load_secure_storage(storage_path)?;
+
+    for key in keys {
+        match key.as_str() {
+            "pluely_license_key" => storage.license_key = None,
+            "pluely_instance_id" => storage.instance_id = None,
+            "selected_pluely_model" => storage.selected_pluely_model = None,
+            other => {
+                storage.extra.remove(other);
+            }
+        }
+    }
+
+    save_secure_storage(storage_path, &storage)
 }
 
 #[tauri::command]
+pub async fn secure_storage_save(app: AppHandle, items: Vec<StorageItem>) -> Result<(), String> {
+    let storage_path = get_secure_storage_path(&app)?;
+    save_storage_items_internal(&storage_path, items)
+}
+#[tauri::command]
 pub async fn secure_storage_get(app: AppHandle) -> Result<StorageResult, String> {
     let storage_path = get_secure_storage_path(&app)?;
+    let _guard = STORAGE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let storage = load_secure_storage(&storage_path)?;
 
     Ok(StorageResult {
@@ -429,6 +539,9 @@ pub async fn secure_storage_get_item(
     key: String,
 ) -> Result<Option<String>, String> {
     let storage_path = get_secure_storage_path(&app)?;
+    let _guard = STORAGE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let storage = load_secure_storage(&storage_path)?;
 
     let value = match key.as_str() {
@@ -444,26 +557,8 @@ pub async fn secure_storage_get_item(
 #[tauri::command]
 pub async fn secure_storage_remove(app: AppHandle, keys: Vec<String>) -> Result<(), String> {
     let storage_path = get_secure_storage_path(&app)?;
-    if !storage_path.exists() {
-        return Ok(());
-    }
-
-    let mut storage = load_secure_storage(&storage_path)?;
-
-    for key in keys {
-        match key.as_str() {
-            "pluely_license_key" => storage.license_key = None,
-            "pluely_instance_id" => storage.instance_id = None,
-            "selected_pluely_model" => storage.selected_pluely_model = None,
-            other => {
-                storage.extra.remove(other);
-            }
-        }
-    }
-
-    save_secure_storage(&storage_path, &storage)
+    remove_storage_keys_internal(&storage_path, keys)
 }
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ActivationRequest {
     license_key: String,
@@ -852,5 +947,96 @@ mod tests {
 
         let decrypted = xor_stream(&key, &nonce, &ciphertext);
         assert_eq!(&decrypted[..], plaintext);
+    }
+
+    #[test]
+    fn test_parallel_saves_keep_all_keys() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-ai-parallel-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secure_storage.json");
+
+        let thread_count = 16;
+        let mut handles = Vec::with_capacity(thread_count);
+
+        for i in 0..thread_count {
+            let path_clone = path.clone();
+            handles.push(std::thread::spawn(move || {
+                let key = format!("concurrent_key_{}", i);
+                let val = format!("secret_value_{}", i);
+                save_storage_items_internal(
+                    &path_clone,
+                    vec![StorageItem::new(key, val)],
+                )
+                .expect("concurrent save must succeed");
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("thread must not panic");
+        }
+
+        let loaded = load_secure_storage(&path).expect("file must load after concurrent saves");
+        for i in 0..thread_count {
+            let key = format!("concurrent_key_{}", i);
+            let expected_val = format!("secret_value_{}", i);
+            assert_eq!(
+                loaded.extra.get(&key).map(String::as_str),
+                Some(expected_val.as_str()),
+                "all concurrent keys must be preserved without loss"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_truncate_recovery_and_atomic_write() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-ai-truncate-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secure_storage.json");
+
+        // 1. Truncate recovery on 0-byte file:
+        std::fs::write(&path, b"").unwrap();
+        let loaded_empty = load_secure_storage(&path).expect("0-byte truncated file must recover as default");
+        assert!(loaded_empty.license_key.is_none());
+        assert!(loaded_empty.extra.is_empty());
+
+        // Saving to the truncated file restores full functionality
+        save_storage_items_internal(
+            &path,
+            vec![StorageItem::new("recovered_key", "recovered_val")],
+        )
+        .expect("saving to truncated file must succeed");
+
+        let reloaded = load_secure_storage(&path).expect("reloaded storage must succeed");
+        assert_eq!(
+            reloaded.extra.get("recovered_key").map(String::as_str),
+            Some("recovered_val")
+        );
+
+        // 2. Truncate recovery on corrupted/partial JSON:
+        std::fs::write(&path, b"{\"license_key\":\"trun").unwrap();
+        let loaded_corrupt = load_secure_storage(&path).expect("corrupt/truncated JSON must recover as default");
+        assert!(loaded_corrupt.license_key.is_none());
+
+        save_storage_items_internal(
+            &path,
+            vec![StorageItem::new("key_after_trunc", "val_after_trunc")],
+        )
+        .expect("saving after corrupt file must recover and succeed");
+
+        let reloaded2 = load_secure_storage(&path).expect("reloaded storage must succeed");
+        assert_eq!(
+            reloaded2.extra.get("key_after_trunc").map(String::as_str),
+            Some("val_after_trunc")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

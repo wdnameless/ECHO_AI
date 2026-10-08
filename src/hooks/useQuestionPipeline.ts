@@ -85,6 +85,7 @@ export function useQuestionPipeline({
   const [currentProfile, setCurrentProfile] = useState<PromptProfile>(() => {
     return propProfile ?? getActiveProfile();
   });
+  const appliedProfileKeyRef = useRef<string | null>(null);
 
   const questionAssemblerRef = useRef<QuestionAssembler | null>(null);
   const monologueBufferRef = useRef<MonologueBuffer | null>(null);
@@ -96,6 +97,12 @@ export function useQuestionPipeline({
   const [isMonologueReady, setIsMonologueReady] = useState<boolean>(false);
   const [turnGateWaiting, setTurnGateWaiting] = useState<boolean>(false);
 
+  const updateTurnGate = useCallback((waiting: boolean) => {
+    setTurnGateWaiting(waiting);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(TURN_GATE_STATUS_EVENT, { detail: waiting }));
+    }
+  }, []);
   // Initialize assembler and monologue buffer
   if (!questionAssemblerRef.current) {
     const p = propProfile ?? getActiveProfile();
@@ -127,7 +134,8 @@ export function useQuestionPipeline({
     setMonologueStatus("idle");
     setMonologueText("");
     setIsMonologueReady(false);
-  }, []);
+    updateTurnGate(false);
+  }, [updateTurnGate]);
 
   const reconfigureProfile = useCallback(
     (profile: PromptProfile) => {
@@ -152,11 +160,21 @@ export function useQuestionPipeline({
     [resetTimersAndAssembly]
   );
 
-  // Update when prop changes
+  // Update when prop changes. Guarded by serialized key: an inline object
+  // literal is referentially new every render, and naive reconf would loop
+  // setCurrentProfile -> render -> effect -> setCurrentProfile forever.
   useEffect(() => {
-    if (propProfile) {
-      reconfigureProfile(propProfile);
-    }
+    if (!propProfile) return;
+    const key = JSON.stringify([
+      propProfile.id,
+      propProfile.flushGapMs ?? null,
+      propProfile.monologue?.mode ?? null,
+      propProfile.monologue?.maxWindow ?? null,
+      propProfile.interviewMode ?? null,
+    ]);
+    if (appliedProfileKeyRef.current === key) return;
+    appliedProfileKeyRef.current = key;
+    reconfigureProfile(propProfile);
   }, [propProfile, reconfigureProfile]);
 
   // Listen to profile changes from other tabs or settings
@@ -185,8 +203,9 @@ export function useQuestionPipeline({
     return () => {
       cancelGapTimerRef.current?.();
       cancelGapTimerRef.current = null;
+      updateTurnGate(false);
     };
-  }, []);
+  }, [updateTurnGate]);
   useEffect(() => {
     // Warmup at session start not trailing edge
     if (!activeProviderUrlRef.current) {
@@ -238,13 +257,14 @@ export function useQuestionPipeline({
     setMonologueText("");
     setIsMonologueReady(false);
     setMonologueStatus("idle");
+    updateTurnGate(false);
 
     if (flushed && flushed.text) {
       await onTriggerAI(flushed.text, "them");
       return flushed.text;
     }
     return null;
-  }, [onTriggerAI]);
+  }, [onTriggerAI, updateTurnGate]);
 
   const confirmMonologue = useCallback(async (): Promise<string | null> => {
     return flushMonologue();
@@ -258,23 +278,21 @@ export function useQuestionPipeline({
     setMonologueText("");
     setIsMonologueReady(false);
     setMonologueStatus("idle");
-  }, []);
+    updateTurnGate(false);
+  }, [updateTurnGate]);
   // Turn-gate force answer (R06): dispatches whatever the assembler holds,
   // bypassing the gap timer. Fired from the overlay "ответить всё равно" button.
   const answerAnyway = useCallback(async (): Promise<string | null> => {
     cancelGapTimerRef.current?.();
     cancelGapTimerRef.current = null;
     const emitted = questionAssemblerRef.current?.flush("them", { allowContinuation: true });
-    setTurnGateWaiting(false);
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(new CustomEvent(TURN_GATE_STATUS_EVENT, { detail: false }));
-    }
+    updateTurnGate(false);
     if (emitted?.kind === "emitted" && emitted.question) {
       await onTriggerAI(emitted.question, "them");
       return emitted.question;
     }
     return null;
-  }, [onTriggerAI]);
+  }, [onTriggerAI, updateTurnGate]);
 
   // Listen to monologue events
   useEffect(() => {
@@ -341,10 +359,7 @@ export function useQuestionPipeline({
         cancelGapTimerRef.current?.();
         cancelGapTimerRef.current = null;
         monoBuffer.clear();
-        setTurnGateWaiting(false);
-        if (typeof window !== "undefined") {
-          window.dispatchEvent(new CustomEvent(TURN_GATE_STATUS_EVENT, { detail: false }));
-        }
+        updateTurnGate(false);
         setMonologueText("");
         setIsMonologueReady(false);
         setMonologueStatus("idle");
@@ -358,6 +373,7 @@ export function useQuestionPipeline({
         cancelGapTimerRef.current = null;
         const flushed = monoBuffer.flush();
         assembler.reset();
+        updateTurnGate(false);
         setMonologueText("");
         setIsMonologueReady(false);
         setMonologueStatus("idle");
@@ -382,11 +398,13 @@ export function useQuestionPipeline({
             monoBuffer.onSilenceGap();
             setIsMonologueReady(true);
             setMonologueStatus("ready");
+            updateTurnGate(false);
             return;
           }
 
           if (monoMode === "manual") {
             monoBuffer.onSilenceGap();
+            updateTurnGate(false);
             return;
           }
 
@@ -406,10 +424,7 @@ export function useQuestionPipeline({
             setMonologueText("");
             setIsMonologueReady(false);
             setMonologueStatus("idle");
-            setTurnGateWaiting(false);
-            if (typeof window !== "undefined") {
-              window.dispatchEvent(new CustomEvent(TURN_GATE_STATUS_EVENT, { detail: false }));
-            }
+            updateTurnGate(false);
             void onTriggerAI(textToSend, "them");
           } else if (emitted?.kind === "pending") {
             extensions += 1;
@@ -419,35 +434,21 @@ export function useQuestionPipeline({
             setMonologueText("");
             setIsMonologueReady(false);
             setMonologueStatus("idle");
+            updateTurnGate(false);
             if (flushed && flushed.text) {
               void onTriggerAI(flushed.text, "them");
             }
+          } else {
+            updateTurnGate(false);
           }
         }, delay);
       };
 
       arm(gapMs);
-      setTurnGateWaiting(true);
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent(TURN_GATE_STATUS_EVENT, { detail: true }));
-      }
+      updateTurnGate(true);
 
-      // If assembler emitted without punctuation wait (and not in non-stop accumulation)
-      if (
-        result.kind === "emitted" &&
-        monoMode === "auto" &&
-        profile.interviewMode
-      ) {
-        cancelGapTimerRef.current?.();
-        cancelGapTimerRef.current = null;
-        monoBuffer.clear();
-        setMonologueText("");
-        setIsMonologueReady(false);
-        setMonologueStatus("idle");
-        await onTriggerAI(result.question, "them");
-      }
     },
-    [onTriggerAI, currentProfile]
+    [onTriggerAI, currentProfile, updateTurnGate]
   );
 
   return {

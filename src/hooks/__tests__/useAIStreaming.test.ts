@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useAIStreaming, SelectedAIProviderConfig } from "../useAIStreaming";
 import type { ChatConversation } from "../useConversationStore";
@@ -41,7 +41,7 @@ describe("useAIStreaming", () => {
 
   const buildHistory = vi.fn(() => []);
   const addInteraction = vi.fn();
-  const getActiveFiller = vi.fn(() => null);
+  const getActiveFiller: Mock<() => string | null> = vi.fn(() => null);
   const setFillerForInterviewer = vi.fn();
   const clearFiller = vi.fn();
   const onError = vi.fn();
@@ -49,6 +49,7 @@ describe("useAIStreaming", () => {
 
   beforeEach(() => {
     vi.mocked(shouldUsePluelyAPI).mockResolvedValue(false);
+    getActiveFiller.mockReturnValue(null);
   });
 
   afterEach(() => {
@@ -202,6 +203,41 @@ describe("useAIStreaming", () => {
       "them"
     );
     expect(result.current.lastAIResponse).toBe("Hello world, this is streaming AI.");
+    expect(clearFiller).toHaveBeenCalled();
+  });
+
+  it("displays filler in UI during streaming but saves clean response without filler to conversation history (R02)", async () => {
+    const props = createHookProps();
+    getActiveFiller.mockReturnValue("Минутку, думаю...");
+
+    async function* chunkStream() {
+      yield "Чистый ";
+      yield "ответ.";
+    }
+
+    vi.mocked(fetchAIResponse).mockReturnValue(chunkStream());
+
+    const { result } = renderHook(() => useAIStreaming(props));
+
+    await act(async () => {
+      await result.current.processWithAI(
+        "Расскажи про микросервисы",
+        "prompt",
+        [],
+        [],
+        "them"
+      );
+    });
+
+    // Filler must be visible in UI (displayResponse stitched into lastAIResponse)
+    expect(result.current.lastAIResponse).toBe("Минутку, думаю...\n\nЧистый ответ.");
+
+    // Filler must NOT be stored into interaction / database history
+    expect(addInteraction).toHaveBeenCalledWith(
+      "Расскажи про микросервисы",
+      "Чистый ответ.",
+      "them"
+    );
     expect(clearFiller).toHaveBeenCalled();
   });
 
