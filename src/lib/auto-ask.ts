@@ -299,7 +299,14 @@ export class AutoAskManager {
    * Called when a finalized segment or partial speech event arrives.
    * Debounces the dispatch until silence duration completes.
    */
-  public onFinalizedTranscript(text: string): void {
+  public onFinalizedTranscript(
+    text: string,
+    options?: { confirmedSilence?: boolean }
+  ): void {
+    if (options?.confirmedSilence) {
+      this.dispatchNow(text);
+      return;
+    }
     if (!this.isEligible(text)) {
       this.cancel();
       return;

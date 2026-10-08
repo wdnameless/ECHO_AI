@@ -21,6 +21,8 @@ import {
   RotateCcwIcon,
   FileCodeIcon,
   SaveIcon,
+  DownloadIcon,
+  UploadIcon,
 } from "lucide-react";
 import { useApp } from "@/contexts";
 import { cn } from "@/lib/utils";
@@ -29,6 +31,10 @@ import {
   SELF_EVOLUTION_PROFILE_ID,
   getRemovedBuiltinProfileIds,
   restoreAllBuiltinProfiles,
+  exportProfileToJson,
+  exportProfilesToJson,
+  importProfilesFromJson,
+  ToolbarButtonId,
 } from "@/lib/storage/prompt-profiles";
 import {
   getUserFacts,
@@ -41,6 +47,21 @@ import {
   saveUserMarkdownProfile,
   resetUserMarkdownProfile,
 } from "@/lib/storage/user-facts";
+
+export const AVAILABLE_TOOLBAR_BUTTONS: Array<{ id: ToolbarButtonId; label: string }> = [
+  { id: "length", label: "Длина ответа (Авто/Кратко/Подробно)" },
+  { id: "thought", label: "Ход мыслей" },
+  { id: "livecode", label: "Лайвкодинг" },
+  { id: "answer", label: "Ответить" },
+  { id: "code_plan", label: "План кода" },
+  { id: "code_full", label: "Код" },
+  { id: "code_screen", label: "Код со скрина" },
+  { id: "monologue_send", label: "Отправка монолога" },
+  { id: "screenshot", label: "Скриншот" },
+  { id: "audio_settings", label: "Настройки звука" },
+  { id: "settings", label: "Все настройки" },
+  { id: "new_chat", label: "Новый чат" },
+];
 
 export function isDraftDirty(
   draft: PromptProfile | null,
@@ -55,7 +76,13 @@ export function isDraftDirty(
     draft.interviewMode !== original.interviewMode ||
     draft.customStyle !== original.customStyle ||
     draft.ragResumeEnabled !== original.ragResumeEnabled ||
-    draft.ragJobEnabled !== original.ragJobEnabled
+    draft.ragJobEnabled !== original.ragJobEnabled ||
+    draft.flushGapMs !== original.flushGapMs ||
+    draft.defaultLength !== original.defaultLength ||
+    JSON.stringify(draft.visibleButtons ?? []) !==
+      JSON.stringify(original.visibleButtons ?? []) ||
+    JSON.stringify(draft.monologue ?? {}) !==
+      JSON.stringify(original.monologue ?? {})
   );
 }
 
@@ -121,6 +148,10 @@ export const PromptProfilesSettings = () => {
       customStyle: draft.customStyle,
       ragResumeEnabled: draft.ragResumeEnabled,
       ragJobEnabled: draft.ragJobEnabled,
+      flushGapMs: draft.flushGapMs,
+      defaultLength: draft.defaultLength,
+      visibleButtons: draft.visibleButtons,
+      monologue: draft.monologue,
     });
     setEditing(false);
     setDraft(null);
@@ -173,12 +204,101 @@ export const PromptProfilesSettings = () => {
       customStyle: "",
       ragResumeEnabled: false,
       ragJobEnabled: false,
+      flushGapMs: 1000,
+      defaultLength: "auto",
+      visibleButtons: [
+        "length",
+        "thought",
+        "answer",
+        "screenshot",
+        "audio_settings",
+        "settings",
+        "new_chat",
+      ],
+      monologue: {
+        mode: "auto",
+        maxWindow: 12000,
+      },
     });
     selectPromptProfile(created.id);
     startEdit(created);
     setNewName("");
     setCreating(false);
   }, [newName, createPromptProfile, selectPromptProfile, activeProfile, startEdit]);
+
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [importJsonText, setImportJsonText] = useState("");
+  const [importFeedback, setImportFeedback] = useState<string | null>(null);
+
+  const handleExportCurrent = useCallback(() => {
+    if (!activeProfile) return;
+    const json = exportProfileToJson(activeProfile);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${activeProfile.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-profile.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [activeProfile]);
+
+  const handleExportAll = useCallback(() => {
+    const json = exportProfilesToJson(promptProfiles);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "prompt-profiles-export.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [promptProfiles]);
+
+  const handleImportJson = useCallback(
+    (jsonString: string) => {
+      setImportFeedback(null);
+      const imported = importProfilesFromJson(jsonString);
+      if (imported.length === 0) {
+        setImportFeedback("Не удалось импортировать профиль: неверный формат JSON.");
+        return;
+      }
+      for (const p of imported) {
+        const created = createPromptProfile({
+          name: p.name,
+          description: p.description,
+          systemPrompt: p.systemPrompt,
+          humanizerEnabled: p.humanizerEnabled,
+          interviewMode: p.interviewMode,
+          customStyle: p.customStyle,
+          ragResumeEnabled: p.ragResumeEnabled,
+          ragJobEnabled: p.ragJobEnabled,
+          flushGapMs: p.flushGapMs,
+          defaultLength: p.defaultLength,
+          visibleButtons: p.visibleButtons,
+          monologue: p.monologue,
+        });
+        selectPromptProfile(created.id);
+      }
+      setShowImportModal(false);
+      setImportJsonText("");
+      loadProfiles();
+    },
+    [createPromptProfile, selectPromptProfile, loadProfiles]
+  );
+
+  const handleFileInput = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const content = event.target?.result as string;
+        if (content) handleImportJson(content);
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    },
+    [handleImportJson]
+  );
 
   const handleAddFact = useCallback(() => {
     if (!newFactText.trim()) return;
@@ -627,6 +747,190 @@ export const PromptProfilesSettings = () => {
             />
           </div>
 
+          {/* Timing, Length & Monologue Config */}
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="space-y-1.5 rounded-lg border border-border/40 bg-background/50 p-2.5">
+              <Label className="text-xs font-medium">Silence Flush Gap (мс)</Label>
+              <Input
+                type="number"
+                value={
+                  editing && draft
+                    ? draft.flushGapMs ?? 450
+                    : activeProfile.flushGapMs ?? 450
+                }
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setDraft((d) => (d ? { ...d, flushGapMs: isNaN(val) ? 450 : val } : d));
+                }}
+                disabled={!editing}
+                className="h-8 text-xs font-mono"
+                placeholder="450 (быстрый) / 1500 (разговор)"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Пауза тишины перед отправкой (450 мс для собеседований, 1500 мс для бесед)
+              </p>
+            </div>
+
+            <div className="space-y-1.5 rounded-lg border border-border/40 bg-background/50 p-2.5">
+              <Label className="text-xs font-medium">Длина ответа по умолчанию</Label>
+              <div className="flex gap-1 pt-1">
+                {(["auto", "short", "long"] as const).map((len) => {
+                  const cur =
+                    editing && draft
+                      ? draft.defaultLength ?? "auto"
+                      : activeProfile.defaultLength ?? "auto";
+                  const isSelected = cur === len;
+                  return (
+                    <button
+                      key={len}
+                      type="button"
+                      disabled={!editing}
+                      onClick={() => setDraft((d) => (d ? { ...d, defaultLength: len } : d))}
+                      className={cn(
+                        "flex-1 px-2 py-1 text-xs rounded border transition-colors font-medium",
+                        isSelected
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "border-border/60 hover:bg-muted text-muted-foreground"
+                      )}
+                    >
+                      {len === "auto" ? "Авто" : len === "short" ? "Кратко" : "Подробно"}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Краткость ответов модели в оверлее
+              </p>
+            </div>
+
+            <div className="space-y-1.5 rounded-lg border border-border/40 bg-background/50 p-2.5">
+              <Label className="text-xs font-medium">Режим монолога</Label>
+              <div className="flex gap-1 pt-1">
+                {(["auto", "semi", "manual"] as const).map((mode) => {
+                  const cur =
+                    editing && draft
+                      ? draft.monologue?.mode ?? "auto"
+                      : activeProfile.monologue?.mode ?? "auto";
+                  const isSelected = cur === mode;
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      disabled={!editing}
+                      onClick={() =>
+                        setDraft((d) =>
+                          d
+                            ? {
+                                ...d,
+                                monologue: {
+                                  mode,
+                                  maxWindow: d.monologue?.maxWindow ?? 12000,
+                                },
+                              }
+                            : d
+                        )
+                      }
+                      className={cn(
+                        "flex-1 px-2 py-1 text-xs rounded border transition-colors font-medium",
+                        isSelected
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "border-border/60 hover:bg-muted text-muted-foreground"
+                      )}
+                    >
+                      {mode === "auto" ? "Авто" : mode === "semi" ? "Полуавто" : "Вручную"}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Авто (по тишине) / Полуавто (подтверждение) / Вручную (кнопка)
+              </p>
+            </div>
+
+            <div className="space-y-1.5 rounded-lg border border-border/40 bg-background/50 p-2.5">
+              <Label className="text-xs font-medium">Окно накопления монолога (мс)</Label>
+              <Input
+                type="number"
+                value={
+                  editing && draft
+                    ? draft.monologue?.maxWindow ?? 12000
+                    : activeProfile.monologue?.maxWindow ?? 12000
+                }
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setDraft((d) =>
+                    d
+                      ? {
+                          ...d,
+                          monologue: {
+                            mode: d.monologue?.mode ?? "auto",
+                            maxWindow: isNaN(val) ? 12000 : val,
+                          },
+                        }
+                      : d
+                  );
+                }}
+                disabled={!editing}
+                className="h-8 text-xs font-mono"
+                placeholder="12000"
+              />
+              <p className="text-[10px] text-muted-foreground">
+                Максимальное окно накопления нон-стоп спича перед отправкой
+              </p>
+            </div>
+          </div>
+
+          {/* Visible Buttons in Toolbar */}
+          <div className="space-y-2 rounded-lg border border-border/40 bg-background/50 p-2.5">
+            <Label className="text-xs font-medium">Видимые кнопки в оверлее</Label>
+            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+              {AVAILABLE_TOOLBAR_BUTTONS.map((btn) => {
+                const currentButtons =
+                  editing && draft
+                    ? draft.visibleButtons ?? []
+                    : activeProfile.visibleButtons ?? [];
+                const isVisible = currentButtons.includes(btn.id);
+
+                return (
+                  <button
+                    key={btn.id}
+                    type="button"
+                    disabled={!editing}
+                    onClick={() => {
+                      if (!editing) return;
+                      setDraft((d) => {
+                        if (!d) return d;
+                        const cur = d.visibleButtons ?? [];
+                        const next = cur.includes(btn.id)
+                          ? cur.filter((id) => id !== btn.id)
+                          : [...cur, btn.id];
+                        return { ...d, visibleButtons: next };
+                      });
+                    }}
+                    className={cn(
+                      "flex items-center justify-between p-1.5 rounded border text-left text-xs transition-colors",
+                      isVisible
+                        ? "bg-primary/10 border-primary text-foreground font-medium"
+                        : "border-border/40 bg-muted/20 text-muted-foreground hover:bg-muted/40",
+                      !editing && "cursor-default opacity-80"
+                    )}
+                  >
+                    <span className="truncate">{btn.label}</span>
+                    <span
+                      className={cn(
+                        "size-2 rounded-full shrink-0 ml-1",
+                        isVisible ? "bg-primary" : "bg-muted-foreground/30"
+                      )}
+                    />
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-muted-foreground">
+              Тулбар в оверлее отображает только кнопки, включённые для активного сценария
+            </p>
+          </div>
+
           {/* Edit / Save */}
           <div className="flex gap-2">
             {editing ? (
@@ -646,11 +950,92 @@ export const PromptProfilesSettings = () => {
                 </Button>
               </>
             ) : (
+              <>
               <Button size="sm" variant="outline" onClick={() => startEdit(activeProfile)}>
                 <PenLineIcon className="size-3.5 mr-1" />
                 Edit profile
               </Button>
+              <Button size="sm" variant="outline" onClick={handleExportCurrent} title="Скачать текущий профиль как JSON">
+                <DownloadIcon className="size-3.5 mr-1" />
+                Экспорт
+              </Button>
+              <Button size="sm" variant="outline" onClick={handleExportAll} title="Скачать все профили как JSON">
+                <DownloadIcon className="size-3.5 mr-1" />
+                Экспорт всех
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setShowImportModal(true)} title="Импортировать профили из JSON">
+                <UploadIcon className="size-3.5 mr-1" />
+                Импорт
+              </Button>
+              </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* JSON Import Modal */}
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="w-full max-w-lg space-y-4 rounded-xl border border-border bg-background p-5">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold flex items-center gap-2">
+                <UploadIcon className="size-4" /> Импорт профилей
+              </h3>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setShowImportModal(false);
+                  setImportJsonText("");
+                  setImportFeedback(null);
+                }}
+              >
+                Отмена
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Загрузите файл .json или вставьте конфигурацию профиля в текстовое поле:
+            </p>
+            <div className="flex items-center gap-2">
+              <Input
+                type="file"
+                accept=".json"
+                onChange={handleFileInput}
+                className="text-xs file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-primary-foreground"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Или вставьте JSON напрямую:</Label>
+              <Textarea
+                value={importJsonText}
+                onChange={(e) => setImportJsonText(e.target.value)}
+                placeholder='{ "name": "Custom Profile", "systemPrompt": "...", "flushGapMs": 450 }'
+                className="min-h-[120px] font-mono text-xs"
+              />
+            </div>
+            {importFeedback && (
+              <p className="text-xs text-destructive font-medium">{importFeedback}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setShowImportModal(false);
+                  setImportJsonText("");
+                  setImportFeedback(null);
+                }}
+              >
+                Отмена
+              </Button>
+              <Button
+                size="sm"
+                disabled={!importJsonText.trim()}
+                onClick={() => handleImportJson(importJsonText)}
+              >
+                Импортировать
+              </Button>
+            </div>
           </div>
         </div>
       )}

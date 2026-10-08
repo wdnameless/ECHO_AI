@@ -45,6 +45,8 @@ import {
 } from "@/lib/web-search";
 import type { ChatConversation, LiveSegment } from "@/hooks/useSystemAudio";
 import { detectTextLanguage } from "@/lib/transcript-stabilizer";
+import { STORAGE_KEYS } from "@/config/constants";
+import { getAIProviderVariables } from "@/lib/storage/ai-providers";
 
 /**
  * Newest text spoken by the interviewer, preferring the live feed (fresher than
@@ -134,6 +136,11 @@ interface SubtitleFeedProps {
   onStallRetry?: () => void;
   onStallNext?: () => void;
   onOpenProviders?: () => void;
+  activeProviderId?: string;
+  onSetSelectedAIProvider?: (provider: {
+    provider: string;
+    variables: Record<string, string>;
+  }) => void;
 }
 
 const DISLIKE_REASONS = [
@@ -808,17 +815,65 @@ export const SubtitleFeed = ({
   onStallRetry,
   onStallNext,
   onOpenProviders,
+  activeProviderId: propActiveProviderId,
+  onSetSelectedAIProvider: propOnSetSelectedAIProvider,
 }: SubtitleFeedProps) => {
-  const { promptProfiles, activeProfileId, selectPromptProfile, selectedAIProvider, allAiProviders } = useApp();
+  const {
+    promptProfiles,
+    activeProfileId,
+    selectPromptProfile,
+    selectedAIProvider,
+    allAiProviders,
+    onSetSelectedAIProvider: contextOnSetSelectedAIProvider,
+  } = useApp();
+  const effectiveSetSelectedAIProvider =
+    propOnSetSelectedAIProvider || contextOnSetSelectedAIProvider;
+  const [syncedProviderId, setSyncedProviderId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEYS.SELECTED_AI_PROVIDER && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (parsed?.provider) {
+            setSyncedProviderId(parsed.provider);
+            if (effectiveSetSelectedAIProvider) {
+              effectiveSetSelectedAIProvider({
+                provider: parsed.provider,
+                variables: parsed.variables || getAIProviderVariables(parsed.provider),
+              });
+            }
+          }
+        } catch {}
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [effectiveSetSelectedAIProvider]);
+
+  const effectiveProviderId =
+    syncedProviderId || propActiveProviderId || selectedAIProvider?.provider || "";
+
   const activeProfile =
     promptProfiles.find((p) => p.id === activeProfileId) || promptProfiles[0];
   // LLM model name for the footer (e.g. "gemini-3.1-flash-lite").
   // Shared resolver: the selected `model` variable always wins over a literal
   // model string in the provider curl; the inline regex fallback is gone.
+  const effectiveProvider = allAiProviders?.find((p) => p.id === effectiveProviderId);
   const llmModel = resolveProviderModel(
-    allAiProviders.find((p) => p.id === selectedAIProvider?.provider),
-    selectedAIProvider
+    effectiveProvider || allAiProviders?.find((p) => p.id === selectedAIProvider?.provider),
+    selectedAIProvider?.provider === effectiveProviderId
+      ? selectedAIProvider
+      : { provider: effectiveProviderId, variables: getAIProviderVariables(effectiveProviderId) }
   );
+
+  const handleSelectProvider = (providerId: string) => {
+    const vars = getAIProviderVariables(providerId);
+    setSyncedProviderId(providerId);
+    if (effectiveSetSelectedAIProvider) {
+      effectiveSetSelectedAIProvider({ provider: providerId, variables: vars });
+    }
+  };
   const [webSearchOn, setWebSearchOn] = useState<boolean>(
     () => getWebSearchSettings().enabled
   );
@@ -1792,14 +1847,59 @@ export const SubtitleFeed = ({
             ⏱ {lastTTFT}мс
           </span>
         )}
-        {llmModel && (
-          <span
-            className="font-mono text-violet-600/80 dark:text-violet-400/80"
-            title="Модель ИИ, которая отвечает"
-          >
-            🤖 {llmModel}
-          </span>
-        )}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="font-mono text-violet-600/80 dark:text-violet-400/80 hover:underline hover:text-violet-600 dark:hover:text-violet-300 transition-colors flex items-center gap-1 cursor-pointer bg-transparent border-none p-0 text-[inherit]"
+              title={`Активный провайдер: ${effectiveProviderId || "не выбран"}${llmModel ? ` · Модель: ${llmModel}` : ""}. Клик — переключить провайдер.`}
+              data-testid="model-badge-dropdown-trigger"
+            >
+              <span>🤖</span>
+              <span>
+                {effectiveProviderId && llmModel
+                  ? `${effectiveProviderId}/${llmModel}`
+                  : effectiveProviderId || llmModel || "AI"}
+              </span>
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="text-[0.7em] min-w-[160px]">
+            {!allAiProviders || allAiProviders.length === 0 ? (
+              <div className="px-2 py-1.5 text-muted-foreground text-xs">
+                Нет доступных провайдеров
+              </div>
+            ) : (
+              allAiProviders.map((p) => {
+                const isSelected = p.id === effectiveProviderId;
+                if (!p.id) return null;
+                const providerId: string = p.id;
+                const pModel = resolveProviderModel(p, {
+                  provider: providerId,
+                  variables: getAIProviderVariables(providerId),
+                });
+                return (
+                  <DropdownMenuItem
+                    key={providerId}
+                    onClick={() => handleSelectProvider(providerId)}
+                    className={cn(
+                      "gap-1 cursor-pointer",
+                      isSelected && "bg-primary/10 font-medium"
+                    )}
+                    data-testid={`provider-option-${p.id}`}
+                  >
+                    {isSelected && <CheckIcon className="w-3 h-3" />}
+                    <span className="font-mono">{p.id}</span>
+                    {pModel && (
+                      <span className="text-muted-foreground ml-auto truncate max-w-[120px]">
+                        ({pModel})
+                      </span>
+                    )}
+                  </DropdownMenuItem>
+                );
+              })
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
         </span>
         {pipelineError && (
           <div

@@ -29,8 +29,18 @@ interface StoredSecretItem {
   value: string;
 }
 
+const secretCache = new Map<string, string | null>();
+const pendingSecretFetches = new Map<string, Promise<string | null>>();
+
+/** Clears the in-memory secrets cache. */
+export function clearSecretCache(): void {
+  secretCache.clear();
+  pendingSecretFetches.clear();
+}
+
 export async function saveSecret(key: string, value: string): Promise<void> {
   if (!key) return;
+  secretCache.set(key, value);
   await invoke("secure_storage_save", {
     items: [{ key, value } satisfies StoredSecretItem],
   });
@@ -38,19 +48,35 @@ export async function saveSecret(key: string, value: string): Promise<void> {
 
 export async function getSecret(key: string): Promise<string | null> {
   if (!key) return null;
-  try {
-    const value = await invoke<string | null>("secure_storage_get_item", {
-      key,
-    });
-    return value && value.length > 0 ? value : null;
-  } catch (error) {
-    console.warn("[secret-store] failed to read secret", error);
-    return null;
+  if (secretCache.has(key)) {
+    return secretCache.get(key) ?? null;
   }
+  const pending = pendingSecretFetches.get(key);
+  if (pending) return pending;
+
+  const fetchPromise = (async () => {
+    try {
+      const value = await invoke<string | null>("secure_storage_get_item", {
+        key,
+      });
+      const resolved = value && value.length > 0 ? value : null;
+      secretCache.set(key, resolved);
+      return resolved;
+    } catch (error) {
+      console.warn("[secret-store] failed to read secret", error);
+      return null;
+    } finally {
+      pendingSecretFetches.delete(key);
+    }
+  })();
+
+  pendingSecretFetches.set(key, fetchPromise);
+  return fetchPromise;
 }
 
 export async function removeSecret(key: string): Promise<void> {
   if (!key) return;
+  secretCache.delete(key);
   await invoke("secure_storage_remove", { keys: [key] });
 }
 
@@ -520,6 +546,7 @@ export async function migrateSecretsFromLocalStorage(): Promise<number> {
 
 /** Только для тестов: сброс отметки о миграции. */
 export function resetMigrationFlagForTests(): void {
+  clearSecretCache();
   safeLocalStorage.removeItem(MIGRATION_FLAG);
   safeLocalStorage.removeItem(CURL_MIGRATION_FLAG);
 }

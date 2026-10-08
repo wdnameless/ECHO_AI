@@ -7,6 +7,7 @@ import {
   setWebSearchKey,
   stripLegacyWebSearchKeys,
 } from "../web-search";
+import { clearSecretCache } from "../storage/secret-store";
 
 /**
  * Фейковый бэкенд защищённого хранилища: держит секреты в памяти и повторяет
@@ -39,7 +40,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 describe("web-search secret handling", () => {
   beforeEach(() => {
     store.clear();
-    localStorage.clear();
+    clearSecretCache();
   });
 
   it("writes a search key to the secure store, not to localStorage", async () => {

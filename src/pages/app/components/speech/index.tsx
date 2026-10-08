@@ -14,6 +14,7 @@ import {
   MicIcon,
   SparklesIcon,
   CodeIcon,
+  CheckIcon,
 } from "lucide-react";
 import { ModeSwitcher } from "./ModeSwitcher";
 import { ResultsSection } from "./ResultsSection";
@@ -31,6 +32,32 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp } from "@/contexts";
 import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import { getAnswerMode, setAnswerMode, type AnswerMode } from "@/lib/answer-mode";
+import { TURN_GATE_EVENT, TURN_GATE_STATUS_EVENT } from "@/hooks/useQuestionPipeline";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { getAIProviderVariables } from "@/lib/storage/ai-providers";
+import { STORAGE_KEYS } from "@/config/constants";
+import { resolveProviderModel } from "@/lib/functions/ai-response.function";
+import { getActiveProfile, type PromptProfile } from "@/lib/storage/prompt-profiles";
+
+// Contract from feat/slice1-profiles (commit d9b0423)
+export type ToolbarButtonId =
+  | "length"
+  | "thought"
+  | "livecode"
+  | "answer"
+  | "code_plan"
+  | "code_full"
+  | "code_screen"
+  | "screenshot"
+  | "audio_settings"
+  | "settings"
+  | "new_chat"
+  | "monologue_send";
 
 export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const {
@@ -103,11 +130,92 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
 
   const [conversationMode, setConversationMode] = useState(false);
   const appVersion = useAppVersion();
-  const { hasActiveLicense, supportsImages } = useApp();
+  const {
+    hasActiveLicense,
+    supportsImages,
+    promptProfiles,
+    activeProfileId,
+    selectedAIProvider,
+    allAiProviders,
+    onSetSelectedAIProvider: contextOnSetSelectedAIProvider,
+  } = useApp();
+
+  const [localProfile, setLocalProfile] = useState<PromptProfile>(() => getActiveProfile());
+
+  useEffect(() => {
+    const onProfileChange = () => setLocalProfile(getActiveProfile());
+    window.addEventListener("prompt-profile-changed", onProfileChange);
+    window.addEventListener("storage", onProfileChange);
+    return () => {
+      window.removeEventListener("prompt-profile-changed", onProfileChange);
+      window.removeEventListener("storage", onProfileChange);
+    };
+  }, []);
+
+  const activeProfile = promptProfiles?.find((p) => p.id === activeProfileId) || localProfile;
+  const visibleButtons =
+    activeProfile && "visibleButtons" in activeProfile && Array.isArray(activeProfile.visibleButtons)
+      ? activeProfile.visibleButtons
+      : undefined;
+
+  const isButtonVisible = (id: ToolbarButtonId): boolean => {
+    if (!visibleButtons) return true;
+    return visibleButtons.includes(id);
+  };
+
+  const effectiveSetSelectedAIProvider =
+    props.onSetSelectedAIProvider || contextOnSetSelectedAIProvider;
+  const [syncedProviderId, setSyncedProviderId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === STORAGE_KEYS.SELECTED_AI_PROVIDER && e.newValue) {
+        try {
+          const parsed = JSON.parse(e.newValue);
+          if (parsed?.provider) {
+            setSyncedProviderId(parsed.provider);
+            if (effectiveSetSelectedAIProvider) {
+              effectiveSetSelectedAIProvider({
+                provider: parsed.provider,
+                variables: parsed.variables || getAIProviderVariables(parsed.provider),
+              });
+            }
+          }
+        } catch {}
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, [effectiveSetSelectedAIProvider]);
+
+  const effectiveProviderId =
+    syncedProviderId || props.activeProviderId || selectedAIProvider?.provider || "";
+  const effectiveProvider = allAiProviders?.find((p) => p.id === effectiveProviderId);
+  const effectiveModel = resolveProviderModel(
+    effectiveProvider || allAiProviders?.find((p) => p.id === selectedAIProvider?.provider),
+    selectedAIProvider?.provider === effectiveProviderId
+      ? selectedAIProvider
+      : { provider: effectiveProviderId, variables: getAIProviderVariables(effectiveProviderId) }
+  );
+
+  const handleSelectProvider = (providerId: string) => {
+    const vars = getAIProviderVariables(providerId);
+    setSyncedProviderId(providerId);
+    if (effectiveSetSelectedAIProvider) {
+      effectiveSetSelectedAIProvider({ provider: providerId, variables: vars });
+    }
+  };
 
   const [screenshotImage, setScreenshotImage] = useState<string | null>(null);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
+  const [turnGateWaiting, setTurnGateWaiting] = useState(false);
+
+  useEffect(() => {
+    const onStatus = (e: Event) => setTurnGateWaiting(Boolean((e as CustomEvent).detail));
+    window.addEventListener(TURN_GATE_STATUS_EVENT, onStatus);
+    return () => window.removeEventListener(TURN_GATE_STATUS_EVENT, onStatus);
+  }, []);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const screenshotAllowed = canUseFeature("screenshot", {
     isDevBuild: isDevBuild(),
@@ -288,136 +396,176 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       )}
 
                       {/* Answer length override (R03): auto + manual. */}
-                      <div
-                        className="flex items-center bg-muted rounded-md p-0.5 gap-0.5 shrink-0"
-                        title="Длина ответа: Авто (по вопросу), Кратко (35-55 слов), Подробно (~140 слов). Префиксы кратко:/подробно: в вопросе тоже работают."
-                      >
-                        {["auto","short","long"].map((m) => (
-                          <button
-                            key={m}
-                            type="button"
-                            onClick={() => onAnswerLengthOverride?.(m as "auto" | "short" | "long")}
-                            className={cn(
-                              "px-2 py-1 text-[11px] font-medium rounded transition-all",
-                              answerLengthOverride === m
-                                ? "bg-background shadow-sm text-foreground"
-                                : "text-muted-foreground hover:text-foreground"
-                            )}
-                          >
-                            {m === "auto" ? "Авто" : m === "short" ? "Кратко" : "Подробно"}
-                          </button>
-                        ))}
-                      </div>
+                      {isButtonVisible("length") && (
+                        <div
+                          className="flex items-center bg-muted rounded-md p-0.5 gap-0.5 shrink-0"
+                          title="Длина ответа: Авто (по вопросу), Кратко (35-55 слов), Подробно (~140 слов). Префиксы кратко:/подробно: в вопросе тоже работают."
+                        >
+                          {["auto","short","long"].map((m) => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => onAnswerLengthOverride?.(m as "auto" | "short" | "long")}
+                              className={cn(
+                                "px-2 py-1 text-[11px] font-medium rounded transition-all",
+                                answerLengthOverride === m
+                                  ? "bg-background shadow-sm text-foreground"
+                                  : "text-muted-foreground hover:text-foreground"
+                              )}
+                            >
+                              {m === "auto" ? "Авто" : m === "short" ? "Кратко" : "Подробно"}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       {/* Режимы ответа: Ход мыслей / Лайвкодинг (R01/R02) */}
-                      <div
-                        className="flex items-center bg-muted rounded-md p-0.5 gap-0.5 shrink-0"
-                        title="Режим ответа: Ход мыслей (компактное обоснование) или Лайвкодинг (диктуемый код)"
-                      >
-                        <button
-                          type="button"
-                          onClick={() => handleToggleAnswerMode("thought")}
-                          className={cn(
-                            "px-2 py-1 text-[11px] font-medium rounded transition-all flex items-center gap-1",
-                            answerMode === "thought"
-                              ? "bg-violet-600 text-white shadow-sm"
-                              : "text-muted-foreground hover:text-foreground"
-                          )}
-                          title={
-                            answerMode === "thought"
-                              ? "Ход мыслей включён (нажмите для выключения)"
-                              : "Включить ход мыслей"
-                          }
-                          data-testid="toggle-thought-mode"
-                          aria-pressed={answerMode === "thought"}
+                      {(isButtonVisible("thought") || isButtonVisible("livecode")) && (
+                        <div
+                          className="flex items-center bg-muted rounded-md p-0.5 gap-0.5 shrink-0"
+                          title="Режим ответа: Ход мыслей (компактное обоснование) или Лайвкодинг (диктуемый код)"
                         >
-                          <SparklesIcon className="w-3 h-3" />
-                          Ход мыслей
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleToggleAnswerMode("livecode")}
-                          className={cn(
-                            "px-2 py-1 text-[11px] font-medium rounded transition-all flex items-center gap-1",
-                            answerMode === "livecode"
-                              ? "bg-amber-600 text-white shadow-sm"
-                              : "text-muted-foreground hover:text-foreground"
+                          {isButtonVisible("thought") && (
+                            <button
+                              type="button"
+                              onClick={() => handleToggleAnswerMode("thought")}
+                              className={cn(
+                                "px-2 py-1 text-[11px] font-medium rounded transition-all flex items-center gap-1",
+                                answerMode === "thought"
+                                  ? "bg-violet-600 text-white shadow-sm"
+                                  : "text-muted-foreground hover:text-foreground"
+                              )}
+                              title={
+                                answerMode === "thought"
+                                  ? "Ход мыслей включён (нажмите для выключения)"
+                                  : "Включить ход мыслей"
+                              }
+                              data-testid="toggle-thought-mode"
+                              aria-pressed={answerMode === "thought"}
+                            >
+                              <SparklesIcon className="w-3 h-3" />
+                              Ход мыслей
+                            </button>
                           )}
-                          title={
-                            answerMode === "livecode"
-                              ? "Лайвкодинг включён (нажмите для выключения)"
-                              : "Включить режим лайвкодинга"
-                          }
-                          data-testid="toggle-livecode-mode"
-                          aria-pressed={answerMode === "livecode"}
+                          {isButtonVisible("livecode") && (
+                            <button
+                              type="button"
+                              onClick={() => handleToggleAnswerMode("livecode")}
+                              className={cn(
+                                "px-2 py-1 text-[11px] font-medium rounded transition-all flex items-center gap-1",
+                                answerMode === "livecode"
+                                  ? "bg-amber-600 text-white shadow-sm"
+                                  : "text-muted-foreground hover:text-foreground"
+                              )}
+                              title={
+                                answerMode === "livecode"
+                                  ? "Лайвкодинг включён (нажмите для выключения)"
+                                  : "Включить режим лайвкодинга"
+                              }
+                              data-testid="toggle-livecode-mode"
+                              aria-pressed={answerMode === "livecode"}
+                            >
+                              <CodeIcon className="w-3 h-3" />
+                              Лайвкодинг
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Turn-gate (R06): собеседник не договорил — ждём или отвечаем принудительно */}
+                      {turnGateWaiting && !isAIProcessing && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => window.dispatchEvent(new CustomEvent(TURN_GATE_EVENT))}
+                          className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+                          title="Собеседник не договорил — ответить на то, что уже услышано"
+                          data-testid="turngate-answer-anyway"
                         >
-                          <CodeIcon className="w-3 h-3" />
-                          Лайвкодинг
-                        </button>
-                      </div>
-
-
-                      {/* Кнопка ответа на последнюю реплику собеседника */}
-                      <Button
-                        size="sm"
-                        variant="default"
-                        onClick={() => answerLastInterviewerUtterance?.()}
-                        disabled={isAIProcessing || !hasInterviewerUtterance}
-                        className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
-                        title={
-                          !hasInterviewerUtterance
-                            ? "Нет реплики собеседника для ответа"
-                            : isAIProcessing
-                            ? "ИИ генерирует ответ..."
-                            : "Ответить на последнюю реплику собеседника"
-                        }
-                      >
-                        {isAIProcessing ? (
-                          <LoaderIcon className="w-3 h-3 animate-spin" />
-                        ) : (
-                          <SparklesIcon className="w-3 h-3" />
-                        )}
-                        Ответить
-                      </Button>
+                          ⏳ Ждёт продолжения · ответить всё равно
+                        </Button>
+                      )}
+                      {isButtonVisible("answer") && (
+                        <Button
+                          size="sm"
+                          variant="default"
+                          onClick={() => answerLastInterviewerUtterance?.()}
+                          disabled={isAIProcessing || !hasInterviewerUtterance}
+                          className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"
+                          title={
+                            !hasInterviewerUtterance
+                              ? "Нет реплики собеседника для ответа"
+                              : isAIProcessing
+                              ? "ИИ генерирует ответ..."
+                              : "Ответить на последнюю реплику собеседника"
+                          }
+                        >
+                          {isAIProcessing ? (
+                            <LoaderIcon className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <SparklesIcon className="w-3 h-3" />
+                          )}
+                          Ответить
+                        </Button>
+                      )}
                       {/* Code mode (R01): plan first, snippet on demand. */}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => answerCodeForLastUtterance?.("plan")}
-                        disabled={isAIProcessing || !hasInterviewerUtterance}
-                        className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
-                        title="Код: 1 фраза-план (Ctrl+Shift+K)"
-                      >
-                        План
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => answerCodeForLastUtterance?.("full")}
-                        disabled={isAIProcessing || !hasInterviewerUtterance}
-                        className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
-                        title="Код: фрагмент + объяснение"
-                      >
-                        Код
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => answerCodeForLastUtterance?.("full", { screenshot: true })}
-                        disabled={isAIProcessing || !hasInterviewerUtterance}
-                        className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
-                        title="Код со скрина: захватить экран, прочитать код глазами модели, разбор + фрагмент"
-                      >
-                        Код со скрина
-                      </Button>
+                      {isButtonVisible("code_plan") && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => answerCodeForLastUtterance?.("plan")}
+                          disabled={isAIProcessing || !hasInterviewerUtterance}
+                          className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
+                          title="Код: 1 фраза-план (Ctrl+Shift+K)"
+                        >
+                          План
+                        </Button>
+                      )}
+                      {isButtonVisible("code_full") && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => answerCodeForLastUtterance?.("full")}
+                          disabled={isAIProcessing || !hasInterviewerUtterance}
+                          className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
+                          title="Код: фрагмент + объяснение"
+                        >
+                          Код
+                        </Button>
+                      )}
+                      {isButtonVisible("code_screen") && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => answerCodeForLastUtterance?.("full", { screenshot: true })}
+                          disabled={isAIProcessing || !hasInterviewerUtterance}
+                          className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
+                          title="Код со скрина: захватить экран, прочитать код глазами модели, разбор + фрагмент"
+                        >
+                          Код со скрина
+                        </Button>
+                      )}
+                      {isButtonVisible("monologue_send") && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            window.dispatchEvent(new CustomEvent("monologue:flush"));
+                          }}
+                          className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-muted-foreground hover:text-foreground"
+                          title="Отправить накопленный монолог в нейронку"
+                          data-testid="monologue-send-btn"
+                        >
+                          Монолог
+                        </Button>
+                      )}
                     </>
                   )}
                 </div>
 
                 {/* Right: Quick Actions, Screenshot, Settings & New */}
                 <div className="flex flex-wrap items-center gap-x-1 gap-y-1 shrink-0 ml-auto">
-                  {/* Screenshot Button — остаётся видимой и объясняет причину,
-                      когда возможность недоступна (R17), вместо исчезновения. */}
-                  {supportsImages && isVadMode && !setupRequired && (
+                  {/* Screenshot Button */}
+                  {supportsImages && isVadMode && !setupRequired && isButtonVisible("screenshot") && (
                     <Button
                       size="sm"
                       variant={screenshotImage ? "default" : "ghost"}
@@ -445,12 +593,64 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                     </Button>
                   )}
 
-                  {/* Settings: one entry, two surfaces inside. A second gear sat
-                      beside this one and did a different thing, so the icon no
-                      longer told the user which window they were about to get.
-                      «Звук» toggles the audio drawer; the gear opens the app
-                      window whose Speech section holds the same controls. */}
-                  {!setupRequired && (
+                  {/* Quick AI Provider / Model Badge Dropdown (R04) */}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 text-[10px] font-mono gap-1 px-2 shrink-0 text-violet-600 dark:text-violet-400 hover:text-foreground"
+                        title={`Активный провайдер: ${effectiveProviderId || "не выбран"}${effectiveModel ? ` · Модель: ${effectiveModel}` : ""}. Клик — переключить провайдер.`}
+                        data-testid="model-badge-trigger"
+                      >
+                        <span className="shrink-0">🤖</span>
+                        <span className="truncate max-w-[120px]">
+                          {effectiveProviderId && effectiveModel
+                            ? `${effectiveProviderId}/${effectiveModel}`
+                            : effectiveProviderId || effectiveModel || "AI"}
+                        </span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="text-[0.7em] min-w-[160px]">
+                      {!allAiProviders || allAiProviders.length === 0 ? (
+                        <div className="px-2 py-1.5 text-muted-foreground text-xs">
+                          Нет доступных провайдеров
+                        </div>
+                      ) : (
+                        allAiProviders.map((p) => {
+                          const isSelected = p.id === effectiveProviderId;
+                          if (!p.id) return null;
+                          const providerId: string = p.id;
+                          const pModel = resolveProviderModel(p, {
+                            provider: providerId,
+                            variables: getAIProviderVariables(providerId),
+                          });
+                          return (
+                            <DropdownMenuItem
+                              key={providerId}
+                              onClick={() => handleSelectProvider(providerId)}
+                              className={cn(
+                                "gap-1 cursor-pointer",
+                                isSelected && "bg-primary/10 font-medium"
+                              )}
+                              data-testid={`provider-option-${p.id}`}
+                            >
+                              {isSelected && <CheckIcon className="w-3 h-3" />}
+                              <span className="font-mono">{p.id}</span>
+                              {pModel && (
+                                <span className="text-muted-foreground ml-auto truncate max-w-[120px]">
+                                  ({pModel})
+                                </span>
+                              )}
+                            </DropdownMenuItem>
+                          );
+                        })
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  {/* Settings */}
+                  {!setupRequired && isButtonVisible("audio_settings") && (
                     <Button
                       size="sm"
                       variant={showSettingsDrawer ? "secondary" : "ghost"}
@@ -463,15 +663,17 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                     </Button>
                   )}
 
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={() => invoke("open_dashboard").catch(console.error)}
-                    className="h-6 w-6"
-                    title={`Все настройки${appVersion ? ` · версия ${appVersion}` : ""}`}
-                  >
-                    <SettingsIcon className="w-3.5 h-3.5" />
-                  </Button>
+                  {isButtonVisible("settings") && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => invoke("open_dashboard").catch(console.error)}
+                      className="h-6 w-6"
+                      title={`Все настройки${appVersion ? ` · версия ${appVersion}` : ""}`}
+                    >
+                      <SettingsIcon className="w-3.5 h-3.5" />
+                    </Button>
+                  )}
 
                   {appVersion && (
                     <span
@@ -483,7 +685,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                   )}
 
                   {/* Start New Conversation Button */}
-                  {!setupRequired && (
+                  {!setupRequired && isButtonVisible("new_chat") && (
                     <Button
                       size="sm"
                       variant="ghost"
@@ -678,6 +880,8 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       onOpenProviders={() => {
                         void invoke("open_dashboard_page", { route: "/dev-space" }).catch(console.error);
                       }}
+                      activeProviderId={props.activeProviderId}
+                      onSetSelectedAIProvider={props.onSetSelectedAIProvider}
                     />
                   </>
                 )}

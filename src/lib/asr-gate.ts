@@ -19,6 +19,18 @@ export type AsrStreamOwner = "me" | "them";
 let activeOwner: AsrStreamOwner | null = null;
 const waiters = new Set<() => void>();
 
+export interface SlotQueueRequest {
+  owner: AsrStreamOwner;
+  callback: () => void;
+}
+
+const slotQueue: SlotQueueRequest[] = [];
+
+/** Returns how many channel requests are currently queued for the slot. */
+export function getSlotQueueLength(): number {
+  return slotQueue.length;
+}
+
 /** True when a stream may be opened for this owner right now. */
 export function tryAcquireStream(owner: AsrStreamOwner): boolean {
   if (activeOwner !== null && activeOwner !== owner) return false;
@@ -26,9 +38,85 @@ export function tryAcquireStream(owner: AsrStreamOwner): boolean {
   return true;
 }
 
+/**
+ * Enqueues a channel for the ASR slot.
+ *
+ * If the slot is free right now, claims it and invokes callback immediately.
+ * Otherwise, queues the request in FIFO order so it is notified the moment
+ * the active owner calls releaseStream, eliminating backoff race delay.
+ *
+ * Returns an unsubscription callback to cancel waiting if the channel stops.
+ */
+export function enqueueStreamSlot(
+  owner: AsrStreamOwner,
+  callback: () => void
+): () => void {
+  if (tryAcquireStream(owner)) {
+    callback();
+    return () => {};
+  }
+
+  const request: SlotQueueRequest = { owner, callback };
+  slotQueue.push(request);
+
+  return () => {
+    const index = slotQueue.indexOf(request);
+    if (index !== -1) {
+      slotQueue.splice(index, 1);
+    }
+  };
+}
+
+/** Cancels pending slot queue requests for the specified owner, or all if omitted. */
+export function cancelSlotQueue(owner?: AsrStreamOwner): void {
+  if (!owner) {
+    slotQueue.length = 0;
+    return;
+  }
+  for (let i = slotQueue.length - 1; i >= 0; i--) {
+    if (slotQueue[i].owner === owner) {
+      slotQueue.splice(i, 1);
+    }
+  }
+}
+
+/**
+ * Waits until the ASR slot can be acquired by this owner, or times out.
+ */
+export function waitForStreamSlot(
+  owner: AsrStreamOwner,
+  timeoutMs = 3000
+): Promise<boolean> {
+  if (tryAcquireStream(owner)) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let timer: NodeJS.Timeout | number | null = null;
+    const cancel = enqueueStreamSlot(owner, () => {
+      clearTimeout(timer!);
+      resolve(true);
+    });
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        cancel();
+        resolve(false);
+      }, timeoutMs);
+    }
+  });
+}
+
 export function releaseStream(owner: AsrStreamOwner): void {
   if (activeOwner !== owner) return;
   activeOwner = null;
+
+  // Hand off slot directly to the next waiting channel in FIFO queue
+  while (slotQueue.length > 0) {
+    const next = slotQueue.shift();
+    if (next) {
+      activeOwner = next.owner;
+      next.callback();
+      return;
+    }
+  }
+
   for (const wake of [...waiters]) wake();
 }
 
@@ -63,9 +151,10 @@ export async function withNoStream<T>(
   return fn();
 }
 
-/** Only for tests: forget any owner. */
+/** Only for tests: forget any owner and clear queued requests. */
 export function resetAsrGateForTests(): void {
   activeOwner = null;
+  slotQueue.length = 0;
   for (const wake of [...waiters]) wake();
   waiters.clear();
 }

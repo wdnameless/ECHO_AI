@@ -19,7 +19,7 @@ import { getAsrLanguage } from "@/lib/asr-language";
 import { noteStreamingUnsupported } from "@/lib/asr-capabilities";
 import { pushStatus } from "@/lib/asr-status";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
-import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
+import { releaseStream, tryAcquireStream, enqueueStreamSlot, cancelSlotQueue } from "@/lib/asr-gate";
 import { recordWsReconnect } from "@/lib/metrics";
 import {
   nextReconnectDelay,
@@ -58,6 +58,7 @@ export function useThemWsStreaming({
   const releaseOwner = useCallback((epoch = ownerEpochRef.current) => {
     if (epoch === null || ownerEpochRef.current !== epoch) return;
     ownerEpochRef.current = null;
+    cancelSlotQueue("them");
     releaseStream("them");
   }, []);
 
@@ -117,6 +118,11 @@ export function useThemWsStreaming({
     // One stream at a time: while the candidate's microphone streams, this
     // channel waits instead of collecting "model busy" for every frame.
     if (!tryAcquireStream("them")) {
+      enqueueStreamSlot("them", () => {
+        if (wantRef.current && capturingRef.current) {
+          void connectRef.current();
+        }
+      });
       scheduleReconnect();
       return;
     }

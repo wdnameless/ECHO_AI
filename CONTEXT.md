@@ -13,6 +13,11 @@ Ubiquitous language (Wave 0 + Wave 1 recon):
 | Вопрос | Собранная из ASR-сегментов реплика собеседника | `question-assembler.ts` |
 | Промпт | Слоёная инструкция: база + длина + humanizer + RAG + факты | `ai-response.function.ts:200` |
 | Лента | Поток субтитров с ответами и кодом | `SubtitleFeed.tsx` |
+| Сценарий | Профиль Собес/Беседа/Лайвкод: flushGap, промпт, длина, видимые кнопки | `prompt-profiles.ts` + `ScenarioProfileExtensions` |
+| Монолог-буфер | Накопленный нон-стоп спич одним промптом в историю | `QuestionAssembler` + `AutoAskManager` |
+| Бейдж модели | Активная модель/провайдер в оверлее + быстрое переключение | `activeProviderId` → `SubtitleFeed` |
+| Turn-gate | «Ждёт продолжения» + «ответить всё равно» при незавершённой реплике | `useQuestionPipeline` |
+| SlotQueueRequest | `{ owner, callback }` — явная FIFO-очередь single-slot ASR | `src/lib/asr-gate.ts:22` |
 
 Decisions: thought_shape=Компактный; thought_place=В той же ленте; live_scope=Только голос; audit_depth=Полный разбор.
 Blockers R01: humanizer/35-55 cap, max_tokens=600, reasoning minimal, нет thought-контейнера.
