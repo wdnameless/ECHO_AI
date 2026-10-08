@@ -29,9 +29,12 @@ const CODE_SYSTEM_PROMPT = [
   "your answer by hand into an editor while speaking aloud.",
   "Rules:",
   "- Output a single fenced code block with the solution, then a BLANK LINE,",
-  "  then 2-3 SHORT lines of narration the candidate says while typing",
-  "  (plain text, no bullets). The blank line is required: without it the",
-  "  block does not render and the code collapses into one prose line.",
+  "  then narration lines the candidate says while typing (plain text, no bullets).",
+  "  The blank line is required: without it the block does not render and the code collapses into one prose line.",
+  "- Narration MUST include:",
+  "  1. 1-2 concise lines explaining the algorithm and key logic.",
+  "  2. Big-O time and space complexity explicitly stated (e.g. 'Сложность: O(n) по времени, O(1) по памяти' / 'Time: O(n), Space: O(1)').",
+  "  3. 1-2 key edge cases or test cases to verify (e.g. empty input, boundaries, error cases).",
   "- Indent code with TABS (not spaces): the candidate retypes with tab stops.",
   "- No conversational openers, no stories, no markdown headings, no bullet lists.",
   "- Code must be complete, runnable, and free of placeholder comments.",
@@ -103,6 +106,76 @@ export function buildCodePlan(question: string): CodeAnswer {
  * call needed — instant and deterministic); otherwise the caller streams the
  * model with `buildCodeSystemPrompt(question).prompt`.
  */
+interface TemplateComplexity {
+  bigO: string;
+  testCases: string;
+}
+
+const TEMPLATE_COMPLEXITY: Record<string, TemplateComplexity> = {
+  debounce: {
+    bigO: "Сложность: O(1) по времени, O(1) по памяти.",
+    testCases: "Тест-кейсы: частые вызовы до 300мс откладывают выполнение, unmount очищает таймер.",
+  },
+  throttle: {
+    bigO: "Сложность: O(1) по времени, O(1) по памяти.",
+    testCases: "Тест-кейсы: частые события пропускаются, вызов выполняется не чаще раз в лимит.",
+  },
+  "fetch-errors": {
+    bigO: "Сложность: O(1) по памяти (без учета payload), время O(network).",
+    testCases: "Тест-кейсы: ошибка 404/500 сохраняет сообщение, размонтирование отменяет запрос через AbortController.",
+  },
+  "list-search": {
+    bigO: "Сложность: O(n log n) по времени из-за сортировки, O(n) по памяти.",
+    testCases: "Тест-кейсы: пустой запрос query возвращает весь отсортированный список, совпадения без учета регистра.",
+  },
+  "memo-cache": {
+    bigO: "Сложность: O(n) по времени для подсчета суммы, O(1) по памяти.",
+    testCases: "Тест-кейсы: пустой список items дает 0, изменение qty пересчитывает total.",
+  },
+  "group-by": {
+    bigO: "Сложность: O(n) по времени, O(n) по памяти.",
+    testCases: "Тест-кейсы: пустой массив возвращает {}, элементы с одинаковым ключом собираются в один массив.",
+  },
+  "valid-brackets": {
+    bigO: "Сложность: O(n) по времени, O(n) по памяти для стека.",
+    testCases: "Тест-кейсы: '()' -> true, '([)]' -> false, '(((' -> false, пустая строка -> true.",
+  },
+  "promise-combinators": {
+    bigO: "Сложность: O(max(t_i)) для Promise.all, O(min(t_i)) для Promise.race.",
+    testCases: "Тест-кейсы: отказ одного промиса реджектит all, таймаут в race отклоняет долгий fetch.",
+  },
+  "refactor-module": {
+    bigO: "Сложность: O(n) по времени для фильтрации, O(n) по памяти.",
+    testCases: "Тест-кейсы: пустой список рендерит пустой ul, изменение query фильтрует без сброса DOM-состояния.",
+  },
+  "shallow-equal": {
+    bigO: "Сложность: O(k) по времени (k — число ключей), O(k) по памяти.",
+    testCases: "Тест-кейсы: одинаковые ссылки -> true, разное число ключей -> false, одинаковые примитивные поля -> true.",
+  },
+  emitter: {
+    bigO: "Сложность: O(1) подписка и отписка в Set, O(k) emit для k подписчиков.",
+    testCases: "Тест-кейсы: отписка через возвращенную функцию удаляет слушатель, emit передает аргументы всем слушателям.",
+  },
+  "lru-cache": {
+    bigO: "Сложность: O(1) для get и set за счет порядка ключей в Map.",
+    testCases: "Тест-кейсы: превышение limit удаляет старый ключ, повторный get освежает порядок.",
+  },
+};
+
+export function enrichNarration(template: CodeTemplate): string[] {
+  const narration = [...template.narration];
+  const meta = TEMPLATE_COMPLEXITY[template.id];
+  if (meta) {
+    if (!narration.some((line) => /O\(|сложност|complexity|big-o/i.test(line))) {
+      narration.push(meta.bigO);
+    }
+    if (!narration.some((line) => /тест|test|edge case/i.test(line))) {
+      narration.push(meta.testCases);
+    }
+  }
+  return narration;
+}
+
 export function buildCodeFull(question: string): CodeAnswer {
   const template = matchCodeTemplate(question);
   if (!template) {
@@ -111,9 +184,10 @@ export function buildCodeFull(question: string): CodeAnswer {
   // Fence + blank line + narration: streamdown needs the blank line to open
   // a real code block; without it the snippet renders as inline prose (that
   // was the "одна строка" bug). copyText carries tabs verbatim for retyping.
+  const narration = enrichNarration(template);
   return {
     stage: "full",
-    text: ["```ts", template.snippet, "```", "", ...template.narration].join("\n"),
+    text: ["```ts", template.snippet, "```", "", ...narration].join("\n"),
     template,
     copyText: template.snippet,
     lang: "ts",
@@ -133,30 +207,62 @@ export interface SplitCodeResult {
 export function splitCodeAnswer(text: string): SplitCodeResult {
   if (!text) return { code: null, lang: "", prose: [] };
 
-  // 1. Closed code block: ```lang\ncode```
-  const closedMatch = text.match(/```(\w*)\r?\n([\s\S]*?)```/);
-  if (closedMatch) {
-    const [, lang, code] = closedMatch;
-    const rest = (
-      text.slice(0, closedMatch.index) +
-      text.slice(closedMatch.index! + closedMatch[0].length)
-    ).trim();
+  // 1. Closed code block: ```lang\ncode``` (supports 3+ backticks or 3+ tildes, lang with special chars like c++, c#)
+  const closedMatch = text.match(/(?:^|\r?\n)[ \t]*(`{3,}|~{3,})([^\r\n]*)\r?\n([\s\S]*?)\r?\n?[ \t]*\1[ \t]*(?:\r?\n|$)/)
+    || text.match(/(`{3,}|~{3,})([^\r\n]*)\r?\n([\s\S]*?)\1/);
+  if (closedMatch && closedMatch.index !== undefined) {
+    const rawLang = closedMatch[2];
+    const code = closedMatch[3] ?? "";
+    const lang = rawLang.trim().split(/\s+/)[0]?.toLowerCase().replace(/[^a-z0-9_+#.-]/g, "") || "ts";
+
+    const matchStart = closedMatch.index;
+    const matchEnd = matchStart + closedMatch[0].length;
+    const before = text.slice(0, matchStart).trim();
+    const after = text.slice(matchEnd).trim();
+    const rest = [before, after].filter(Boolean).join("\n\n");
+
     return {
       code: code.replace(/\r?\n$/, ""),
-      lang: lang || "ts",
+      lang,
       prose: formatSpokenAnswer(rest),
     };
   }
+  const unclosedMatch = text.match(/(?:^|\r?\n)[ \t]*(`{3,}|~{3,})([^\r\n]*)(?:\r?\n([\s\S]*))?$/);
+  if (unclosedMatch && unclosedMatch.index !== undefined) {
+    const rawLang = unclosedMatch[2];
+    let code = unclosedMatch[3];
+    const lang = rawLang.trim().split(/\s+/)[0]?.toLowerCase().replace(/[^a-z0-9_+#.-]/g, "") || "ts";
+    const fenceStart = text.indexOf(unclosedMatch[1], unclosedMatch.index);
+    const before = text.slice(0, fenceStart).trim();
 
-  // 2. Unclosed code block during streaming: ```lang\ncode... or ```lang
-  const unclosedMatch = text.match(/```(\w*)(?:\r?\n([\s\S]*))?$/);
-  if (unclosedMatch) {
-    const [, lang, code] = unclosedMatch;
-    const rest = text.slice(0, unclosedMatch.index).trim();
+    if (code !== undefined) {
+      // Tolerate partial closing fence being streamed at the end (e.g. \n` or \n``)
+      code = code.replace(/\r?\n`{1,2}$/, "");
+
+      // Tolerant fallback: if the model forgot closing fence and emitted narration after a blank line
+      const narrationSplit = code.match(/(\r?\n\s*\r?\n)(?=(?:Big-O|Complexity|Time complexity|Сложность|Тест-кейсы|Test cases|Edge cases)[:\s]|(?:[А-ЯЁ][а-яё]+(?: [а-яё]+){2,}))/i);
+      if (narrationSplit && narrationSplit.index !== undefined) {
+        const codePart = code.slice(0, narrationSplit.index).replace(/\r?\n$/, "");
+        const trailingProse = code.slice(narrationSplit.index + narrationSplit[1].length).trim();
+        const combined = [before, trailingProse].filter(Boolean).join("\n\n");
+        return {
+          code: codePart,
+          lang,
+          prose: formatSpokenAnswer(combined),
+        };
+      }
+
+      return {
+        code: code.replace(/\r?\n$/, ""),
+        lang,
+        prose: formatSpokenAnswer(before),
+      };
+    }
+
     return {
-      code: code !== undefined ? code.replace(/\r?\n$/, "") : "",
-      lang: lang || "ts",
-      prose: formatSpokenAnswer(rest),
+      code: "",
+      lang,
+      prose: formatSpokenAnswer(before),
     };
   }
 

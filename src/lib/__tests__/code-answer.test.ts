@@ -81,6 +81,13 @@ describe("code answer stages", () => {
     expect(a.text).toContain("```");
     expect(a.text).not.toMatch(/Слушайте|на прошлом проекте|честно говоря/i);
   });
+  it("stage 2 narration includes Big-O complexity and test cases", () => {
+    const a = buildCodeFull("напиши дебаунс");
+    expect(a.text).toMatch(/O\(1\)/);
+    expect(a.text).toMatch(/сложность/i);
+    expect(a.text).toMatch(/тест-кейсы/i);
+  });
+
 
   it("unknown question yields empty full (caller streams the model)", () => {
     const a = buildCodeFull("расскажи про свой опыт");
@@ -105,6 +112,12 @@ describe("code answer stages", () => {
     const { prompt } = buildCodeSystemPrompt("любая задача");
     expect(prompt).toMatch(/interviewer dictates a coding task by voice/i);
     expect(prompt).toMatch(/without IDE or screen access/i);
+  });
+  it("system prompt requires Big-O time and space complexity and test cases in narration", () => {
+    const { prompt } = buildCodeSystemPrompt("любая задача");
+    expect(prompt).toMatch(/Big-O/i);
+    expect(prompt).toMatch(/space complexity/i);
+    expect(prompt).toMatch(/test cases|edge cases/i);
   });
 });
 
@@ -194,5 +207,72 @@ describe("splitCodeAnswer stream tolerance (R02)", () => {
   it("splitCodeForCopy extracts snippet even during unclosed streaming", () => {
     const partial = "```ts\nconst x = 123;";
     expect(splitCodeForCopy(partial)).toBe("const x = 123;");
+  });
+
+  it("tolerates language with special chars like c++ or c#", () => {
+    const partial = "```c++\n#include <iostream>\nint main() { return 0; }";
+    const split = splitCodeAnswer(partial);
+    expect(split.code).toBe("#include <iostream>\nint main() { return 0; }");
+    expect(split.lang).toBe("c++");
+  });
+
+  it("tolerates trailing whitespace on fence line", () => {
+    const partial = "```ts   \nconst a = 1;";
+    const split = splitCodeAnswer(partial);
+    expect(split.code).toBe("const a = 1;");
+    expect(split.lang).toBe("ts");
+  });
+
+  it("tolerates 4+ backticks closed block", () => {
+    const text = "````python\ndef test(): pass\n````\nОбъяснение алгоритма.";
+    const split = splitCodeAnswer(text);
+    expect(split.code).toBe("def test(): pass");
+    expect(split.lang).toBe("python");
+    expect(split.prose).toEqual(["Объяснение алгоритма."]);
+  });
+
+  it("strips trailing partial backticks while closing fence is being typed", () => {
+    const partial = "```ts\nconst x = 42;\n`";
+    const split = splitCodeAnswer(partial);
+    expect(split.code).toBe("const x = 42;");
+  });
+
+  it("separates narration when unclosed fence omitted closing backticks", () => {
+    const text = "```ts\nfunction solve() {\n  return 1;\n}\n\nСложность: O(1) по времени, O(1) по памяти.\nТест-кейсы: solve() === 1";
+    const split = splitCodeAnswer(text);
+    expect(split.code).toBe("function solve() {\n  return 1;\n}");
+    expect(split.prose.some((p) => p.includes("O(1)"))).toBe(true);
+    expect(split.prose.some((p) => p.includes("Тест-кейсы"))).toBe(true);
+  });
+});
+
+describe("R05-livecode quality acceptance", () => {
+  it("unknown task gets real plan prompt via LLM fallback without stub", () => {
+    const task = "напиши алгоритм дейкстры на графе";
+    const planAnswer = buildCodePlan(task);
+    expect(planAnswer.text).toBe("");
+    expect(planAnswer.template).toBeNull();
+
+    const { prompt, template } = buildCodePlanSystemPrompt(task);
+    expect(template).toBeNull();
+    expect(prompt).toContain("high-level plan or algorithm approach");
+    expect(prompt).not.toContain("[REFERENCE PLAN]");
+  });
+
+  it("unknown task code generation prompt mandates Big-O complexity and test cases", () => {
+    const task = "напиши топологическую сортировку";
+    const { prompt, template } = buildCodeSystemPrompt(task);
+    expect(template).toBeNull();
+    expect(prompt).toMatch(/Big-O/i);
+    expect(prompt).toMatch(/test cases|edge cases/i);
+  });
+
+  it("streaming code unbroken and Big-O present in parsed result", () => {
+    const streamedChunk = "```ts\nfunction dijkstra(graph, start) {\n\tconst dist = new Map();\n\treturn dist;\n}\n\nСложность: O((V + E) log V) по времени, O(V) по памяти.\nТест-кейсы: граф с одной вершиной, граф с циклом.";
+    const split = splitCodeAnswer(streamedChunk);
+    expect(split.code).toContain("function dijkstra");
+    expect(split.code).not.toContain("Сложность");
+    expect(split.prose.some((p) => p.includes("O((V + E) log V)"))).toBe(true);
+    expect(split.prose.some((p) => p.includes("Тест-кейсы"))).toBe(true);
   });
 });
