@@ -32,6 +32,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp } from "@/contexts";
 import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import { getAnswerMode, setAnswerMode, type AnswerMode } from "@/lib/answer-mode";
+import { TURN_GATE_EVENT, TURN_GATE_STATUS_EVENT } from "@/hooks/useQuestionPipeline";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -208,6 +209,13 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const [screenshotImage, setScreenshotImage] = useState<string | null>(null);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
+  const [turnGateWaiting, setTurnGateWaiting] = useState(false);
+
+  useEffect(() => {
+    const onStatus = (e: Event) => setTurnGateWaiting(Boolean((e as CustomEvent).detail));
+    window.addEventListener(TURN_GATE_STATUS_EVENT, onStatus);
+    return () => window.removeEventListener(TURN_GATE_STATUS_EVENT, onStatus);
+  }, []);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const screenshotAllowed = canUseFeature("screenshot", {
     isDevBuild: isDevBuild(),
@@ -463,7 +471,19 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                         </div>
                       )}
 
-                      {/* Кнопка ответа на последнюю реплику собеседника */}
+                      {/* Turn-gate (R06): собеседник не договорил — ждём или отвечаем принудительно */}
+                      {turnGateWaiting && !isAIProcessing && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => window.dispatchEvent(new CustomEvent(TURN_GATE_EVENT))}
+                          className="h-6 text-[11px] font-medium gap-1 px-2 shrink-0 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+                          title="Собеседник не договорил — ответить на то, что уже услышано"
+                          data-testid="turngate-answer-anyway"
+                        >
+                          ⏳ Ждёт продолжения · ответить всё равно
+                        </Button>
+                      )}
                       {isButtonVisible("answer") && (
                         <Button
                           size="sm"

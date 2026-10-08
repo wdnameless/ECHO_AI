@@ -486,5 +486,26 @@ describe("useQuestionPipeline", () => {
         "them"
       );
     });
+
+    it("R06 turn-gate: answerAnyway dispatches pending utterance bypassing gap timer", async () => {
+      const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+      const { result } = renderHook(() =>
+        useQuestionPipeline({ onTriggerAI, liveSegmentsRef: { current: [] } })
+      );
+
+      await act(async () => {
+        await result.current.handleInterviewerTranscription("Ну в общем мы используем");
+      });
+      expect(result.current.turnGateWaiting).toBe(true);
+      expect(onTriggerAI).not.toHaveBeenCalled();
+
+      let sent: string | null = null;
+      await act(async () => {
+        sent = await result.current.answerAnyway();
+      });
+      expect(sent).toContain("используем");
+      expect(onTriggerAI).toHaveBeenCalledTimes(1);
+      expect(result.current.turnGateWaiting).toBe(false);
+    });
   });
 });

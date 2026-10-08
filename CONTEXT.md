@@ -17,6 +17,7 @@ Ubiquitous language (Wave 0 + Wave 1 recon):
 | Монолог-буфер | Накопленный нон-стоп спич одним промптом в историю | `QuestionAssembler` + `AutoAskManager` |
 | Бейдж модели | Активная модель/провайдер в оверлее + быстрое переключение | `activeProviderId` → `SubtitleFeed` |
 | Turn-gate | «Ждёт продолжения» + «ответить всё равно» при незавершённой реплике | `useQuestionPipeline` |
+| SlotQueueRequest | `{ owner, callback }` — явная FIFO-очередь single-slot ASR | `src/lib/asr-gate.ts:22` |
 
 Decisions: thought_shape=Компактный; thought_place=В той же ленте; live_scope=Только голос; audit_depth=Полный разбор.
 Blockers R01: humanizer/35-55 cap, max_tokens=600, reasoning minimal, нет thought-контейнера.

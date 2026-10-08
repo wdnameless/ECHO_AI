@@ -22,6 +22,8 @@ import {
   MonologueStatus,
   MONOLOGUE_EVENTS,
 } from "@/lib/monologue-buffer";
+export const TURN_GATE_EVENT = "turngate:answer-anyway";
+export const TURN_GATE_STATUS_EVENT = "turngate:status";
 import {
   PromptProfile,
   getActiveProfile,
@@ -92,6 +94,7 @@ export function useQuestionPipeline({
   const [monologueStatus, setMonologueStatus] = useState<MonologueStatus>("idle");
   const [monologueText, setMonologueText] = useState<string>("");
   const [isMonologueReady, setIsMonologueReady] = useState<boolean>(false);
+  const [turnGateWaiting, setTurnGateWaiting] = useState<boolean>(false);
 
   // Initialize assembler and monologue buffer
   if (!questionAssemblerRef.current) {
@@ -256,6 +259,22 @@ export function useQuestionPipeline({
     setIsMonologueReady(false);
     setMonologueStatus("idle");
   }, []);
+  // Turn-gate force answer (R06): dispatches whatever the assembler holds,
+  // bypassing the gap timer. Fired from the overlay "ответить всё равно" button.
+  const answerAnyway = useCallback(async (): Promise<string | null> => {
+    cancelGapTimerRef.current?.();
+    cancelGapTimerRef.current = null;
+    const emitted = questionAssemblerRef.current?.flush("them", { allowContinuation: true });
+    setTurnGateWaiting(false);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent(TURN_GATE_STATUS_EVENT, { detail: false }));
+    }
+    if (emitted?.kind === "emitted" && emitted.question) {
+      await onTriggerAI(emitted.question, "them");
+      return emitted.question;
+    }
+    return null;
+  }, [onTriggerAI]);
 
   // Listen to monologue events
   useEffect(() => {
@@ -268,20 +287,25 @@ export function useQuestionPipeline({
     const handleCancel = () => {
       cancelMonologue();
     };
+    const handleAnswerAnyway = () => {
+      void answerAnyway();
+    };
 
     if (typeof window !== "undefined") {
       window.addEventListener(MONOLOGUE_EVENTS.CONFIRM, handleConfirm);
       window.addEventListener(MONOLOGUE_EVENTS.FLUSH, handleFlush);
       window.addEventListener(MONOLOGUE_EVENTS.CANCEL, handleCancel);
+      window.addEventListener(TURN_GATE_EVENT, handleAnswerAnyway);
     }
     return () => {
       if (typeof window !== "undefined") {
         window.removeEventListener(MONOLOGUE_EVENTS.CONFIRM, handleConfirm);
         window.removeEventListener(MONOLOGUE_EVENTS.FLUSH, handleFlush);
         window.removeEventListener(MONOLOGUE_EVENTS.CANCEL, handleCancel);
+        window.removeEventListener(TURN_GATE_EVENT, handleAnswerAnyway);
       }
     };
-  }, [confirmMonologue, flushMonologue, cancelMonologue]);
+  }, [confirmMonologue, flushMonologue, cancelMonologue, answerAnyway]);
 
   const handleInterviewerTranscription = useCallback(
     async (transcription: string, pauseBeforeMs?: number) => {
@@ -317,6 +341,10 @@ export function useQuestionPipeline({
         cancelGapTimerRef.current?.();
         cancelGapTimerRef.current = null;
         monoBuffer.clear();
+        setTurnGateWaiting(false);
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent(TURN_GATE_STATUS_EVENT, { detail: false }));
+        }
         setMonologueText("");
         setIsMonologueReady(false);
         setMonologueStatus("idle");
@@ -378,6 +406,10 @@ export function useQuestionPipeline({
             setMonologueText("");
             setIsMonologueReady(false);
             setMonologueStatus("idle");
+            setTurnGateWaiting(false);
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent(TURN_GATE_STATUS_EVENT, { detail: false }));
+            }
             void onTriggerAI(textToSend, "them");
           } else if (emitted?.kind === "pending") {
             extensions += 1;
@@ -395,6 +427,10 @@ export function useQuestionPipeline({
       };
 
       arm(gapMs);
+      setTurnGateWaiting(true);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(TURN_GATE_STATUS_EVENT, { detail: true }));
+      }
 
       // If assembler emitted without punctuation wait (and not in non-stop accumulation)
       if (
@@ -436,5 +472,7 @@ export function useQuestionPipeline({
     cancelMonologue,
     reconfigureProfile,
     currentProfile,
+    turnGateWaiting,
+    answerAnyway,
   };
 }
