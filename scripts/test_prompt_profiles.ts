@@ -2,12 +2,17 @@ import {
   BUILTIN_PROFILES,
   INTERVIEW_PROFILE_ID,
   GENERAL_PROFILE_ID,
+  LIVECODE_PROFILE_ID,
   getPromptProfiles,
   getActiveProfileId,
   getActiveProfile,
   applyProfileToStorage,
   savePromptProfiles,
   setActiveProfileId,
+  exportProfileToJson,
+  exportProfilesToJson,
+  importProfileFromJson,
+  importProfilesFromJson,
   PromptProfile,
 } from "../src/lib/storage/prompt-profiles";
 
@@ -25,15 +30,15 @@ console.log("==================================================");
 console.log("1. BUILT-IN PROFILES EXIST");
 console.log("==================================================");
 const profiles = getPromptProfiles();
-console.log(`Total profiles: ${profiles.length} (expected >= 2)`);
-if (profiles.length < 2) { console.error("FAIL"); process.exit(1); }
+console.log(`Total profiles: ${profiles.length} (expected >= 3)`);
+if (profiles.length < 3) { console.error("FAIL: expected at least 3 profiles"); process.exit(1); }
 if (profiles[0].id !== INTERVIEW_PROFILE_ID) { console.error("FAIL: first should be Interview"); process.exit(1); }
 if (profiles[1].id !== GENERAL_PROFILE_ID) { console.error("FAIL: second should be General"); process.exit(1); }
-console.log("✅ Interview profile: " + profiles[0].name);
-console.log("✅ General profile: " + profiles[1].name);
-console.log(`   Interview prompt length: ${profiles[0].systemPrompt.length} chars`);
-console.log(`   General prompt: "${profiles[1].systemPrompt.slice(0, 60)}..."`);
-
+const livecode = profiles.find((p) => p.id === LIVECODE_PROFILE_ID);
+if (!livecode) { console.error("FAIL: missing Livecode profile"); process.exit(1); }
+console.log("✅ Interview profile: " + profiles[0].name + " (flushGap: " + profiles[0].flushGapMs + "ms)");
+console.log("✅ General profile: " + profiles[1].name + " (flushGap: " + profiles[1].flushGapMs + "ms, mono: " + profiles[1].monologue?.mode + ")");
+console.log("✅ Livecode profile: " + livecode.name + " (flushGap: " + livecode.flushGapMs + "ms)");
 console.log("\n==================================================");
 console.log("2. DEFAULT ACTIVE PROFILE IS INTERVIEW");
 console.log("==================================================");
@@ -84,6 +89,10 @@ const custom: PromptProfile = {
   ragResumeEnabled: true,
   ragJobEnabled: true,
   isBuiltin: false,
+  flushGapMs: 900,
+  defaultLength: "short",
+  visibleButtons: ["length", "thought", "answer"],
+  monologue: { mode: "semi", maxWindow: 18000 },
 };
 savePromptProfiles([...getPromptProfiles(), custom]);
 const withCustom = getPromptProfiles();
@@ -94,6 +103,22 @@ const customActive = getActiveProfile();
 if (customActive.name !== "System Design") { console.error("FAIL"); process.exit(1); }
 console.log("✅ Custom profile activated: " + customActive.name);
 console.log("✅ Built-ins preserved: " + (withCustom.filter(p => p.isBuiltin).length) + " built-in profiles kept");
+
+console.log("\n==================================================");
+console.log("5. JSON EXPORT / IMPORT ROUND-TRIP");
+console.log("==================================================");
+const exportedJson = exportProfileToJson(custom);
+const importedProfile = importProfileFromJson(exportedJson);
+if (!importedProfile) { console.error("FAIL: importProfileFromJson returned null"); process.exit(1); }
+if (importedProfile.name !== custom.name) { console.error("FAIL: name mismatch"); process.exit(1); }
+if (importedProfile.flushGapMs !== 900) { console.error("FAIL: flushGapMs mismatch"); process.exit(1); }
+if (importedProfile.monologue?.mode !== "semi") { console.error("FAIL: monologue mode mismatch"); process.exit(1); }
+console.log("✅ Single profile JSON round-trip successful");
+
+const allExported = exportProfilesToJson(withCustom);
+const allImported = importProfilesFromJson(allExported);
+if (allImported.length !== withCustom.length) { console.error("FAIL: allImported length mismatch"); process.exit(1); }
+console.log("✅ Multi-profile JSON round-trip successful (" + allImported.length + " profiles)");
 
 console.log("\n==================================================");
 console.log("🎉 ALL PROFILE TESTS PASSED!");

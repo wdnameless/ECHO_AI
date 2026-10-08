@@ -1,12 +1,13 @@
 /**
- * Interviewer question assembler, gap timers, and filler logic (перебивки).
+ * Interviewer question assembler, gap timers, monologue buffer, and filler logic (перебивки).
  *
  * Responsibility:
- * - Accumulates fragmented VAD transcription segments into single coherent questions.
+ * - Accumulates fragmented VAD transcription segments into coherent questions or monologue blocks.
  * - Handles flush timers on pauses/silence gaps.
- * - Manages active Russian filler state ("Да, секундочку..." / перебивки): one
- *   stable phrase per pending answer, cleared when the response starts streaming.
- * - Provides reset and question-assembler coordination.
+ * - Reconfigures QuestionAssembler and MonologueBuffer on profile changes with timer reset.
+ * - Monologue buffer accumulates non-stop speech into one history prompt,
+ *   supporting auto (default), semi-confirm, and manual-button dispatch.
+ * - Manages active Russian filler state ("Да, секундочку..." / перебивки).
  */
 import { useState, useRef, useCallback, useEffect } from "react";
 import { warmProviderConnection } from "@/lib/host-trust-gate";
@@ -15,6 +16,16 @@ import {
   ACTIVE_ASR_MODE,
   ASR_TIMING_PRESETS,
 } from "@/lib/question-assembler";
+import {
+  MonologueBuffer,
+  MonologueMode,
+  MonologueStatus,
+  MONOLOGUE_EVENTS,
+} from "@/lib/monologue-buffer";
+import {
+  PromptProfile,
+  getActiveProfile,
+} from "@/lib/storage/prompt-profiles";
 import { selectFillerForText } from "@/lib/transcript-stabilizer";
 import { setUnthrottledTimeout } from "@/lib/timer-worker";
 import { safeLocalStorage } from "@/lib/storage/helper";
@@ -53,41 +64,126 @@ export function resolveActiveProviderUrl(): string | null {
     return null;
   }
 }
+
 export interface UseQuestionPipelineProps {
   onTriggerAI: (question: string, source: "me" | "them") => Promise<void>;
   liveSegmentsRef: React.MutableRefObject<LiveSegment[]>;
+  profile?: PromptProfile;
 }
 
 export function useQuestionPipeline({
   onTriggerAI,
   liveSegmentsRef,
+  profile: propProfile,
 }: UseQuestionPipelineProps) {
   const [activeFiller, setActiveFiller] = useState<string | null>(null);
-  const [pendingUtteranceId, setPendingUtteranceId] = useState<string | null>(
-    null
-  );
+  const [pendingUtteranceId, setPendingUtteranceId] = useState<string | null>(null);
   const activeAskUtteranceIdRef = useRef<string | null>(null);
 
+  const [currentProfile, setCurrentProfile] = useState<PromptProfile>(() => {
+    return propProfile ?? getActiveProfile();
+  });
+
   const questionAssemblerRef = useRef<QuestionAssembler | null>(null);
-  /** Cancels the pending gap timer. The timer itself lives in a Worker. */
+  const monologueBufferRef = useRef<MonologueBuffer | null>(null);
   const cancelGapTimerRef = useRef<(() => void) | null>(null);
-  const asrTimingConfig = ASR_TIMING_PRESETS[ACTIVE_ASR_MODE];
   const activeProviderUrlRef = useRef<string | null>(null);
 
+  const [monologueStatus, setMonologueStatus] = useState<MonologueStatus>("idle");
+  const [monologueText, setMonologueText] = useState<string>("");
+  const [isMonologueReady, setIsMonologueReady] = useState<boolean>(false);
 
+  // Initialize assembler and monologue buffer
   if (!questionAssemblerRef.current) {
+    const p = propProfile ?? getActiveProfile();
     questionAssemblerRef.current = new QuestionAssembler({
       mode: ACTIVE_ASR_MODE,
+      flushGapMs: p.flushGapMs ?? ASR_TIMING_PRESETS[ACTIVE_ASR_MODE].flushGapMs,
+      maxWindowMs: p.monologue?.maxWindow ?? ASR_TIMING_PRESETS[ACTIVE_ASR_MODE].maxWindowMs,
     });
   }
+
+  if (!monologueBufferRef.current) {
+    const p = propProfile ?? getActiveProfile();
+    monologueBufferRef.current = new MonologueBuffer({
+      mode: p.monologue?.mode ?? "auto",
+      flushGapMs: p.flushGapMs ?? 1500,
+      maxWindowMs: p.monologue?.maxWindow ?? 15000,
+      onStatusChange: (status) => {
+        setMonologueStatus(status);
+        setIsMonologueReady(status === "ready");
+      },
+    });
+  }
+
+  const resetTimersAndAssembly = useCallback(() => {
+    cancelGapTimerRef.current?.();
+    cancelGapTimerRef.current = null;
+    questionAssemblerRef.current?.reset();
+    monologueBufferRef.current?.clear();
+    setMonologueStatus("idle");
+    setMonologueText("");
+    setIsMonologueReady(false);
+  }, []);
+
+  const reconfigureProfile = useCallback(
+    (profile: PromptProfile) => {
+      resetTimersAndAssembly();
+      setCurrentProfile(profile);
+
+      const flushGapMs = profile.flushGapMs ?? ASR_TIMING_PRESETS[ACTIVE_ASR_MODE].flushGapMs;
+      const maxWindowMs = profile.monologue?.maxWindow ?? ASR_TIMING_PRESETS[ACTIVE_ASR_MODE].maxWindowMs;
+      const mode: MonologueMode = profile.monologue?.mode ?? "auto";
+
+      questionAssemblerRef.current?.reconfigure({
+        flushGapMs,
+        maxWindowMs,
+      });
+
+      monologueBufferRef.current?.reconfigure({
+        mode,
+        flushGapMs,
+        maxWindowMs,
+      });
+    },
+    [resetTimersAndAssembly]
+  );
+
+  // Update when prop changes
+  useEffect(() => {
+    if (propProfile) {
+      reconfigureProfile(propProfile);
+    }
+  }, [propProfile, reconfigureProfile]);
+
+  // Listen to profile changes from other tabs or settings
+  useEffect(() => {
+    const handleProfileChange = (e: Event) => {
+      const customEvent = e as CustomEvent<PromptProfile>;
+      if (customEvent.detail) {
+        reconfigureProfile(customEvent.detail);
+      } else {
+        reconfigureProfile(getActiveProfile());
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener("prompt-profile-changed", handleProfileChange);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("prompt-profile-changed", handleProfileChange);
+      }
+    };
+  }, [reconfigureProfile]);
+
+  // Teardown
   useEffect(() => {
     return () => {
       cancelGapTimerRef.current?.();
       cancelGapTimerRef.current = null;
     };
   }, []);
-
-
 
   const clearFiller = useCallback(() => {
     setActiveFiller(null);
@@ -97,13 +193,6 @@ export function useQuestionPipeline({
 
   const setFillerForAnchor = useCallback(
     (anchorId: string | null = null, questionText = "") => {
-      // One filler phrase per answer: pick once, keep stable until cleared.
-      // No rotation interval — the phrase must not change while the user
-      // is reading it aloud mid-sentence.
-      //
-      // The phrase is spoken by the candidate, so it must be in the language of
-      // the QUESTION: an English question answered with a Russian opener reads
-      // as a script, and the reverse does too.
       const filler = selectFillerForText(questionText);
       setActiveFiller(filler);
       setPendingUtteranceId(anchorId);
@@ -114,9 +203,6 @@ export function useQuestionPipeline({
 
   const setFillerForInterviewer = useCallback(
     (questionText = "") => {
-      // Immediate display on dispatch: unbind from anchorId.
-      // In case anchor exists in liveSegmentsRef, keep it for back-compat,
-      // but filler is shown regardless (anchorId can be null or anchor.id).
       const anchor =
         [...liveSegmentsRef.current].reverse().find((s) => s.source === "them") ||
         null;
@@ -126,20 +212,80 @@ export function useQuestionPipeline({
   );
 
   const resetQuestionAssembly = useCallback(() => {
-    questionAssemblerRef.current?.reset();
+    resetTimersAndAssembly();
+  }, [resetTimersAndAssembly]);
+
+  // Monologue manual flush & semi-confirm methods
+  const flushMonologue = useCallback(async (): Promise<string | null> => {
     cancelGapTimerRef.current?.();
     cancelGapTimerRef.current = null;
+    const flushed = monologueBufferRef.current?.flush();
+    questionAssemblerRef.current?.reset();
+    setMonologueText("");
+    setIsMonologueReady(false);
+    setMonologueStatus("idle");
+
+    if (flushed && flushed.text) {
+      await onTriggerAI(flushed.text, "them");
+      return flushed.text;
+    }
+    return null;
+  }, [onTriggerAI]);
+
+  const confirmMonologue = useCallback(async (): Promise<string | null> => {
+    return flushMonologue();
+  }, [flushMonologue]);
+
+  const cancelMonologue = useCallback(() => {
+    cancelGapTimerRef.current?.();
+    cancelGapTimerRef.current = null;
+    monologueBufferRef.current?.clear();
+    questionAssemblerRef.current?.reset();
+    setMonologueText("");
+    setIsMonologueReady(false);
+    setMonologueStatus("idle");
   }, []);
+
+  // Listen to monologue events
+  useEffect(() => {
+    const handleConfirm = () => {
+      void confirmMonologue();
+    };
+    const handleFlush = () => {
+      void flushMonologue();
+    };
+    const handleCancel = () => {
+      cancelMonologue();
+    };
+
+    if (typeof window !== "undefined") {
+      window.addEventListener(MONOLOGUE_EVENTS.CONFIRM, handleConfirm);
+      window.addEventListener(MONOLOGUE_EVENTS.FLUSH, handleFlush);
+      window.addEventListener(MONOLOGUE_EVENTS.CANCEL, handleCancel);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener(MONOLOGUE_EVENTS.CONFIRM, handleConfirm);
+        window.removeEventListener(MONOLOGUE_EVENTS.FLUSH, handleFlush);
+        window.removeEventListener(MONOLOGUE_EVENTS.CANCEL, handleCancel);
+      }
+    };
+  }, [confirmMonologue, flushMonologue, cancelMonologue]);
 
   const handleInterviewerTranscription = useCallback(
     async (transcription: string, pauseBeforeMs?: number) => {
       const assembler = questionAssemblerRef.current!;
+      const monoBuffer = monologueBufferRef.current!;
+      const profile = currentProfile;
+      const monoMode: MonologueMode = profile.monologue?.mode ?? "auto";
+
+      const monoPush = monoBuffer.push(transcription);
+      setMonologueText(monoPush.text);
+
       const result = assembler.push({
         source: "them",
         text: transcription,
         timestamp: Date.now(),
-        // Real silence from the audio when the capture layer measured it; the
-        // arrival interval is not a pause (recognition lags by ~1.1s).
         pauseBeforeMs,
       });
 
@@ -150,40 +296,45 @@ export function useQuestionPipeline({
         return;
       }
 
-      // (Re)arm the gap timer: if the interviewer goes quiet, emit the
-      // accumulated question and let the AI answer it.
-      //
-      // Mid-sentence protection: an interviewer often pauses mid-phrase and
-      // the ASR fragment ends WITHOUT continuation punctuation (hyphen/comma)
-      // because the recognizer normalizes it away. So flush() declining on
-      // continuation punctuation is not enough — when flush returns "pending"
-      // (or the text clearly reads unfinished: no terminal .!?), we re-arm the
-      // timer with an EXTENDED window instead of dispatching early.
-      //
-      // The timer runs in a Worker, not on the main thread: Chromium throttles
-      // setTimeout to ~1s granularity once the window is hidden, which is the
-      // normal state for an overlay during a call. A sub-second gap threshold
-      // is meaningless on a throttled timer, so questions would emit late.
+      // Fast-path in interview mode on explicit question mark
+      if (
+        result.kind === "emitted" &&
+        monoMode === "auto" &&
+        profile.interviewMode &&
+        !monoPush.windowExceeded
+      ) {
+        cancelGapTimerRef.current?.();
+        cancelGapTimerRef.current = null;
+        monoBuffer.clear();
+        setMonologueText("");
+        setIsMonologueReady(false);
+        setMonologueStatus("idle");
+        await onTriggerAI(result.question, "them");
+        return;
+      }
+
+      // If maxWindow is exceeded during non-stop monologue in auto mode, emit immediately
+      if (monoPush.shouldEmit) {
+        cancelGapTimerRef.current?.();
+        cancelGapTimerRef.current = null;
+        const flushed = monoBuffer.flush();
+        assembler.reset();
+        setMonologueText("");
+        setIsMonologueReady(false);
+        setMonologueStatus("idle");
+        if (flushed && flushed.text) {
+          await onTriggerAI(flushed.text, "them");
+        }
+        return;
+      }
+
+      // (Re)arm gap timer
       cancelGapTimerRef.current?.();
-      const gapMs = asrTimingConfig.flushGapMs;
-      /**
-       * How many extra windows one pending question may hold back before it is
-       * forced through.
-       *
-       * `looksUnfinished` treats any fragment without terminal punctuation as
-       * mid-sentence, which is correct for a punctuating recogniser and fatal
-       * for Parakeet: it emits no punctuation at all, so every flush returned
-       * "pending", the timer re-armed itself, and the question was never asked
-       * — the interviewer had long stopped and the AI stayed silent. One
-       * extension still protects a real mid-sentence pause; after that the
-       * accumulated text is a question by any practical measure.
-       */
+      const gapMs = profile.flushGapMs ?? assembler.currentGapMs;
       let extensions = 0;
       const MAX_EXTENSIONS = 1;
+
       const arm = (delay: number) => {
-        // Resolve until it succeeds: caching a `null` result disabled the
-        // connection warm-up for the whole session, which cost the first
-        // request its full TLS handshake on every answer.
         if (!activeProviderUrlRef.current) {
           activeProviderUrlRef.current = resolveActiveProviderUrl();
         }
@@ -193,30 +344,69 @@ export function useQuestionPipeline({
         }
         cancelGapTimerRef.current = setUnthrottledTimeout(() => {
           cancelGapTimerRef.current = null;
+
+          if (monoMode === "semi") {
+            monoBuffer.onSilenceGap();
+            setIsMonologueReady(true);
+            setMonologueStatus("ready");
+            return;
+          }
+
+          if (monoMode === "manual") {
+            monoBuffer.onSilenceGap();
+            return;
+          }
+
+          // Auto mode
           const forced = extensions >= MAX_EXTENSIONS;
-          const emitted = questionAssemblerRef.current?.flush(
+          const emitted = assembler.flush(
             "them",
             forced ? { allowContinuation: true } : undefined
           );
+
           if (emitted?.kind === "emitted") {
-            void onTriggerAI(emitted.question, "them");
+            const flushedMono = monoBuffer.flush();
+            const textToSend =
+              flushedMono && flushedMono.text.length >= emitted.question.length
+                ? flushedMono.text
+                : emitted.question;
+            setMonologueText("");
+            setIsMonologueReady(false);
+            setMonologueStatus("idle");
+            void onTriggerAI(textToSend, "them");
           } else if (emitted?.kind === "pending") {
             extensions += 1;
-            // Speaker paused mid-sentence — one extended window is enough;
-            // after that the text is forced through (see MAX_EXTENSIONS).
             arm(Math.round(gapMs * 1.4));
+          } else if (!monoBuffer.isEmpty()) {
+            const flushed = monoBuffer.flush();
+            setMonologueText("");
+            setIsMonologueReady(false);
+            setMonologueStatus("idle");
+            if (flushed && flushed.text) {
+              void onTriggerAI(flushed.text, "them");
+            }
           }
         }, delay);
       };
+
       arm(gapMs);
 
-      if (result.kind === "emitted") {
+      // If assembler emitted without punctuation wait (and not in non-stop accumulation)
+      if (
+        result.kind === "emitted" &&
+        monoMode === "auto" &&
+        profile.interviewMode
+      ) {
         cancelGapTimerRef.current?.();
         cancelGapTimerRef.current = null;
+        monoBuffer.clear();
+        setMonologueText("");
+        setIsMonologueReady(false);
+        setMonologueStatus("idle");
         await onTriggerAI(result.question, "them");
       }
     },
-    [onTriggerAI, asrTimingConfig.flushGapMs]
+    [onTriggerAI, currentProfile]
   );
 
   return {
@@ -231,5 +421,15 @@ export function useQuestionPipeline({
     resetQuestionAssembly,
     handleInterviewerTranscription,
     questionAssemblerRef,
+    // Monologue additions
+    monologueBufferRef,
+    monologueStatus,
+    monologueText,
+    isMonologueReady,
+    confirmMonologue,
+    flushMonologue,
+    cancelMonologue,
+    reconfigureProfile,
+    currentProfile,
   };
 }

@@ -1,11 +1,32 @@
 import { safeLocalStorage } from "./helper";
 import { DEFAULT_SYSTEM_PROMPT, STORAGE_KEYS } from "@/config/constants";
 import { HUMANIZER_STORAGE_KEY } from "@/config/humanizer.rules";
-
+import { updateResponseLength } from "./response-settings.storage";
 export const PROFILE_STORAGE_KEY = "prompt_profiles";
 export const ACTIVE_PROFILE_STORAGE_KEY = "active_profile_id";
 /** Built-in profiles the user has deleted; they must not come back on reload. */
 export const REMOVED_BUILTIN_PROFILES_KEY = "prompt_profiles_removed_builtins";
+
+export type ProfileResponseLength = "auto" | "short" | "long";
+
+export type ToolbarButtonId =
+  | "length"
+  | "thought"
+  | "livecode"
+  | "answer"
+  | "code_plan"
+  | "code_full"
+  | "code_screen"
+  | "screenshot"
+  | "audio_settings"
+  | "settings"
+  | "new_chat"
+  | "monologue_send";
+
+export interface MonologueConfig {
+  mode: "auto" | "semi" | "manual";
+  maxWindow: number;
+}
 
 export interface PromptProfile {
   id: string;
@@ -18,12 +39,17 @@ export interface PromptProfile {
   ragResumeEnabled: boolean;
   ragJobEnabled: boolean;
   isBuiltin?: boolean;
+  flushGapMs?: number;
+  defaultLength?: ProfileResponseLength;
+  visibleButtons?: string[];
+  monologue?: MonologueConfig;
 }
 
 export const INTERVIEW_PROFILE_ID = "profile-interview";
 export const GENERAL_PROFILE_ID = "profile-general";
+export const CONVERSATION_PROFILE_ID = "profile-general";
+export const LIVECODE_PROFILE_ID = "profile-livecode";
 export const SELF_EVOLUTION_PROFILE_ID = "profile-self-evolution";
-
 export const BUILTIN_PROFILES: PromptProfile[] = [
   {
     id: INTERVIEW_PROFILE_ID,
@@ -36,11 +62,26 @@ export const BUILTIN_PROFILES: PromptProfile[] = [
     ragResumeEnabled: true,
     ragJobEnabled: true,
     isBuiltin: true,
+    flushGapMs: 450,
+    defaultLength: "short",
+    visibleButtons: [
+      "length",
+      "thought",
+      "answer",
+      "screenshot",
+      "audio_settings",
+      "settings",
+      "new_chat",
+    ],
+    monologue: {
+      mode: "auto",
+      maxWindow: 4000,
+    },
   },
   {
     id: GENERAL_PROFILE_ID,
     name: "General Chat",
-    description: "Free conversation with the AI - no interview prompts",
+    description: "Free conversation with the AI - monologue accumulation & natural pacing",
     systemPrompt:
       "You are a friendly, natural conversation partner. Answer in a warm, human tone. Be concise but thoughtful, ask follow-up questions when appropriate.",
     humanizerEnabled: true,
@@ -49,6 +90,58 @@ export const BUILTIN_PROFILES: PromptProfile[] = [
     ragResumeEnabled: false,
     ragJobEnabled: false,
     isBuiltin: true,
+    flushGapMs: 1500,
+    defaultLength: "auto",
+    visibleButtons: [
+      "length",
+      "thought",
+      "answer",
+      "monologue_send",
+      "screenshot",
+      "audio_settings",
+      "settings",
+      "new_chat",
+    ],
+    monologue: {
+      mode: "auto",
+      maxWindow: 15000,
+    },
+  },
+  {
+    id: LIVECODE_PROFILE_ID,
+    name: "Livecode",
+    description: "Live coding assistant: plan first, structured algorithms, complexity analysis",
+    systemPrompt: `Ты — эксперт по алгоритмам, структурам данных и лайвкодингу (LeetCode / Codeforces / FAANG).
+ПРИНЦИПЫ ОТВЕТА:
+1. При обсуждении задачи сначала озвучь краткий план решения (1-2 предложения: идея, оптимальная сложность).
+2. При написании кода выдавай эталонный production-ready код с учётом граничных условий.
+3. Обязательно указывай временную и пространственную сложность (Big-O).
+4. Объясняй логику лаконично, как опытный senior разработчик на интервью.`,
+    humanizerEnabled: true,
+    interviewMode: true,
+    customStyle: "",
+    ragResumeEnabled: false,
+    ragJobEnabled: false,
+    isBuiltin: true,
+    flushGapMs: 500,
+    defaultLength: "auto",
+    visibleButtons: [
+      "length",
+      "thought",
+      "livecode",
+      "code_plan",
+      "code_full",
+      "code_screen",
+      "answer",
+      "screenshot",
+      "audio_settings",
+      "settings",
+      "new_chat",
+    ],
+    monologue: {
+      mode: "auto",
+      maxWindow: 6000,
+    },
   },
   {
     id: SELF_EVOLUTION_PROFILE_ID,
@@ -66,6 +159,21 @@ export const BUILTIN_PROFILES: PromptProfile[] = [
     ragResumeEnabled: true,
     ragJobEnabled: true,
     isBuiltin: true,
+    flushGapMs: 1500,
+    defaultLength: "auto",
+    visibleButtons: [
+      "length",
+      "thought",
+      "answer",
+      "screenshot",
+      "audio_settings",
+      "settings",
+      "new_chat",
+    ],
+    monologue: {
+      mode: "auto",
+      maxWindow: 12000,
+    },
   },
 ];
 
@@ -173,4 +281,86 @@ export function applyProfileToStorage(profile: PromptProfile): void {
     STORAGE_KEYS.RAG_JOB_ENABLED,
     String(profile.ragJobEnabled)
   );
+  if (profile.defaultLength) {
+    updateResponseLength(profile.defaultLength);
+  }
+  safeLocalStorage.setItem(ACTIVE_PROFILE_STORAGE_KEY, profile.id);
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("prompt-profile-changed", { detail: profile })
+    );
+  }
+}
+
+export function exportProfileToJson(profile: PromptProfile): string {
+  return JSON.stringify(profile, null, 2);
+}
+
+export function exportProfilesToJson(profiles: PromptProfile[]): string {
+  return JSON.stringify(profiles, null, 2);
+}
+
+export function importProfileFromJson(json: string): PromptProfile | null {
+  try {
+    const parsed = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object") return null;
+    if (typeof parsed.name !== "string" || !parsed.name.trim()) return null;
+    if (typeof parsed.systemPrompt !== "string") return null;
+
+    const profile: PromptProfile = {
+      id:
+        parsed.id && typeof parsed.id === "string"
+          ? parsed.id
+          : `profile-imported-${Date.now().toString(36)}`,
+      name: parsed.name.trim(),
+      description:
+        typeof parsed.description === "string" ? parsed.description : "",
+      systemPrompt: parsed.systemPrompt,
+      humanizerEnabled: Boolean(parsed.humanizerEnabled),
+      interviewMode: Boolean(parsed.interviewMode),
+      customStyle:
+        typeof parsed.customStyle === "string" ? parsed.customStyle : "",
+      ragResumeEnabled: Boolean(parsed.ragResumeEnabled),
+      ragJobEnabled: Boolean(parsed.ragJobEnabled),
+      isBuiltin: false,
+      flushGapMs:
+        typeof parsed.flushGapMs === "number" ? parsed.flushGapMs : undefined,
+      defaultLength: parsed.defaultLength,
+      visibleButtons: Array.isArray(parsed.visibleButtons)
+        ? parsed.visibleButtons
+        : undefined,
+      monologue:
+        parsed.monologue && typeof parsed.monologue === "object"
+          ? {
+              mode:
+                parsed.monologue.mode === "semi" ||
+                parsed.monologue.mode === "manual"
+                  ? parsed.monologue.mode
+                  : "auto",
+              maxWindow:
+                typeof parsed.monologue.maxWindow === "number"
+                  ? parsed.monologue.maxWindow
+                  : 12000,
+            }
+          : undefined,
+    };
+    return profile;
+  } catch {
+    return null;
+  }
+}
+
+export function importProfilesFromJson(json: string): PromptProfile[] {
+  try {
+    const parsed = JSON.parse(json);
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => importProfileFromJson(JSON.stringify(item)))
+        .filter((p): p is PromptProfile => p !== null);
+    }
+    const single = importProfileFromJson(json);
+    return single ? [single] : [];
+  } catch {
+    return [];
+  }
 }

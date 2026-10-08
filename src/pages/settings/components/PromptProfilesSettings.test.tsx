@@ -117,6 +117,24 @@ describe("R28: PromptProfilesSettings - profile switch mid-edit", () => {
         isDraftDirty({ ...profile1, ragJobEnabled: true }, profile1)
       ).toBe(true);
     });
+
+    it("returns true when flushGapMs, defaultLength, visibleButtons, or monologue is modified", () => {
+      expect(
+        isDraftDirty({ ...profile1, flushGapMs: 1200 }, profile1)
+      ).toBe(true);
+      expect(
+        isDraftDirty({ ...profile1, defaultLength: "long" }, profile1)
+      ).toBe(true);
+      expect(
+        isDraftDirty({ ...profile1, visibleButtons: ["answer", "settings"] }, profile1)
+      ).toBe(true);
+      expect(
+        isDraftDirty(
+          { ...profile1, monologue: { mode: "semi", maxWindow: 20000 } },
+          profile1
+        )
+      ).toBe(true);
+    });
   });
 
   describe("Profile switch state machine in UI", () => {
