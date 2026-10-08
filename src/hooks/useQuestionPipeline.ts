@@ -86,6 +86,17 @@ export function useQuestionPipeline({
       cancelGapTimerRef.current = null;
     };
   }, []);
+  useEffect(() => {
+    // Warmup at session start not trailing edge
+    if (!activeProviderUrlRef.current) {
+      activeProviderUrlRef.current = resolveActiveProviderUrl();
+    }
+    const warmUrl = activeProviderUrlRef.current;
+    if (warmUrl) {
+      void warmProviderConnection(warmUrl).catch(() => {});
+    }
+  }, []);
+
 
 
 
@@ -181,16 +192,6 @@ export function useQuestionPipeline({
       let extensions = 0;
       const MAX_EXTENSIONS = 1;
       const arm = (delay: number) => {
-        // Resolve until it succeeds: caching a `null` result disabled the
-        // connection warm-up for the whole session, which cost the first
-        // request its full TLS handshake on every answer.
-        if (!activeProviderUrlRef.current) {
-          activeProviderUrlRef.current = resolveActiveProviderUrl();
-        }
-        const warmUrl = activeProviderUrlRef.current;
-        if (warmUrl) {
-          void warmProviderConnection(warmUrl).catch(() => {});
-        }
         cancelGapTimerRef.current = setUnthrottledTimeout(() => {
           cancelGapTimerRef.current = null;
           const forced = extensions >= MAX_EXTENSIONS;

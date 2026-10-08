@@ -17,7 +17,7 @@ import {
 import { getAsrLanguage } from "@/lib/asr-language";
 import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
-import { releaseStream, tryAcquireStream } from "@/lib/asr-gate";
+import { releaseStream, tryAcquireStream, enqueueStreamSlot, cancelSlotQueue } from "@/lib/asr-gate";
 import {
   nextReconnectDelay,
   closeSocketDetached,
@@ -63,6 +63,7 @@ export function useMicWsStreaming({
   const releaseMicOwner = useCallback((epoch = micOwnerEpochRef.current) => {
     if (epoch === null || micOwnerEpochRef.current !== epoch) return;
     micOwnerEpochRef.current = null;
+    cancelSlotQueue("me");
     releaseStream("me");
   }, []);
 
@@ -156,6 +157,11 @@ export function useMicWsStreaming({
         // raced for the single model, one socket was refused, and the
         // interviewer's audio stopped being transcribed at all.
         if (!tryAcquireStream("me")) {
+          enqueueStreamSlot("me", () => {
+            if (capturingRef.current && micWsWantRef.current && micUtteranceActiveRef.current) {
+              micWsConnectRef.current();
+            }
+          });
           scheduleMicWsReconnect();
           return;
         }

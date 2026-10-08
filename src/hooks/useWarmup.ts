@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getRagContext } from "@/lib/rag/context.storage";
 import { warmProviderConnection } from "@/lib/host-trust-gate";
@@ -37,9 +37,11 @@ export interface UseWarmupOptions {
   providerUrl: string | null;
   /** Bump when the speech model switches; resets the warm state. */
   modelKey: string;
+  /** Auto-warm at session start (default: true). */
+  autoWarmOnMount?: boolean;
 }
 
-export function useWarmup({ providerUrl, modelKey }: UseWarmupOptions) {
+export function useWarmup({ providerUrl, modelKey, autoWarmOnMount = true }: UseWarmupOptions) {
   const [state, setState] = useState<WarmupState>("idle");
   const [doneAt, setDoneAt] = useState<number | null>(null);
   const [lastModelKey, setLastModelKey] = useState(modelKey);
@@ -99,6 +101,12 @@ export function useWarmup({ providerUrl, modelKey }: UseWarmupOptions) {
       return { engineOnline: false, providerWarmed: false, ragCached: { resume: false, job: false } };
     }
   }, [providerUrl, modelKey]);
+
+  useEffect(() => {
+    if (autoWarmOnMount) {
+      void warm();
+    }
+  }, [warm, autoWarmOnMount]);
 
   return { state, visible, warm, doneAt };
 }

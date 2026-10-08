@@ -4,6 +4,10 @@ import {
   resetAsrGateForTests,
   tryAcquireStream,
   withNoStream,
+  enqueueStreamSlot,
+  cancelSlotQueue,
+  waitForStreamSlot,
+  getSlotQueueLength,
 } from "../asr-gate";
 
 /**
@@ -70,5 +74,67 @@ describe("ASR stream gate", () => {
 
     await assertion;
     expect(work).not.toHaveBeenCalled();
+  });
+
+  describe("explicit slot queue", () => {
+    it("calls callback immediately when model is free", () => {
+      const callback = vi.fn();
+      enqueueStreamSlot("me", callback);
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(tryAcquireStream("them")).toBe(false);
+    });
+
+    it("queues waiter when busy and grants slot immediately on releaseStream without backoff", () => {
+      expect(tryAcquireStream("them")).toBe(true);
+      const meCallback = vi.fn();
+
+      const cancel = enqueueStreamSlot("me", meCallback);
+      expect(meCallback).not.toHaveBeenCalled();
+      expect(getSlotQueueLength()).toBe(1);
+
+      // Them releases the stream: Me gets notified immediately
+      releaseStream("them");
+      expect(meCallback).toHaveBeenCalledTimes(1);
+      expect(getSlotQueueLength()).toBe(0);
+      // Now "me" owns the model
+      expect(tryAcquireStream("them")).toBe(false);
+      cancel();
+    });
+
+    it("grants slot in FIFO order to multiple queued requests", () => {
+      expect(tryAcquireStream("them")).toBe(true);
+      const calls: string[] = [];
+      enqueueStreamSlot("me", () => calls.push("me-1"));
+      enqueueStreamSlot("me", () => calls.push("me-2"));
+      expect(getSlotQueueLength()).toBe(2);
+
+      releaseStream("them");
+      expect(calls).toEqual(["me-1"]);
+      expect(getSlotQueueLength()).toBe(1);
+
+      releaseStream("me");
+      expect(calls).toEqual(["me-1", "me-2"]);
+      expect(getSlotQueueLength()).toBe(0);
+    });
+
+    it("cancels slot queue entry when cancelled", () => {
+      expect(tryAcquireStream("them")).toBe(true);
+      const callback = vi.fn();
+      const cancel = enqueueStreamSlot("me", callback);
+      expect(getSlotQueueLength()).toBe(1);
+
+      cancel();
+      expect(getSlotQueueLength()).toBe(0);
+      releaseStream("them");
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it("waitForStreamSlot resolves when stream becomes available", async () => {
+      expect(tryAcquireStream("them")).toBe(true);
+      const waitPromise = waitForStreamSlot("me", 1000);
+
+      releaseStream("them");
+      await expect(waitPromise).resolves.toBe(true);
+    });
   });
 });
