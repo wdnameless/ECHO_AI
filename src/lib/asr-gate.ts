@@ -17,8 +17,8 @@
 export type AsrStreamOwner = "me" | "them";
 
 let activeOwner: AsrStreamOwner | null = null;
+let httpActiveCount = 0;
 const waiters = new Set<() => void>();
-
 export interface SlotQueueRequest {
   owner: AsrStreamOwner;
   callback: () => void;
@@ -33,9 +33,22 @@ export function getSlotQueueLength(): number {
 
 /** True when a stream may be opened for this owner right now. */
 export function tryAcquireStream(owner: AsrStreamOwner): boolean {
+  if (httpActiveCount > 0) return false;
   if (activeOwner !== null && activeOwner !== owner) return false;
   activeOwner = owner;
   return true;
+}
+
+function handoffNextSlot(): void {
+  if (activeOwner !== null || httpActiveCount > 0) return;
+  while (slotQueue.length > 0) {
+    const next = slotQueue.shift();
+    if (next) {
+      activeOwner = next.owner;
+      next.callback();
+      return;
+    }
+  }
 }
 
 /**
@@ -107,17 +120,13 @@ export function releaseStream(owner: AsrStreamOwner): void {
   if (activeOwner !== owner) return;
   activeOwner = null;
 
-  // Hand off slot directly to the next waiting channel in FIFO queue
-  while (slotQueue.length > 0) {
-    const next = slotQueue.shift();
-    if (next) {
-      activeOwner = next.owner;
-      next.callback();
-      return;
-    }
+  // Hand off fairly: wake HTTP waiters first so withNoStream never starves.
+  if (waiters.size > 0) {
+    for (const wake of [...waiters]) wake();
+    return;
   }
 
-  for (const wake of [...waiters]) wake();
+  handoffNextSlot();
 }
 
 /**
@@ -130,7 +139,17 @@ export async function withNoStream<T>(
   fn: () => Promise<T>,
   timeoutMs = 300
 ): Promise<T> {
-  if (activeOwner === null) return fn();
+  if (activeOwner === null) {
+    httpActiveCount++;
+    try {
+      return await fn();
+    } finally {
+      httpActiveCount--;
+      if (httpActiveCount === 0 && waiters.size === 0) {
+        handoffNextSlot();
+      }
+    }
+  }
 
   await new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
@@ -140,6 +159,7 @@ export async function withNoStream<T>(
     const wake = () => {
       clearTimeout(timer);
       waiters.delete(wake);
+      httpActiveCount++;
       resolve();
     };
     waiters.add(wake);
@@ -148,7 +168,14 @@ export async function withNoStream<T>(
     throw new Error(`ASR model busy: stream active (owned by ${activeOwner})`);
   }
 
-  return fn();
+  try {
+    return await fn();
+  } finally {
+    httpActiveCount--;
+    if (httpActiveCount === 0 && waiters.size === 0) {
+      handoffNextSlot();
+    }
+  }
 }
 
 /** Only for tests: forget any owner and clear queued requests. */
@@ -157,4 +184,5 @@ export function resetAsrGateForTests(): void {
   slotQueue.length = 0;
   for (const wake of [...waiters]) wake();
   waiters.clear();
+  httpActiveCount = 0;
 }
