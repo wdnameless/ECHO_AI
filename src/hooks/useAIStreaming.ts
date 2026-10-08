@@ -9,7 +9,7 @@
  * - Consumes pending screenshot attachments and clears them.
  */
 
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { fetchAIResponse, shouldUsePluelyAPI } from "@/lib/functions";
 import { getAIProviderVariables } from "@/lib/storage/ai-providers";
 import { shouldTriggerAIResponse } from "@/lib/speech-filter";
@@ -89,6 +89,10 @@ export function useAIStreaming({
   const [aiStatusMessage, setAIStatusMessage] = useState("");
   const [activeProviderId, setActiveProviderId] = useState(selectedAIProvider.provider);
   const activeProviderIdRef = useRef(selectedAIProvider.provider);
+  useEffect(() => {
+    setActiveProviderId(selectedAIProvider.provider);
+    activeProviderIdRef.current = selectedAIProvider.provider;
+  }, [selectedAIProvider.provider]);
   const lastRequestRef = useRef<{
     transcription: string;
     prompt: string;
@@ -469,5 +473,6 @@ export function useAIStreaming({
     stallRetry,
     stallNext,
     stallNextId,
+    activeProviderId,
   };
 }

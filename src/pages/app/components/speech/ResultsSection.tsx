@@ -35,6 +35,11 @@ type Props = {
   onStallRetry?: () => void;
   onStallNext?: () => void;
   onOpenProviders?: () => void;
+  activeProviderId?: string;
+  onSetSelectedAIProvider?: (provider: {
+    provider: string;
+    variables: Record<string, string>;
+  }) => void;
 };
 
 /**
@@ -66,6 +71,8 @@ export const ResultsSection = ({
   onStallRetry,
   onStallNext,
   onOpenProviders,
+  activeProviderId,
+  onSetSelectedAIProvider,
 }: Props) => {
   const handy = useHandyStatus();
   const handyModelShort = handy.model
@@ -108,6 +115,8 @@ export const ResultsSection = ({
         onStallRetry={onStallRetry}
         onStallNext={onStallNext}
         onOpenProviders={onOpenProviders}
+        activeProviderId={activeProviderId}
+        onSetSelectedAIProvider={onSetSelectedAIProvider}
       />
     </div>
   );
