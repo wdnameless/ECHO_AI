@@ -23,7 +23,6 @@ import {
   SaveIcon,
   DownloadIcon,
   UploadIcon,
-  CodeIcon,
 } from "lucide-react";
 import { useApp } from "@/contexts";
 import { cn } from "@/lib/utils";
@@ -37,6 +36,7 @@ import {
   importProfilesFromJson,
   ToolbarButtonId,
 } from "@/lib/storage/prompt-profiles";
+import {
   getUserFacts,
   getUserStylePreferences,
   getFeedbackLog,
@@ -950,10 +950,24 @@ export const PromptProfilesSettings = () => {
                 </Button>
               </>
             ) : (
+              <>
               <Button size="sm" variant="outline" onClick={() => startEdit(activeProfile)}>
                 <PenLineIcon className="size-3.5 mr-1" />
                 Edit profile
               </Button>
+              <Button size="sm" variant="outline" onClick={handleExportCurrent} title="Скачать текущий профиль как JSON">
+                <DownloadIcon className="size-3.5 mr-1" />
+                Экспорт
+              </Button>
+              <Button size="sm" variant="outline" onClick={handleExportAll} title="Скачать все профили как JSON">
+                <DownloadIcon className="size-3.5 mr-1" />
+                Экспорт всех
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => setShowImportModal(true)} title="Импортировать профили из JSON">
+                <UploadIcon className="size-3.5 mr-1" />
+                Импорт
+              </Button>
+              </>
             )}
           </div>
         </div>

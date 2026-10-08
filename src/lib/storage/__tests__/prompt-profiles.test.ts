@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import {
-  BUILTIN_PROFILES,
   INTERVIEW_PROFILE_ID,
   GENERAL_PROFILE_ID,
   CONVERSATION_PROFILE_ID,

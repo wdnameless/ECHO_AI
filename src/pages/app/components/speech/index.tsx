@@ -599,14 +599,16 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       ) : (
                         allAiProviders.map((p) => {
                           const isSelected = p.id === effectiveProviderId;
+                          if (!p.id) return null;
+                          const providerId: string = p.id;
                           const pModel = resolveProviderModel(p, {
-                            provider: p.id,
-                            variables: getAIProviderVariables(p.id),
+                            provider: providerId,
+                            variables: getAIProviderVariables(providerId),
                           });
                           return (
                             <DropdownMenuItem
-                              key={p.id}
-                              onClick={() => handleSelectProvider(p.id)}
+                              key={providerId}
+                              onClick={() => handleSelectProvider(providerId)}
                               className={cn(
                                 "gap-1 cursor-pointer",
                                 isSelected && "bg-primary/10 font-medium"

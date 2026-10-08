@@ -139,6 +139,8 @@ function createProps(): SystemAudioProps {
     stallRetry: vi.fn(),
     stallNext: vi.fn(),
     stallNextId: undefined,
+    activeProviderId: "openai",
+    onSetSelectedAIProvider: vi.fn(),
   };
 }
 

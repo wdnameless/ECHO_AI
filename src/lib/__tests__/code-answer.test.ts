@@ -260,7 +260,7 @@ describe("R05-livecode quality acceptance", () => {
   });
 
   it("unknown task code generation prompt mandates Big-O complexity and test cases", () => {
-    const task = "напиши топологическую сортировку";
+    const task = "напиши алгоритм дейкстры на графе";
     const { prompt, template } = buildCodeSystemPrompt(task);
     expect(template).toBeNull();
     expect(prompt).toMatch(/Big-O/i);

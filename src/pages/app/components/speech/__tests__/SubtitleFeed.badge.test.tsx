@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { SubtitleFeed } from "../SubtitleFeed";
 import type { ChatConversation } from "@/hooks/useSystemAudio";
 
@@ -55,6 +56,7 @@ vi.mock("@/lib/storage/user-facts", () => ({
 
 const mockConversation: ChatConversation = {
   id: "conv-1",
+  title: "Test",
   messages: [],
   createdAt: 0,
   updatedAt: 0,
@@ -88,7 +90,8 @@ describe("R04: SubtitleFeed model badge and provider dropdown", () => {
     expect(badge.textContent).toContain("openai");
   });
 
-  it("clicking model badge opens provider selection dropdown and calls onSetSelectedAIProvider", () => {
+  it("clicking model badge opens provider selection dropdown and calls onSetSelectedAIProvider", async () => {
+    const user = userEvent.setup();
     render(
       <SubtitleFeed
         conversation={mockConversation}
@@ -107,10 +110,10 @@ describe("R04: SubtitleFeed model badge and provider dropdown", () => {
     );
 
     const badge = screen.getByTestId("model-badge-dropdown-trigger");
-    fireEvent.click(badge);
+    await user.click(badge);
 
-    const anthropicOption = screen.getByTestId("provider-option-anthropic");
-    fireEvent.click(anthropicOption);
+    const anthropicOption = await screen.findByTestId("provider-option-anthropic");
+    await user.click(anthropicOption);
 
     expect(mockOnSetSelectedAIProvider).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "anthropic" })

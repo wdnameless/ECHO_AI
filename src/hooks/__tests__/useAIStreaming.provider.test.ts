@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useAIStreaming, SelectedAIProviderConfig } from "../useAIStreaming";
+import { useAIStreaming } from "../useAIStreaming";
 
 vi.mock("@/lib/functions", () => ({
   fetchAIResponse: vi.fn(),
@@ -17,11 +17,6 @@ vi.mock("@/lib/metrics", () => ({
 }));
 
 describe("R04: useAIStreaming activeProviderId export and sync", () => {
-  const defaultSelectedProvider: SelectedAIProviderConfig = {
-    provider: "openai",
-    variables: { model: "gpt-4o" },
-  };
-
   const createProps = (provider = "openai") => ({
     selectedAIProvider: { provider, variables: {} },
     allAiProviders: [
@@ -31,14 +26,14 @@ describe("R04: useAIStreaming activeProviderId export and sync", () => {
     systemPrompt: "test",
     useSystemPrompt: true,
     contextContent: "",
-    conversation: { id: "1", messages: [], createdAt: 0, updatedAt: 0 },
+    conversation: { id: "1", title: "Test", messages: [], createdAt: 0, updatedAt: 0 },
     buildHistory: () => [],
     addInteraction: vi.fn(),
     setFillerForInterviewer: vi.fn(),
     clearFiller: vi.fn(),
     getActiveFiller: () => null,
     pendingUtteranceId: null,
-    pendingScreenshotRef: { current: null },
+    pendingScreenshotRef: { current: null as string | null },
     setPendingScreenshot: vi.fn(),
     onError: vi.fn(),
   });

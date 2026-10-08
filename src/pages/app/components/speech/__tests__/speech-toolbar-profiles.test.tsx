@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { SystemAudio } from "../index";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -130,6 +131,13 @@ vi.mock("../PermissionFlow", () => ({
 function createProps(): React.ComponentProps<typeof SystemAudio> {
   return {
     askAIForTranscript: vi.fn(),
+    clearError: vi.fn(),
+    stopCapture: vi.fn(),
+    handleSetup: vi.fn(),
+    isMicProcessing: false,
+    isSystemProcessing: false,
+    lastTranscription: "",
+    liveSegments: [],
     activeFiller: null,
     pendingUtteranceId: null,
     capturing: true,
@@ -139,15 +147,18 @@ function createProps(): React.ComponentProps<typeof SystemAudio> {
     myLastTranscription: "",
     theirLastTranscription: "Can you implement quicksort?",
     lastAIResponse: "",
-    conversation: { id: "1", messages: [], createdAt: 0, updatedAt: 0 },
+    conversation: { id: "1", title: "Test", messages: [], createdAt: 0, updatedAt: 0 },
     recordingProgress: 0,
     vadConfig: {
-      audio_threshold: 0.5,
-      silence_duration_secs: 1.5,
-      voice_activity_speech_padding: 0.3,
-      min_volume_level: 0.01,
-      min_speech_duration_secs: 0.2,
-      max_recording_duration_secs: 120,
+      enabled: true,
+      hop_size: 1024,
+      sensitivity_rms: 0.012,
+      peak_threshold: 0.035,
+      silence_chunks: 12,
+      min_speech_chunks: 7,
+      pre_speech_chunks: 12,
+      noise_gate_threshold: 0.003,
+      max_recording_duration_secs: 180,
     },
     useSystemPrompt: true,
     contextContent: "",
@@ -176,6 +187,25 @@ function createProps(): React.ComponentProps<typeof SystemAudio> {
     warmupState: "idle",
     warmupVisible: false,
     onWarmup: vi.fn(),
+    manualStopAndSend: vi.fn(),
+    ignoreContinuousRecording: vi.fn(),
+    scrollAreaRef: { current: null },
+    micListening: false,
+    micSpeaking: false,
+    micStream: null,
+    micBridge: null,
+    pendingScreenshot: null,
+    isStalled: false,
+    aiStatusMessage: "",
+    stallWait: vi.fn(),
+    stallRetry: vi.fn(),
+    stallNext: vi.fn(),
+    stallNextId: undefined,
+    setConversation: vi.fn(),
+    processWithAI: vi.fn(),
+    isPopoverOpen: false,
+    respondToMic: false,
+    setRespondToMic: vi.fn(),
     activeProviderId: "openai",
     onSetSelectedAIProvider: mockOnSetSelectedAIProvider,
   };
@@ -224,14 +254,15 @@ describe("R01 & R04: Mode toolbar and model badge filtering", () => {
     expect(badge.textContent).toContain("openai");
   });
 
-  it("R04: quick-switches provider and updates selection on click", () => {
+  it("R04: quick-switches provider and updates selection on click", async () => {
+    const user = userEvent.setup();
     render(<SystemAudio {...createProps()} />);
 
     const badge = screen.getByTestId("model-badge-trigger");
-    fireEvent.click(badge);
+    await user.click(badge);
 
-    const anthropicOption = screen.getByTestId("provider-option-anthropic");
-    fireEvent.click(anthropicOption);
+    const anthropicOption = await screen.findByTestId("provider-option-anthropic");
+    await user.click(anthropicOption);
 
     expect(mockOnSetSelectedAIProvider).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "anthropic" })

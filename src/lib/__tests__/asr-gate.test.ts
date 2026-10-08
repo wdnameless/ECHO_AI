@@ -5,7 +5,6 @@ import {
   tryAcquireStream,
   withNoStream,
   enqueueStreamSlot,
-  cancelSlotQueue,
   waitForStreamSlot,
   getSlotQueueLength,
 } from "../asr-gate";

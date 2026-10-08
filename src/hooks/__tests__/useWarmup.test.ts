@@ -25,7 +25,7 @@ describe("useWarmup", () => {
       if (cmd === "handy_server_status_detailed") return { online: true };
       return undefined;
     });
-    vi.mocked(getRagContext).mockResolvedValue("mock-context");
+    vi.mocked(getRagContext).mockResolvedValue({ id: "1", type: "resume", content: "mock-context", sourceName: null, updatedAt: 0 });
     vi.mocked(warmProviderConnection).mockResolvedValue(undefined);
   });
 
