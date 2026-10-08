@@ -60,6 +60,7 @@ export function useSystemAudio() {
   const {
     selectedSttProvider,
     selectedAIProvider,
+    onSetSelectedAIProvider,
     allAiProviders,
     systemPrompt,
     selectedAudioDevices,
@@ -273,6 +274,7 @@ export function useSystemAudio() {
     stallRetry,
     stallNext,
     stallNextId,
+    activeProviderId,
   } = useAIStreaming({
     selectedAIProvider,
     allAiProviders,
@@ -788,5 +790,7 @@ export function useSystemAudio() {
     stallRetry,
     stallNext,
     stallNextId,
+    activeProviderId,
+    onSetSelectedAIProvider,
   };
 }
