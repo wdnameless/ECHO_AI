@@ -85,6 +85,7 @@ export function useQuestionPipeline({
   const [currentProfile, setCurrentProfile] = useState<PromptProfile>(() => {
     return propProfile ?? getActiveProfile();
   });
+  const appliedProfileKeyRef = useRef<string | null>(null);
 
   const questionAssemblerRef = useRef<QuestionAssembler | null>(null);
   const monologueBufferRef = useRef<MonologueBuffer | null>(null);
@@ -159,11 +160,21 @@ export function useQuestionPipeline({
     [resetTimersAndAssembly]
   );
 
-  // Update when prop changes
+  // Update when prop changes. Guarded by serialized key: an inline object
+  // literal is referentially new every render, and naive reconf would loop
+  // setCurrentProfile -> render -> effect -> setCurrentProfile forever.
   useEffect(() => {
-    if (propProfile) {
-      reconfigureProfile(propProfile);
-    }
+    if (!propProfile) return;
+    const key = JSON.stringify([
+      propProfile.id,
+      propProfile.flushGapMs ?? null,
+      propProfile.monologue?.mode ?? null,
+      propProfile.monologue?.maxWindow ?? null,
+      propProfile.interviewMode ?? null,
+    ]);
+    if (appliedProfileKeyRef.current === key) return;
+    appliedProfileKeyRef.current = key;
+    reconfigureProfile(propProfile);
   }, [propProfile, reconfigureProfile]);
 
   // Listen to profile changes from other tabs or settings

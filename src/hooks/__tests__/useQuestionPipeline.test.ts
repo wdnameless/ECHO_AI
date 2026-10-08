@@ -536,17 +536,19 @@ describe("useQuestionPipeline", () => {
         );
 
         await act(async () => {
-          await result.current.handleInterviewerTranscription("Рассказ без вопросительного знака");
+          await result.current.handleInterviewerTranscription("Рассказ окончен.");
         });
         expect(result.current.turnGateWaiting).toBe(true);
         expect(statusEvents).toContain(true);
 
-        // Fast-forward silence gap to trigger monologue fallback flush
+        // Fast-forward silence gap: assembler flush emits the finished
+        // statement, the timer branch dispatches and resets the gate.
         await act(async () => {
           vi.advanceTimersByTime(1100);
         });
 
         expect(onTriggerAI).toHaveBeenCalledTimes(1);
+        expect(onTriggerAI).toHaveBeenCalledWith("Рассказ окончен.", "them");
         expect(result.current.turnGateWaiting).toBe(false);
         expect(statusEvents[statusEvents.length - 1]).toBe(false);
         window.removeEventListener(TURN_GATE_STATUS_EVENT, onStatus);
