@@ -45,8 +45,8 @@ import {
 } from "@/lib/web-search";
 import type { ChatConversation, LiveSegment } from "@/hooks/useSystemAudio";
 import { detectTextLanguage } from "@/lib/transcript-stabilizer";
-import { STORAGE_KEYS } from "@/config/constants";
 import { getAIProviderVariables } from "@/lib/storage/ai-providers";
+import { useEffectiveProvider } from "@/hooks/useEffectiveProvider";
 
 /**
  * Newest text spoken by the interviewer, preferring the live feed (fresher than
@@ -822,58 +822,16 @@ export const SubtitleFeed = ({
     promptProfiles,
     activeProfileId,
     selectPromptProfile,
-    selectedAIProvider,
-    allAiProviders,
-    onSetSelectedAIProvider: contextOnSetSelectedAIProvider,
   } = useApp();
-  const effectiveSetSelectedAIProvider =
-    propOnSetSelectedAIProvider || contextOnSetSelectedAIProvider;
-  const [syncedProviderId, setSyncedProviderId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEYS.SELECTED_AI_PROVIDER && e.newValue) {
-        try {
-          const parsed = JSON.parse(e.newValue);
-          if (parsed?.provider) {
-            setSyncedProviderId(parsed.provider);
-            if (effectiveSetSelectedAIProvider) {
-              effectiveSetSelectedAIProvider({
-                provider: parsed.provider,
-                variables: parsed.variables || getAIProviderVariables(parsed.provider),
-              });
-            }
-          }
-        } catch {}
-      }
-    };
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, [effectiveSetSelectedAIProvider]);
-
-  const effectiveProviderId =
-    syncedProviderId || propActiveProviderId || selectedAIProvider?.provider || "";
+  const {
+    effectiveProviderId,
+    effectiveModel: llmModel,
+    allAiProviders,
+    handleSelectProvider,
+  } = useEffectiveProvider(propActiveProviderId, propOnSetSelectedAIProvider);
 
   const activeProfile =
     promptProfiles.find((p) => p.id === activeProfileId) || promptProfiles[0];
-  // LLM model name for the footer (e.g. "gemini-3.1-flash-lite").
-  // Shared resolver: the selected `model` variable always wins over a literal
-  // model string in the provider curl; the inline regex fallback is gone.
-  const effectiveProvider = allAiProviders?.find((p) => p.id === effectiveProviderId);
-  const llmModel = resolveProviderModel(
-    effectiveProvider || allAiProviders?.find((p) => p.id === selectedAIProvider?.provider),
-    selectedAIProvider?.provider === effectiveProviderId
-      ? selectedAIProvider
-      : { provider: effectiveProviderId, variables: getAIProviderVariables(effectiveProviderId) }
-  );
-
-  const handleSelectProvider = (providerId: string) => {
-    const vars = getAIProviderVariables(providerId);
-    setSyncedProviderId(providerId);
-    if (effectiveSetSelectedAIProvider) {
-      effectiveSetSelectedAIProvider({ provider: providerId, variables: vars });
-    }
-  };
   const [webSearchOn, setWebSearchOn] = useState<boolean>(
     () => getWebSearchSettings().enabled
   );

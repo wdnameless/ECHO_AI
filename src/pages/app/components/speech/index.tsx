@@ -32,6 +32,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp } from "@/contexts";
 import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import { getAnswerMode, setAnswerMode, type AnswerMode } from "@/lib/answer-mode";
+import { useEffectiveProvider } from "@/hooks/useEffectiveProvider";
 import { TURN_GATE_EVENT, TURN_GATE_STATUS_EVENT } from "@/hooks/useQuestionPipeline";
 import {
   DropdownMenu,
@@ -40,7 +41,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { getAIProviderVariables } from "@/lib/storage/ai-providers";
-import { STORAGE_KEYS } from "@/config/constants";
 import { resolveProviderModel } from "@/lib/functions/ai-response.function";
 import { getActiveProfile, type PromptProfile } from "@/lib/storage/prompt-profiles";
 
@@ -135,9 +135,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     supportsImages,
     promptProfiles,
     activeProfileId,
-    selectedAIProvider,
-    allAiProviders,
-    onSetSelectedAIProvider: contextOnSetSelectedAIProvider,
   } = useApp();
 
   const [localProfile, setLocalProfile] = useState<PromptProfile>(() => getActiveProfile());
@@ -163,48 +160,12 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     return visibleButtons.includes(id);
   };
 
-  const effectiveSetSelectedAIProvider =
-    props.onSetSelectedAIProvider || contextOnSetSelectedAIProvider;
-  const [syncedProviderId, setSyncedProviderId] = useState<string | null>(null);
-
-  useEffect(() => {
-    const handleStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEYS.SELECTED_AI_PROVIDER && e.newValue) {
-        try {
-          const parsed = JSON.parse(e.newValue);
-          if (parsed?.provider) {
-            setSyncedProviderId(parsed.provider);
-            if (effectiveSetSelectedAIProvider) {
-              effectiveSetSelectedAIProvider({
-                provider: parsed.provider,
-                variables: parsed.variables || getAIProviderVariables(parsed.provider),
-              });
-            }
-          }
-        } catch {}
-      }
-    };
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, [effectiveSetSelectedAIProvider]);
-
-  const effectiveProviderId =
-    syncedProviderId || props.activeProviderId || selectedAIProvider?.provider || "";
-  const effectiveProvider = allAiProviders?.find((p) => p.id === effectiveProviderId);
-  const effectiveModel = resolveProviderModel(
-    effectiveProvider || allAiProviders?.find((p) => p.id === selectedAIProvider?.provider),
-    selectedAIProvider?.provider === effectiveProviderId
-      ? selectedAIProvider
-      : { provider: effectiveProviderId, variables: getAIProviderVariables(effectiveProviderId) }
-  );
-
-  const handleSelectProvider = (providerId: string) => {
-    const vars = getAIProviderVariables(providerId);
-    setSyncedProviderId(providerId);
-    if (effectiveSetSelectedAIProvider) {
-      effectiveSetSelectedAIProvider({ provider: providerId, variables: vars });
-    }
-  };
+  const {
+    effectiveProviderId,
+    effectiveModel,
+    allAiProviders,
+    handleSelectProvider,
+  } = useEffectiveProvider(props.activeProviderId, props.onSetSelectedAIProvider);
 
   const [screenshotImage, setScreenshotImage] = useState<string | null>(null);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
