@@ -239,6 +239,22 @@ describe("a draft whose final never arrives", () => {
     }
   });
 
+  it("does not retire a draft whose text is still arriving", () => {
+    vi.useFakeTimers();
+    try {
+      const { result, unmount } = renderHook(() => useConversationStore());
+      act(() => result.current.appendLiveSegment("them", "Начало длинного вопроса", true));
+      act(() => { vi.advanceTimersByTime(15_000); });
+      act(() => result.current.appendLiveSegment("them", "Начало длинного вопроса и продолжение", true));
+      act(() => { vi.advanceTimersByTime(10_000); });
+      expect(result.current.liveSegments[0].partial).toBe(true);
+      expect(result.current.liveSegments[0].text).toBe("Начало длинного вопроса и продолжение");
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("leaves a draft that is still recent alone", () => {
     vi.useFakeTimers();
     try {

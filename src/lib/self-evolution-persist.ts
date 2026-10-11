@@ -125,20 +125,26 @@ export async function restoreSelfEvolution(): Promise<void> {
     const dbStyle = rows[0];
     const localEmpty =
       localStyle.favoritePatterns.length === 0 &&
-      localStyle.avoidPatterns.length === 0;
+      localStyle.avoidPatterns.length === 0 &&
+      localStyle.customRules.length === 0;
 
-    if (dbStyle && localEmpty && dbLog.length > 0) {
-      saveUserStylePreferences({
-        ...localStyle,
-        tone: dbStyle.tone,
-        preferredLength: dbStyle.preferred_length as
-          | "concise"
-          | "balanced"
-          | "detailed",
-        favoritePatterns: JSON.parse(dbStyle.favorite_patterns || "[]"),
-        avoidPatterns: JSON.parse(dbStyle.avoid_patterns || "[]"),
-        customRules: JSON.parse(dbStyle.custom_rules || "[]"),
-      });
+    if (dbStyle && localEmpty) {
+      const favs = JSON.parse(dbStyle.favorite_patterns || "[]");
+      const avoids = JSON.parse(dbStyle.avoid_patterns || "[]");
+      const rules = JSON.parse(dbStyle.custom_rules || "[]");
+      if (favs.length > 0 || avoids.length > 0 || rules.length > 0 || dbLog.length > 0) {
+        saveUserStylePreferences({
+          ...localStyle,
+          tone: dbStyle.tone,
+          preferredLength: (dbStyle.preferred_length as
+            | "concise"
+            | "balanced"
+            | "detailed") || "concise",
+          favoritePatterns: favs,
+          avoidPatterns: avoids,
+          customRules: rules,
+        });
+      }
     }
   } catch {
     /* restore is best-effort; localStorage keeps working regardless */
@@ -209,5 +215,23 @@ export async function getStyleFromDbOrCache(): Promise<UserStylePreference> {
     return dbStyle ?? getUserStylePreferences();
   } catch {
     return getUserStylePreferences();
+  }
+}
+
+/**
+ * Clears learned state in SQLite (both feedback log and style).
+ */
+export async function resetSelfEvolutionDb(): Promise<void> {
+  try {
+    const db = await getDatabase();
+    await db.execute("DELETE FROM se_feedback_log");
+    await db.execute("DELETE FROM se_style");
+    await db.execute(
+      `INSERT OR REPLACE INTO se_style (id, tone, preferred_length, favorite_patterns, avoid_patterns, custom_rules, updated_at)
+       VALUES (1, 'живой, естественный', 'concise', '[]', '[]', '[]', ?)`,
+      [Date.now()]
+    );
+  } catch {
+    /* durability clear is best-effort */
   }
 }

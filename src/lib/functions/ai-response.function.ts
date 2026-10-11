@@ -13,7 +13,13 @@ import curl2Json from "@bany/curl-to-json";
 import { resolveOutboundHeaders } from "@/lib/host-trust-gate";
 import { getSecret, secretKey } from "@/lib/storage/secret-store";
 import { getResponseSettings, LANGUAGES } from "@/lib";
-import { buildSelfEvolutionPromptBlock } from "../storage/user-facts";
+import {
+  buildSelfEvolutionPromptBlock,
+  isSelfLearningEnabled,
+  setSelfEvolutionStyleOverride,
+  LANGUAGE_RULE,
+} from "../storage/user-facts";
+import { getStyleFromDbOrCache } from "../self-evolution-persist";
 import {
   resolveAnswerLength,
   SHORT_LENGTH_PROMPT,
@@ -308,10 +314,18 @@ export async function buildEnhancedSystemPrompt(
     prompts.push(languageOption.prompt);
   }
 
-  // Self-Evolution Memory & Personal Facts injection (ALWAYS on): every
-  // like/dislike immediately shapes the next answer, and the strict RU/EN
-  // language rule lives inside this block.
-  {
+  // Strict language rule applies globally and unconditionally.
+  prompts.push(LANGUAGE_RULE);
+
+  // Self-Evolution Memory & Personal Facts injection (gated by toggle):
+  // loads style truth from SQLite (with 400ms timeout / cache fallback).
+  if (isSelfLearningEnabled()) {
+    try {
+      const dbStyle = await getStyleFromDbOrCache();
+      setSelfEvolutionStyleOverride(dbStyle);
+    } catch {
+      // getStyleFromDbOrCache is resilient and never throws
+    }
     const evolutionBlock = buildSelfEvolutionPromptBlock();
     if (evolutionBlock) {
       prompts.push(evolutionBlock);

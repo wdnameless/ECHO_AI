@@ -129,3 +129,175 @@ it.each(["finalizing", "closed"])("R11 retains full WAV during %s interviewer mi
   });
   expect(new Uint8Array(actual)).toEqual(wav);
 });
+
+function captureProps() {
+  return {
+    selectedAudioDevices: { input: { id: "test", name: "test" }, output: { id: "test", name: "test" } },
+    selectedSttProvider: { provider: "test", variables: {} },
+    appendLiveSegment: vi.fn(),
+    onInterviewerTranscription: vi.fn(async (_text: string, _pauseBeforeMs?: number) => {}),
+    setMyLastTranscription: vi.fn(),
+    setTheirLastTranscription: vi.fn(),
+    setIsAIProcessing: vi.fn(),
+    setError: vi.fn(),
+  };
+}
+
+it("dispatches the previous clause before resumed speech clears its buffer", async () => {
+  const props = captureProps();
+  const { result, unmount } = renderHook(() => useSystemAudioCapture(props));
+  const emit = (name: string) => listeners.get(name)!.forEach((callback) => callback({ payload: "" }));
+  await act(async () => { result.current.setCapturing(true); });
+  await act(async () => { emit("speech-start"); });
+  act(() => {
+    const socket = Socket.instances[0];
+    socket.readyState = Socket.OPEN;
+    socket.onopen?.();
+    socket.onmessage?.({ data: '{"type":"final","text":"Первая часть вопроса"}' });
+    emit("speech-detected");
+  });
+  await act(async () => { emit("speech-start"); });
+  expect(props.onInterviewerTranscription).toHaveBeenCalledExactlyOnceWith("Первая часть вопроса");
+  act(() => {
+    const socket = Socket.instances[1];
+    socket.readyState = Socket.OPEN;
+    socket.onopen?.();
+    emit("speech-detected");
+    socket.onmessage?.({ data: '{"type":"final","text":"Вторая часть вопроса"}' });
+    vi.advanceTimersByTime(1500);
+  });
+  expect(props.onInterviewerTranscription.mock.calls.map((call) => call[0])).toEqual([
+    "Первая часть вопроса", "Вторая часть вопроса",
+  ]);
+  unmount();
+});
+
+it.each(["stop", "restart", "unmount"])("ignores delayed batch results after capture %s", async (transition) => {
+  let resolveTranscript!: (text: string) => void;
+  vi.mocked(transcribeWithFallback).mockImplementationOnce(
+    () => new Promise<string>((resolve) => { resolveTranscript = resolve; })
+  );
+  const props = captureProps();
+  const { result, unmount } = renderHook(() => useSystemAudioCapture(props));
+  await act(async () => { result.current.setCapturing(true); });
+  let pending!: Promise<void>;
+  await act(async () => { pending = result.current.transcribeSegment(new Blob(["synthetic audio"]), "them"); });
+  if (transition === "unmount") {
+    unmount();
+  } else {
+    act(() => {
+      result.current.setCapturing(false);
+      if (transition === "restart") result.current.setCapturing(true);
+    });
+  }
+  await act(async () => {
+    resolveTranscript("Реплика прежней сессии");
+    await pending;
+  });
+  expect(props.setTheirLastTranscription).not.toHaveBeenCalled();
+  expect(props.appendLiveSegment).not.toHaveBeenCalled();
+  expect(props.onInterviewerTranscription).not.toHaveBeenCalled();
+  if (transition !== "unmount") unmount();
+});
+
+it("does not publish final stream frames from a stopped capture", async () => {
+  const props = captureProps();
+  const { result, unmount } = renderHook(() => useSystemAudioCapture(props));
+  await act(async () => { result.current.setCapturing(true); });
+  await act(async () => {
+    listeners.get("speech-start")!.forEach((callback) => callback({ payload: "" }));
+  });
+  const socket = Socket.instances[0];
+  act(() => {
+    socket.readyState = Socket.OPEN;
+    socket.onopen?.();
+    result.current.setCapturing(false);
+    socket.onmessage?.({ data: '{"type":"final","text":"Запоздавший результат"}' });
+    vi.advanceTimersByTime(1500);
+  });
+  expect(props.appendLiveSegment).not.toHaveBeenCalled();
+  expect(props.onInterviewerTranscription).not.toHaveBeenCalled();
+  unmount();
+});
+
+it("mic release during ongoing interviewer speech resumes fresh socket and forwards later frames", async () => {
+  const props = captureProps();
+  const { result, unmount } = renderHook(() => useSystemAudioCapture(props));
+  await act(async () => { result.current.setCapturing(true); });
+
+  act(() => { result.current.yieldThemToMic(); });
+  expect(tryAcquireStream("me")).toBe(true);
+
+  await act(async () => {
+    listeners.get("speech-start")!.forEach((callback) => callback({ payload: "" }));
+  });
+  expect(Socket.instances).toHaveLength(0);
+
+  await act(async () => {
+    releaseStream("me");
+    result.current.releaseMicModelOwnership();
+  });
+
+  expect(Socket.instances).toHaveLength(1);
+  const interviewerSocket = Socket.instances[0];
+
+  act(() => {
+    listeners.get("speech-frame")!.forEach((callback) => callback({ payload: btoa("pcm-tail") }));
+  });
+  act(() => {
+    interviewerSocket.readyState = Socket.OPEN;
+    interviewerSocket.onopen?.();
+  });
+  expect(interviewerSocket.sent.some((item) => item instanceof ArrayBuffer)).toBe(true);
+
+  act(() => {
+    listeners.get("speech-detected")!.forEach((callback) => callback({ payload: btoa("RIFF...") }));
+  });
+  expect(interviewerSocket.sent.some((item) => typeof item === "string" && item.includes("finalize"))).toBe(true);
+  unmount();
+});
+
+it("mic release in silence after interviewer speech finished does not reopen socket", async () => {
+  const props = captureProps();
+  const { result, unmount } = renderHook(() => useSystemAudioCapture(props));
+  await act(async () => { result.current.setCapturing(true); });
+
+  act(() => { result.current.yieldThemToMic(); });
+  await act(async () => {
+    listeners.get("speech-start")!.forEach((callback) => callback({ payload: "" }));
+  });
+  expect(Socket.instances).toHaveLength(0);
+
+  await act(async () => {
+    listeners.get("speech-detected")!.forEach((callback) => callback({ payload: btoa("RIFF...") }));
+  });
+  expect(Socket.instances).toHaveLength(0);
+
+  await act(async () => {
+    releaseStream("me");
+    result.current.releaseMicModelOwnership();
+  });
+
+  expect(Socket.instances).toHaveLength(0);
+  unmount();
+});
+
+it("mic release after capture stopped does not reopen socket", async () => {
+  const props = captureProps();
+  const { result, unmount } = renderHook(() => useSystemAudioCapture(props));
+  await act(async () => { result.current.setCapturing(true); });
+
+  act(() => { result.current.yieldThemToMic(); });
+  await act(async () => {
+    listeners.get("speech-start")!.forEach((callback) => callback({ payload: "" }));
+  });
+
+  act(() => { result.current.setCapturing(false); });
+  await act(async () => {
+    releaseStream("me");
+    result.current.releaseMicModelOwnership();
+  });
+
+  expect(Socket.instances).toHaveLength(0);
+  unmount();
+});

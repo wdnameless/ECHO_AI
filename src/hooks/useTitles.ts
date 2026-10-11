@@ -13,6 +13,17 @@ export const useTitles = () => {
   const removeTitleFromElement = (element: Element) => {
     const currentTitle = element.getAttribute("title");
     if (currentTitle) {
+      const label = element.getAttribute("aria-label");
+      const generatedLabel = element.getAttribute("data-generated-title-label");
+      if (
+        element.matches("button, a[href], [role='button']") &&
+        !element.textContent?.trim() &&
+        !element.hasAttribute("aria-labelledby") &&
+        (!label || label === generatedLabel)
+      ) {
+        element.setAttribute("aria-label", currentTitle);
+        element.setAttribute("data-generated-title-label", currentTitle);
+      }
       element.setAttribute("data-original-title", currentTitle);
       element.removeAttribute("title");
     }

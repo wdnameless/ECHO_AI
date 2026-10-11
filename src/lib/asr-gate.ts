@@ -15,13 +15,31 @@
  */
 
 export type AsrStreamOwner = "me" | "them";
+export const ASR_MODEL_BUSY_CODE = "ASR_MODEL_BUSY";
+
+/** Thrown when the gate timeout expires while a stream holds the model. Retryable, never a hard failure. */
+export class AsrModelBusyError extends Error {
+  readonly code = ASR_MODEL_BUSY_CODE;
+  readonly retryable = true;
+  readonly owner: AsrStreamOwner | null;
+  constructor(owner: AsrStreamOwner | null) {
+    super(`ASR model busy: stream active (owned by ${owner})`);
+    this.name = "AsrModelBusyError";
+    this.owner = owner;
+  }
+}
+
+export function isAsrModelBusyError(err: unknown): err is AsrModelBusyError {
+  return err instanceof AsrModelBusyError;
+}
 
 let activeOwner: AsrStreamOwner | null = null;
 let httpActiveCount = 0;
 const waiters = new Set<() => void>();
 export interface SlotQueueRequest {
   owner: AsrStreamOwner;
-  callback: () => void;
+  /** Return true to claim the slot; false releases it back to the queue. */
+  callback: () => boolean | void;
 }
 
 const slotQueue: SlotQueueRequest[] = [];
@@ -43,11 +61,18 @@ function handoffNextSlot(): void {
   if (activeOwner !== null || httpActiveCount > 0) return;
   while (slotQueue.length > 0) {
     const next = slotQueue.shift();
-    if (next) {
-      activeOwner = next.owner;
-      next.callback();
-      return;
+    if (!next) continue;
+    activeOwner = next.owner;
+    let claimed = false;
+    try {
+      claimed = next.callback() !== false;
+    } catch {
+      claimed = false;
     }
+    // A declined handoff must not leak the slot: clear it and offer the
+    // next waiter the model instead of deadlocking the gate forever.
+    if (claimed) return;
+    if (activeOwner === next.owner) activeOwner = null;
   }
 }
 
@@ -62,11 +87,24 @@ function handoffNextSlot(): void {
  */
 export function enqueueStreamSlot(
   owner: AsrStreamOwner,
-  callback: () => void
+  callback: () => boolean | void
 ): () => void {
   if (tryAcquireStream(owner)) {
     callback();
     return () => {};
+  }
+
+  // One pending request per owner: every reconnect tick while busy would
+  // otherwise stack another duplicate entry for the same channel.
+  const existing = slotQueue.find((request) => request.owner === owner);
+  if (existing) {
+    existing.callback = callback;
+    return () => {
+      const index = slotQueue.indexOf(existing);
+      if (index !== -1) {
+        slotQueue.splice(index, 1);
+      }
+    };
   }
 
   const request: SlotQueueRequest = { owner, callback };
@@ -156,7 +194,7 @@ export async function withNoStream<T>(
       waiters.add(wake);
     });
     if (activeOwner !== null) {
-      throw new Error(`ASR model busy: stream active (owned by ${activeOwner})`);
+      throw new AsrModelBusyError(activeOwner);
     }
   }
 

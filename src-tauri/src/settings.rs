@@ -189,7 +189,8 @@ fn implied_portable_root() -> Option<PathBuf> {
         return Some(root);
     }
     let dir = exe_dir()?;
-    if dir.join(PORTABLE_MARKER).is_file() || dir.join(".echo-ai").is_dir() {
+    // A queued migration may create the target directory before it is portable.
+    if dir.join(PORTABLE_MARKER).is_file() || dir.join(".echo-ai").join(SETTINGS_FILE).is_file() {
         return Some(dir.join(".echo-ai"));
     }
     None
@@ -197,9 +198,8 @@ fn implied_portable_root() -> Option<PathBuf> {
 
 /// Settings file currently in effect.
 ///
-/// Looked up in the portable root first, then next to the executable, then in
-/// app data — so a portable copy reads its own settings and never picks up the
-/// installed app's configuration.
+/// A portable root owns its settings even before its first file is created.
+/// Installed copies otherwise look next to the executable, then in app data.
 fn settings_path_for(root: &Path) -> PathBuf {
     root.join(SETTINGS_FILE)
 }
@@ -233,10 +233,11 @@ pub fn load_settings() -> AppSettings {
 
 /// Finds the settings file for the active configuration.
 pub fn locate_settings_file() -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(root) = implied_portable_root() {
-        candidates.push(settings_path_for(&root));
+        let path = settings_path_for(&root);
+        return path.is_file().then_some(path);
     }
+    let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(dir) = exe_dir() {
         candidates.push(settings_path_for(&dir));
     }
@@ -680,6 +681,8 @@ pub fn enable_portable_mode_in(dir: &Path) -> Result<ResolvedPaths, String> {
         ));
     }
 
+    let mut settings = load_settings();
+    let current_paths = resolve(&settings);
     let target_root = dir.join(".echo-ai");
     std::fs::create_dir_all(&target_root)
         .map_err(|e| format!("не удалось создать {}: {e}", target_root.display()))?;
@@ -695,8 +698,6 @@ pub fn enable_portable_mode_in(dir: &Path) -> Result<ResolvedPaths, String> {
             .map_err(|e| format!("не удалось создать {}: {e}", d.display()))?;
     }
 
-    let mut settings = load_settings();
-    let current_paths = resolve(&settings);
 
     let mut log = MoveLog::default();
 

@@ -41,6 +41,7 @@ impl Drop for SendHandle {
 static JOB_OBJECT: Mutex<Option<SendHandle>> = Mutex::new(None);
 
 pub static STT_SERVER: Mutex<Option<Child>> = Mutex::new(None);
+static ALLOCATED_PORT: Mutex<Option<u16>> = Mutex::new(None);
 
 /// Serialises `ensure_server_running`: see its comment for the double-start race
 /// this prevents.
@@ -100,15 +101,193 @@ fn port_is_taken(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(150)).is_ok()
 }
 
+#[cfg(target_os = "windows")]
+mod win_net {
+    use std::ffi::c_void;
+
+    const AF_INET: u32 = 2;
+    const TCP_TABLE_OWNER_PID_LISTENER: u32 = 3;
+    const MIB_TCP_STATE_LISTEN: u32 = 2;
+
+    #[repr(C)]
+    struct MIB_TCPROW_OWNER_PID {
+        dw_state: u32,
+        dw_local_addr: u32,
+        dw_local_port: u32,
+        dw_remote_addr: u32,
+        dw_remote_port: u32,
+        dw_owning_pid: u32,
+    }
+
+    #[link(name = "iphlpapi")]
+    extern "system" {
+        fn GetExtendedTcpTable(
+            p_tcp_table: *mut c_void,
+            pdw_size: *mut u32,
+            b_order: i32,
+            ul_af: u32,
+            table_class: u32,
+            reserved: u32,
+        ) -> u32;
+    }
+
+    fn check_extended_tcp_table(port: u16, target_pid: u32) -> Option<bool> {
+        let mut size: u32 = 0;
+        let ret = unsafe {
+            GetExtendedTcpTable(
+                std::ptr::null_mut(),
+                &mut size,
+                0,
+                AF_INET,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
+            )
+        };
+        if ret != 122 && ret != 0 {
+            return None;
+        }
+        if size < 4 {
+            return Some(false);
+        }
+
+        // The table and every row contain DWORDs; keep the allocation aligned.
+        let mut buffer = vec![0u32; (size as usize).div_ceil(4)];
+        let ret = unsafe {
+            GetExtendedTcpTable(
+                buffer.as_mut_ptr() as *mut c_void,
+                &mut size,
+                0,
+                AF_INET,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
+            )
+        };
+        if ret != 0 {
+            return None;
+        }
+
+        if size < 4 || size as usize > buffer.len() * 4 {
+            return None;
+        }
+        let num_entries = buffer[0] as usize;
+        if num_entries > (size as usize - 4) / std::mem::size_of::<MIB_TCPROW_OWNER_PID>() {
+            return None;
+        }
+        let rows_ptr = unsafe { buffer.as_ptr().add(1) as *const MIB_TCPROW_OWNER_PID };
+
+        for i in 0..num_entries as usize {
+            let row = unsafe { &*rows_ptr.add(i) };
+            if row.dw_state == MIB_TCP_STATE_LISTEN {
+                let local_port = u16::from_be((row.dw_local_port & 0xFFFF) as u16);
+                if local_port == port && row.dw_owning_pid == target_pid &&
+                    (row.dw_local_addr == 0 || row.dw_local_addr == u32::from_ne_bytes([127, 0, 0, 1])) {
+                    return Some(true);
+                }
+            }
+        }
+        Some(false)
+    }
+
+
+    pub(super) fn is_port_owned_by_pid(port: u16, target_pid: u32) -> bool {
+        check_extended_tcp_table(port, target_pid).unwrap_or(false)
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn is_port_owned_by_pid(port: u16, target_pid: u32) -> bool {
+    win_net::is_port_owned_by_pid(port, target_pid)
+}
+
+#[cfg(target_os = "linux")]
+pub fn is_port_owned_by_pid(port: u16, target_pid: u32) -> bool {
+    let Ok(table) = std::fs::read_to_string(format!("/proc/{target_pid}/net/tcp")) else {
+        return false;
+    };
+    let fd_dir = format!("/proc/{target_pid}/fd");
+    for line in table.lines().skip(1) {
+        let mut fields = line.split_whitespace();
+        let Some(local) = fields.nth(1) else { continue };
+        let Some(state) = fields.nth(1) else { continue };
+        if state != "0A" { continue; }
+        let Some(inode) = fields.nth(5) else { continue };
+        let Some((addr, local_port)) = local.split_once(':') else { continue };
+        if !matches!(addr, "0100007F" | "00000000") ||
+            u16::from_str_radix(local_port, 16).ok() != Some(port) {
+            continue;
+        }
+        let Ok(fds) = std::fs::read_dir(&fd_dir) else { return false };
+        let socket = format!("socket:[{inode}]");
+        return fds.flatten().any(|fd| {
+            std::fs::read_link(fd.path()).is_ok_and(|target| target.as_os_str() == socket.as_str())
+        });
+    }
+    false
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+pub fn is_port_owned_by_pid(port: u16, target_pid: u32) -> bool {
+    let output = Command::new("lsof")
+        .args(["-nP", "-a", "-p", &target_pid.to_string(),
+            &format!("-i4TCP:{port}"), "-sTCP:LISTEN", "-Fn"])
+        .output();
+    let Ok(output) = output else { return false };
+    if !output.status.success() { return false; }
+    let loopback = format!("n127.0.0.1:{port}");
+    let wildcard = format!("n*:{port}");
+    let any_addr = format!("n0.0.0.0:{port}");
+    String::from_utf8_lossy(&output.stdout).lines()
+        .any(|line| line == loopback || line == wildcard || line == any_addr)
+}
+
+
 fn native_engine_port() -> Option<u16> {
+    // 1. Must identify own spawned process. Never adopt an endpoint unless
+    // our own child is currently alive and confirmed to own that listening port.
+    let (child_pid, assigned_port) = {
+        let mut server_guard = STT_SERVER.lock().ok()?;
+        let child = server_guard.as_mut()?;
+        match child.try_wait() {
+            Ok(Some(_status)) => {
+                // Child has already exited: do not adopt any listener.
+                return None;
+            }
+            Ok(None) => {
+                let pid = child.id();
+                let port = ALLOCATED_PORT.lock().ok().and_then(|g| *g);
+                (pid, port)
+            }
+            Err(_) => return None,
+        }
+    };
+
+    // 2. Build candidate ports associated with our child.
     let mut candidates: Vec<u16> = Vec::new();
-    if let Some(port) = read_bound_asr_port() {
+    if let Some(port) = assigned_port {
         candidates.push(port);
     }
-    candidates.extend(ENGINE_PORT_RANGE);
-    candidates
-        .into_iter()
-        .find(|port| health_body(*port).is_some())
+    if let Some(port) = read_bound_asr_port() {
+        if !candidates.contains(&port) {
+            candidates.push(port);
+        }
+    }
+    for port in ENGINE_PORT_RANGE {
+        if !candidates.contains(&port) {
+            candidates.push(port);
+        }
+    }
+
+    // 3. For each candidate, verify process ownership AND healthy response.
+    for port in candidates {
+        if !is_port_owned_by_pid(port, child_pid) {
+            continue;
+        }
+        if health_body(port).is_some() {
+            return Some(port);
+        }
+    }
+
+    None
 }
 
 /// Port the native engine is serving on. The renderer resolves its base URL
@@ -399,7 +578,10 @@ fn open_sidecar_log_file() -> std::fs::File {
 /// fallback python server ended up squatting on the legacy port long after the
 /// engine had taken over, which made every later launch believe recognition was
 /// already running.
-fn track_server(child: Child) -> bool {
+fn track_server(child: Child, port: u16) -> bool {
+    if let Ok(mut port_guard) = ALLOCATED_PORT.lock() {
+        *port_guard = Some(port);
+    }
     if let Ok(mut guard) = STT_SERVER.lock() {
         if let Some(mut old) = guard.replace(child) {
             let _ = old.kill();
@@ -431,9 +613,11 @@ fn spawn_pluely_asr() -> bool {
     #[cfg(target_os = "windows")]
     let resolved = crate::settings::resolved_paths();
     #[cfg(target_os = "windows")]
+    let port = free_engine_port().unwrap_or(ENGINE_PORT);
+    let _ = std::fs::write(std::path::PathBuf::from(&resolved.root).join("asr-port"), port.to_string());
+
+    #[cfg(target_os = "windows")]
     let spawn = {
-        let port = free_engine_port().unwrap_or(ENGINE_PORT);
-        let _ = std::fs::write(std::path::PathBuf::from(&resolved.root).join("asr-port"), port.to_string());
         let mut cmd = Command::new(&asr_bin);
         cmd.current_dir(&resolved.engine_dir);
         cmd.arg("--model")
@@ -453,7 +637,7 @@ fn spawn_pluely_asr() -> bool {
         .arg("--model")
         .arg(&model_path)
         .arg("--port")
-        .arg("9877")
+        .arg(port.to_string())
         .arg("--bind")
         .arg("127.0.0.1")
         .stdout(Stdio::from(log_file.try_clone().expect("sidecar log clone")))
@@ -467,7 +651,7 @@ fn spawn_pluely_asr() -> bool {
                 child.id()
             );
             assign_job_object(&child);
-            track_server(child)
+            track_server(child, port)
         }
         Err(e) => {
             eprintln!("[tauri] failed to spawn pluely-asr: {}", e);
@@ -692,6 +876,9 @@ pub fn ensure_server_running() {
 /// Callers that specifically need the port released before rebinding (such as `restart_server`)
 /// wait for port release inside an async `spawn_blocking` task.
 pub fn stop_server() {
+    if let Ok(mut port_guard) = ALLOCATED_PORT.lock() {
+        *port_guard = None;
+    }
     if let Ok(mut guard) = STT_SERVER.lock() {
         if let Some(mut child) = guard.take() {
             let _ = child.kill();
@@ -866,6 +1053,7 @@ mod tests {
     use std::io::Read as _;
     use std::io::Write as _;
     use std::net::TcpListener;
+    static SERVER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     /// A loopback listener on an ephemeral port, plus the port it took.
     fn ephemeral_listener() -> (TcpListener, u16) {
@@ -1032,6 +1220,7 @@ mod tests {
 
     #[test]
     fn stop_server_returns_promptly_when_empty() {
+        let _guard = SERVER_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let start = std::time::Instant::now();
         stop_server();
         assert!(
@@ -1039,4 +1228,138 @@ mod tests {
             "stop_server must not block when no server is running"
         );
     }
+
+    #[test]
+    fn port_ownership_identifies_matching_pid_and_rejects_foreign_pid() {
+        let (listener, port) = ephemeral_listener();
+        let my_pid = std::process::id();
+        assert!(
+            is_port_owned_by_pid(port, my_pid),
+            "current process must be recognized as owning its listening socket"
+        );
+        assert!(
+            !is_port_owned_by_pid(port, my_pid + 999_999),
+            "unrelated PID must not be recognized as owner"
+        );
+        drop(listener);
+        assert!(
+            !is_port_owned_by_pid(port, my_pid),
+            "closed port must not report as owned"
+        );
+    }
+
+    #[test]
+    fn unrelated_healthy_listener_is_rejected_without_owned_child() {
+        let _guard = SERVER_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        stop_server();
+
+        let port = serve(|| http_ok(r#"{"status":"ok","model":{"variant":"nemotron"}}"#));
+        assert!(health_body(port).is_some(), "health payload is valid");
+
+        assert_eq!(
+            native_engine_port(),
+            None,
+            "foreign listener must be rejected when app owns no sidecar child"
+        );
+    }
+
+    #[test]
+    fn unrelated_healthy_listener_rejected_even_when_child_is_loading() {
+        let _guard = SERVER_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        stop_server();
+
+        let foreign_port = serve(|| http_ok(r#"{"status":"ok","model":{"variant":"nemotron"}}"#));
+
+        #[cfg(target_os = "windows")]
+        let dummy = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", "Start-Sleep -Seconds 15"])
+            .spawn()
+            .expect("spawn dummy");
+        #[cfg(not(target_os = "windows"))]
+        let dummy = std::process::Command::new("sleep")
+            .arg("15")
+            .spawn()
+            .expect("spawn dummy");
+
+        track_server(dummy, foreign_port);
+
+        assert_eq!(
+            native_engine_port(),
+            None,
+            "foreign port must not be adopted while child is loading on another port"
+        );
+
+        stop_server();
+    }
+
+    #[test]
+    fn dead_child_does_not_adopt_foreign_listener() {
+        let _guard = SERVER_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        stop_server();
+
+        let foreign_port = serve(|| http_ok(r#"{"status":"ok","model":{"variant":"nemotron"}}"#));
+        assert!(health_body(foreign_port).is_some());
+
+        #[cfg(target_os = "windows")]
+        let mut short_lived = std::process::Command::new("cmd")
+            .args(["/c", "exit 0"])
+            .spawn()
+            .expect("spawn short_lived");
+        #[cfg(not(target_os = "windows"))]
+        let mut short_lived = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn short_lived");
+
+        let _ = short_lived.wait();
+        track_server(short_lived, foreign_port);
+
+        assert_eq!(
+            native_engine_port(),
+            None,
+            "dead child must never adopt foreign listener"
+        );
+
+        stop_server();
+    }
+
+    #[test]
+    #[ignore = "HTTP fixture launched only by owned_child_serves_its_dynamic_port"]
+    fn owned_child_health_fixture() {
+        assert_eq!(std::env::var("PLUELY_OWNED_ASR_TEST").as_deref(), Ok("1"));
+        let (listener, port) = ephemeral_listener();
+        println!("ASR_TEST_PORT={port}");
+        std::io::stdout().flush().unwrap();
+        for mut stream in listener.incoming().flatten() {
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(http_ok(r#"{"status":"ok"}"#).as_bytes());
+        }
+    }
+
+    #[test]
+    fn owned_child_serves_its_dynamic_port() {
+        use std::io::BufRead as _;
+        let _guard = SERVER_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        stop_server();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "handy_server::tests::owned_child_health_fixture", "--ignored", "--nocapture"])
+            .env("PLUELY_OWNED_ASR_TEST", "1")
+            .stdout(Stdio::piped()).stderr(Stdio::null());
+        #[cfg(target_os = "windows")]
+        command.creation_flags(0x08000000);
+        let mut child = command.spawn().unwrap();
+        let port = std::io::BufReader::new(child.stdout.take().unwrap()).lines()
+            .filter_map(Result::ok)
+            .find_map(|line| line.split_once("ASR_TEST_PORT=").and_then(|(_, port)| port.trim().parse::<u16>().ok()));
+        if port.is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let port = port.expect("fixture must report its bound dynamic port");
+        track_server(child, port);
+        let serving = native_engine_port();
+        stop_server();
+        assert_eq!(serving, Some(port));
+    }
+
 }

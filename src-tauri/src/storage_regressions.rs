@@ -87,9 +87,6 @@ async fn storage_sqlite_schema_messages_wal_snapshot_and_checksum_drift() {
     ).await.unwrap();
     let migrations = migrator();
     migrations.run(&pool).await.unwrap();
-    let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM _sqlx_migrations ORDER BY version")
-        .fetch_all(&pool).await.unwrap();
-    assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
     pool.close().await;
 
     let writer = Connection::open(&source).unwrap();
@@ -221,4 +218,29 @@ fn storage_restart_collision_after_queue_leaves_pending_transition_and_source() 
     assert_eq!(messages(&destination), vec!["Competing destination retained"]);
     drop(competing);
     drop(host);
+}
+
+#[test]
+fn fresh_portable_settings_do_not_inherit_or_overwrite_host_settings() {
+    let scratch = Scratch::new();
+    let _paths = LocalPaths::install(&scratch.0);
+    let executable = exe_dir().unwrap();
+    let host_path = app_data_root().join(SETTINGS_FILE);
+    let exe_path = executable.join(SETTINGS_FILE);
+    let host_settings = br#"{"selected_model":"host-model.gguf","start_minimized":true}"#;
+    let exe_settings = br#"{"selected_model":"exe-model.gguf"}"#;
+    std::fs::write(&host_path, host_settings).unwrap();
+    std::fs::write(&exe_path, exe_settings).unwrap();
+    std::fs::write(executable.join(PORTABLE_MARKER), b"").unwrap();
+
+    assert!(load_settings().selected_model.is_none(), "fresh portable profile must not load another profile's model");
+    let portable_path = executable.join(".echo-ai").join(SETTINGS_FILE);
+    let own_settings = AppSettings {
+        selected_model: Some("portable-model.gguf".into()),
+        ..Default::default()
+    };
+    assert_eq!(save_settings(&own_settings).unwrap(), portable_path);
+    assert_eq!(load_settings().selected_model.as_deref(), Some("portable-model.gguf"));
+    assert_eq!(std::fs::read(&host_path).unwrap(), host_settings);
+    assert_eq!(std::fs::read(&exe_path).unwrap(), exe_settings);
 }

@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  AlertCircleIcon,
   CaptionsIcon,
   CheckIcon,
   CopyIcon,
@@ -25,8 +26,10 @@ import { getSpeechModelLang } from "@/hooks/useSpeechModelSwitch";
 import {
   recordFeedback,
   getSelfEvolutionStats,
+  isSelfLearningEnabled,
   type SelfEvolutionStats,
 } from "@/lib/storage/user-facts";
+import { SelfLearningToggle } from "@/components/SelfLearningToggle";
 import { splitCodeAnswer } from "@/lib/code-answer";
 import { HoverTranslate } from "@/lib/hover-translate";
 import { resolveProviderModel } from "@/lib/functions/ai-response.function";
@@ -234,6 +237,13 @@ export function splitThoughtAnswer(text: string): {
     ? text.slice(m.index! + m[0].length).trim()
     : "";
   return { thought: thought || null, answer };
+}
+
+/** What the copy button puts on the clipboard: the spoken answer, never the thought trace. */
+export function answerForCopy(text: string): string {
+  const { thought, answer } = splitThoughtAnswer(text);
+  if (thought === null) return text;
+  return answer || text;
 }
 
 /** Thought trace container rendered inline on top of the answer. */
@@ -486,7 +496,7 @@ const AiFeedRow = memo(function AiFeedRow({
             )
           )}
           <button
-            onClick={() => onCopy(id, text)}
+            onClick={() => onCopy(id, answerForCopy(text))}
             className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:opacity-100 text-muted-foreground hover:text-foreground"
             title="Скопировать ответ"
           >
@@ -1236,6 +1246,12 @@ export const SubtitleFeed = ({
       rating: "like" | "dislike",
       reason?: string
     ) => {
+      if (!isSelfLearningEnabled()) {
+        setDislikeMenuFor(null);
+        setCustomReason("");
+        showEvolutionNote("Самообучение выключено");
+        return;
+      }
       const question = questionContextFor(
         entries.findIndex((e) => e.id === entryId)
       );
@@ -1386,6 +1402,7 @@ export const SubtitleFeed = ({
               <div className="font-semibold uppercase tracking-wider text-[0.8em] text-muted-foreground border-b border-border/40 pb-1">
                 Self-Evolution · что учтено · всего правок: {evoStats.totalEdits}
               </div>
+              <SelfLearningToggle variant="compact" />
               <div className="text-muted-foreground">
                 👍 {evoStats.likes} · 👎 {evoStats.dislikes} · тон:{" "}
                 <span className="text-foreground">{evoStats.tone}</span>
@@ -1462,9 +1479,21 @@ export const SubtitleFeed = ({
 
       {/* Self-evolution acknowledgment banner */}
       {evolutionNote && (
-        <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-500/10 border-b border-emerald-500/30 text-[0.65em] text-emerald-700 dark:text-emerald-300 shrink-0 animate-in fade-in slide-in-from-top-1">
-          <CheckIcon className="w-3 h-3 shrink-0" />
-          {evolutionNote} — подход изменён для следующего ответа
+        <div
+          className={cn(
+            "flex items-center gap-1.5 px-2 py-1 border-b text-[0.65em] shrink-0 animate-in fade-in slide-in-from-top-1",
+            evolutionNote === "Самообучение выключено"
+              ? "bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-300"
+              : "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300"
+          )}
+        >
+          {evolutionNote === "Самообучение выключено" ? (
+            <AlertCircleIcon className="w-3 h-3 shrink-0" />
+          ) : (
+            <CheckIcon className="w-3 h-3 shrink-0" />
+          )}
+          {evolutionNote}
+          {evolutionNote !== "Самообучение выключено" && " — подход изменён для следующего ответа"}
         </div>
       )}
 
@@ -1485,46 +1514,30 @@ export const SubtitleFeed = ({
           {aiStatusMessage}
         </div>
       )}
-      {(isAIProcessing || isStalled) && (
-              /* Recovery stays outside answer/filler and paused-feed conditions. */
+      {isStalled && (
+              /* Recovery shows only on a real stall: during healthy streaming
+                 the same buttons re-fired processWithAI and killed the answer. */
               <div
-                className={cn(
-                  "p-2 rounded-lg transition-all animate-in fade-in",
-                  isStalled
-                    ? "border border-amber-500/50 bg-amber-500/10 text-amber-900 dark:text-amber-200 shadow-sm"
-                    : "border border-transparent bg-transparent text-muted-foreground/70"
-                )}
+                className="p-2 rounded-lg transition-all animate-in fade-in border border-amber-500/50 bg-amber-500/10 text-amber-900 dark:text-amber-200 shadow-sm"
               >
-                {isStalled && (
-                  <div className="mb-1.5 text-[0.8em] font-medium text-amber-700 dark:text-amber-300">
-                    {`Провайдер молчит ${stalledSeconds}с — решайте: ${
-                      stallNextId ? `ждать, повторить или взять ${stallNextId}` : "ждать или повторить"
-                    }`}
-                  </div>
-                )}
+                <div className="mb-1.5 text-[0.8em] font-medium text-amber-700 dark:text-amber-300">
+                  {`Провайдер молчит ${stalledSeconds}с — решайте: ${
+                    stallNextId ? `ждать, повторить или взять ${stallNextId}` : "ждать или повторить"
+                  }`}
+                </div>
                 <div className="flex items-center justify-between gap-2 text-[0.78em]">
                   <div className="flex items-center gap-1.5">
                     <button
                       type="button"
                       onClick={onStallWait}
-                      className={cn(
-                        "px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer",
-                        isStalled
-                          ? "border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-950 dark:text-amber-100 font-medium"
-                          : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                      )}
+                      className="px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-950 dark:text-amber-100 font-medium"
                     >
                       Ждать
                     </button>
                     <button
                       type="button"
                       onClick={onStallRetry}
-                      className={cn(
-                        "px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer",
-                        isStalled
-                          ? "border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-950 dark:text-amber-100 font-medium"
-                          : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                      )}
+                      className="px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-950 dark:text-amber-100 font-medium"
                     >
                       Повторить
                     </button>
@@ -1532,12 +1545,7 @@ export const SubtitleFeed = ({
                       type="button"
                       onClick={onStallNext}
                       disabled={!stallNextId}
-                      className={cn(
-                        "px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed",
-                        isStalled
-                          ? "border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-950 dark:text-amber-100 font-medium"
-                          : "text-muted-foreground hover:text-foreground hover:bg-muted/40"
-                      )}
+                      className="px-2 py-0.5 rounded text-[0.95em] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed border border-amber-500/40 bg-amber-500/20 hover:bg-amber-500/30 text-amber-950 dark:text-amber-100 font-medium"
                     >
                       Другой{stallNextId ? ` (${stallNextId})` : ""}
                     </button>
@@ -1590,7 +1598,7 @@ export const SubtitleFeed = ({
             <StreamingAiRow
               text={lastAIResponse}
               copied={copiedId === "live-ai-answer"}
-              onCopy={() => handleCopy("live-ai-answer", lastAIResponse)}
+              onCopy={() => handleCopy("live-ai-answer", answerForCopy(lastAIResponse))}
             />
           )
         )}

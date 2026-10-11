@@ -8,6 +8,7 @@ import AppRoutes from "./routes";
 import { ErrorBoundary } from "react-error-boundary";
 import { ErrorLayout } from "./layouts";
 import { HostTrustProvider } from "./components";
+import { restoreSelfEvolution } from "./lib/self-evolution-persist";
 const currentWindow = getCurrentWindow();
 const windowLabel = currentWindow.label;
 
@@ -25,6 +26,11 @@ window.addEventListener("error", (e) => {
 window.addEventListener("unhandledrejection", (e) => {
   console.error("[UNHANDLED REJECTION]", windowLabel, e.reason);
 });
+
+// Bootstrap: restore self-evolution learned state from SQLite if cache was cleared
+if (!windowLabel.startsWith("capture-overlay-")) {
+  void restoreSelfEvolution();
+}
 // Render different components based on window label
 if (windowLabel.startsWith("capture-overlay-")) {
   const monitorIndex = parseInt(windowLabel.split("-")[2], 10) || 0;

@@ -45,10 +45,15 @@ const profile2: PromptProfile = {
   isBuiltin: true,
 };
 
+const mockUseAppState: { profiles: PromptProfile[]; activeId: string } = {
+  profiles: [profile1, profile2],
+  activeId: "profile-interview",
+};
+
 vi.mock("@/contexts", () => ({
   useApp: () => ({
-    promptProfiles: [profile1, profile2],
-    activeProfileId: "profile-interview",
+    promptProfiles: mockUseAppState.profiles,
+    activeProfileId: mockUseAppState.activeId,
     selectPromptProfile: mockSelectPromptProfile,
     updatePromptProfile: mockUpdatePromptProfile,
     createPromptProfile: mockCreatePromptProfile,
@@ -59,14 +64,43 @@ vi.mock("@/contexts", () => ({
 }));
 
 vi.mock("@/lib/storage/user-facts", () => ({
-  getUserFacts: () => [],
-  getUserStylePreferences: () => ({}),
-  getFeedbackLog: () => [],
+  getUserFacts: () => [
+    {
+      id: "fact-1",
+      category: "role",
+      fact: "Senior Engineer",
+      confidence: 1,
+      source: "manual",
+      timestamp: 1000,
+    },
+  ],
+  getUserStylePreferences: () => ({
+    tone: "живой",
+    preferredLength: "concise",
+    favoritePatterns: ["Объяснять ход мыслей"],
+    avoidPatterns: ["Маркированные списки"],
+    customRules: ["Кратко и по сути"],
+  }),
+  saveUserStylePreferences: vi.fn(),
+  getFeedbackLog: () => [
+    {
+      id: "fb-1",
+      question: "Как работает GC?",
+      response: "GC очищает память...",
+      rating: "like",
+      reason: "Хороший ответ",
+      timestamp: 2000,
+    },
+  ],
+  saveFeedbackLog: vi.fn(),
   addUserFact: vi.fn(),
   removeUserFact: vi.fn(),
-  getUserMarkdownProfile: () => "",
+  getUserMarkdownProfile: () => "# USER.md",
   saveUserMarkdownProfile: vi.fn(),
   resetUserMarkdownProfile: vi.fn(),
+  resetLearning: vi.fn().mockResolvedValue(undefined),
+  isSelfLearningEnabled: () => true,
+  setSelfLearningEnabled: vi.fn(),
 }));
 
 vi.mock("@/lib/storage/prompt-profiles", () => ({
@@ -267,5 +301,38 @@ describe("R28: PromptProfilesSettings - profile switch mid-edit", () => {
       // And then switch to profile 2
       expect(mockSelectPromptProfile).toHaveBeenCalledWith("profile-general");
     });
+  });
+});
+
+describe("T2 & T5: Self-Learning toggle and editors in PromptProfilesSettings", () => {
+  const evolutionProfile: PromptProfile = {
+    id: "profile-self-evolution",
+    name: "Self-Evolution ✨",
+    description: "Adaptive assistant",
+    systemPrompt: "Adaptive prompt",
+    humanizerEnabled: true,
+    interviewMode: false,
+    customStyle: "",
+    ragResumeEnabled: false,
+    ragJobEnabled: false,
+    isBuiltin: true,
+  };
+
+  it("renders self-learning toggle and knowledge base panel when evolution profile is active", () => {
+    mockUseAppState.profiles = [profile1, profile2, evolutionProfile];
+    mockUseAppState.activeId = "profile-self-evolution";
+    try {
+      renderWithRouter(<PromptProfilesSettings />);
+      expect(screen.getByText("Самообучение ассистента")).toBeInTheDocument();
+      expect(screen.getByText("Senior Engineer")).toBeInTheDocument();
+      expect(screen.getByText("Объяснять ход мыслей")).toBeInTheDocument();
+      expect(screen.getByText("Маркированные списки")).toBeInTheDocument();
+      expect(screen.getByText("Кратко и по сути")).toBeInTheDocument();
+      expect(screen.getByText(/Журнал обучения/)).toBeInTheDocument();
+      expect(screen.getByText("Как работает GC?")).toBeInTheDocument();
+    } finally {
+      mockUseAppState.profiles = [profile1, profile2];
+      mockUseAppState.activeId = "profile-interview";
+    }
   });
 });

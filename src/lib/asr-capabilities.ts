@@ -56,6 +56,7 @@ export async function getAsrCapabilities(): Promise<AsrCapabilities> {
   if (cached && Date.now() - cached.at < TTL_MS) return cached.value;
   try {
     const base = await getAsrBaseUrl();
+    if (!base) return UNKNOWN;
     const res = await fetch(`${base}/health`, {
       signal: AbortSignal.timeout(1500),
     });

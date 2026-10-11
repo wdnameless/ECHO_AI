@@ -94,6 +94,24 @@ describe("host-trust-gate", () => {
       expect(JSON.stringify(result)).not.toContain("secret-key");
     });
 
+    it("strips Azure subscription credentials when sending without secrets", async () => {
+      let reported: string[] = [];
+      setHostTrustPrompt(async (request) => {
+        reported = request.secrets;
+        return "without-secrets";
+      });
+      const result = await resolveOutboundHeaders(
+        "https://audit-region.stt.speech.microsoft.com/transcribe",
+        { "Ocp-Apim-Subscription-Key": "fixture-only", "Content-Type": "audio/wav" }
+      );
+      expect(reported).toContain("Ocp-Apim-Subscription-Key");
+      expect(result).toMatchObject({
+        allowed: true,
+        headers: { "Content-Type": "audio/wav" },
+      });
+      expect(result.headers).not.toHaveProperty("Ocp-Apim-Subscription-Key");
+    });
+
     it("keeps credentials and remembers the host when the user trusts it", async () => {
       setHostTrustPrompt(async () => "trust" as HostTrustDecision);
       const result = await resolveOutboundHeaders(untrusted, headers);

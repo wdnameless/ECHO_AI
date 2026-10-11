@@ -146,7 +146,7 @@ export const BUILTIN_PROFILES: PromptProfile[] = [
   {
     id: SELF_EVOLUTION_PROFILE_ID,
     name: "Self-Evolution ✨",
-    description: "Adaptive AI that learns from your 👍/👎 ratings, adapts tone to any topic, and recalls personal facts",
+    description: "Сценарий адаптивного ассистента: стиль + факты применяются кнопкой, независимо от профиля",
     systemPrompt: `Ты — персональный адаптивный ассистент, который учится и эволюционирует на основе обратной связи (лайки/дизлайки) и фактов о пользователе.
 
 ГЛАВНЫЙ ПРИНЦИП:

@@ -56,9 +56,11 @@ export function useThemWsStreaming({
   const ownerEpochRef = useRef<number | null>(null);
 
   const releaseOwner = useCallback((epoch = ownerEpochRef.current) => {
+    // Always drop queued requests: a channel that never owned the slot can
+    // still have a pending handoff entry waiting for it.
+    cancelSlotQueue("them");
     if (epoch === null || ownerEpochRef.current !== epoch) return;
     ownerEpochRef.current = null;
-    cancelSlotQueue("them");
     releaseStream("them");
   }, []);
 
@@ -121,7 +123,9 @@ export function useThemWsStreaming({
       enqueueStreamSlot("them", () => {
         if (wantRef.current && capturingRef.current) {
           void connectRef.current();
+          return true;
         }
+        return false;
       });
       scheduleReconnect();
       return;

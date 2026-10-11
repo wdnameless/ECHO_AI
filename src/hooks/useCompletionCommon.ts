@@ -154,23 +154,34 @@ export async function persistConversationTurn({
     timestamp: timestamp + MESSAGE_ID_OFFSET,
   };
 
-  const newMessages = [...existingMessages, userMsg, assistantMsg];
-
   let existingConversation: ChatConversation | null = null;
-  if (lookupExistingId) {
-    try {
-      existingConversation = await getConversationById(lookupExistingId);
-    } catch (error) {
-      console.error("Failed to get existing conversation:", error);
-    }
+  const lookupId = lookupExistingId || conversationId;
+  if (lookupId) {
+    existingConversation = await getConversationById(lookupId);
   }
 
+  const messagesById = new Map<string, ChatMessage>();
+  for (const msg of existingConversation?.messages || []) {
+    messagesById.set(msg.id, msg);
+  }
+  for (const msg of existingMessages) {
+    if (!messagesById.has(msg.id)) {
+      messagesById.set(msg.id, msg);
+    }
+  }
+  if (!messagesById.has(userMsg.id)) {
+    messagesById.set(userMsg.id, userMsg);
+  }
+  if (!messagesById.has(assistantMsg.id)) {
+    messagesById.set(assistantMsg.id, assistantMsg);
+  }
+  const newMessages = Array.from(messagesById.values());
+
   const title =
-    preferNewTitleWhenEmpty && existingMessages.length === 0
+    existingConversation?.title ||
+    (preferNewTitleWhenEmpty && existingMessages.length === 0
       ? generateConversationTitle(userMessage)
-      : existingConversation?.title ||
-        fallbackTitle ||
-        generateConversationTitle(userMessage);
+      : fallbackTitle || generateConversationTitle(userMessage));
 
   const conversation: ChatConversation = {
     id: conversationId,
@@ -184,15 +195,17 @@ export async function persistConversationTurn({
   await saveConversation(conversation);
   return conversation;
 }
-
 /**
  * Manages request ID generation, cancellation AbortController, and unmount cleanup.
  */
 export function useCompletionRequest() {
   const abortControllerRef = useRef<AbortController | null>(null);
   const currentRequestIdRef = useRef<string | null>(null);
+  const generationRef = useRef<number>(0);
 
   const beginRequest = useCallback(() => {
+    generationRef.current += 1;
+    const generation = generationRef.current;
     const requestId = generateRequestId();
     currentRequestIdRef.current = requestId;
     if (abortControllerRef.current) {
@@ -200,34 +213,42 @@ export function useCompletionRequest() {
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
-    return { requestId, signal: controller.signal };
+    return { requestId, signal: controller.signal, generation };
   }, []);
 
-  const isCurrent = useCallback((requestId: string, signal?: AbortSignal) => {
-    return (
-      currentRequestIdRef.current === requestId &&
-      (!signal || !signal.aborted)
-    );
-  }, []);
+  const isCurrent = useCallback(
+    (requestId: string, signal?: AbortSignal, generation?: number) => {
+      return (
+        currentRequestIdRef.current === requestId &&
+        (!signal || !signal.aborted) &&
+        (generation === undefined || generationRef.current === generation)
+      );
+    },
+    []
+  );
 
-  const cancel = useCallback((onCancelled?: () => void) => {
+  const invalidate = useCallback(() => {
+    generationRef.current += 1;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
     currentRequestIdRef.current = null;
-    onCancelled?.();
   }, []);
+
+  const cancel = useCallback(
+    (onCancelled?: () => void) => {
+      invalidate();
+      onCancelled?.();
+    },
+    [invalidate]
+  );
 
   useEffect(() => {
     return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
-      currentRequestIdRef.current = null;
+      invalidate();
     };
-  }, []);
+  }, [invalidate]);
 
   return {
     abortControllerRef,
@@ -235,6 +256,7 @@ export function useCompletionRequest() {
     beginRequest,
     isCurrent,
     cancel,
+    invalidate,
   };
 }
 
@@ -355,8 +377,14 @@ export function useCompletionBase<S extends BaseCompletionState>(
   state: S,
   setState: Dispatch<SetStateAction<S>>
 ) {
-  const { beginRequest, isCurrent, cancel: cancelRequest } =
-    useCompletionRequest();
+  const {
+    abortControllerRef,
+    currentRequestIdRef,
+    beginRequest,
+    isCurrent,
+    cancel: cancelRequest,
+    invalidate,
+  } = useCompletionRequest();
 
   const setInput = useCallback(
     (value: string) => {
@@ -403,6 +431,9 @@ export function useCompletionBase<S extends BaseCompletionState>(
     beginRequest,
     isCurrent,
     cancel,
+    invalidate,
+    abortControllerRef,
+    currentRequestIdRef,
     ...fileAttachments,
   };
 }

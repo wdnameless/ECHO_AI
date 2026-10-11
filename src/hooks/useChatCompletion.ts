@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useLayoutEffect, useEffect } from "react";
 import type {
   AttachedFile,
   ChatMessage,
@@ -8,6 +8,7 @@ import { useApp } from "@/contexts";
 import {
   getConversationById,
   generateMessageId,
+  generateConversationId,
   MESSAGE_ID_OFFSET,
   getResponseSettings,
 } from "@/lib";
@@ -58,7 +59,12 @@ export const useChatCompletion = (
 
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const conversationIdRef = useRef<string>(conversationId);
+  const pendingSaveRef = useRef<Promise<ChatConversation> | null>(null);
 
+  useEffect(() => {
+    conversationIdRef.current = conversationId;
+  }, [conversationId]);
   const {
     setInput,
     setAttachedFiles,
@@ -76,6 +82,10 @@ export const useChatCompletion = (
     handlePaste,
   } = useCompletionBase(state, setState);
 
+  useLayoutEffect(() => {
+    cancel();
+  }, [conversationId, cancel]);
+
   const scrollToBottom = () => {
     const responseSettings = getResponseSettings();
     if (responseSettings.autoScroll) {
@@ -89,10 +99,18 @@ export const useChatCompletion = (
       imagesBase64: string[],
       options: { focusInputOnComplete: boolean }
     ) => {
-      const { requestId, signal } = beginRequest();
+      let targetConversationId = conversationId;
+      if (!targetConversationId) {
+        targetConversationId =
+          conversationIdRef.current || generateConversationId("chat");
+        conversationIdRef.current = targetConversationId;
+      }
+      const activeConversationId = targetConversationId;
+      const activeMessages = messages;
+      const { requestId, signal, generation } = beginRequest();
 
       try {
-        const messageHistory = (messages?.messages || []).map((msg) => ({
+        const messageHistory = (activeMessages?.messages || []).map((msg) => ({
           role: msg.role,
           content: msg.content,
         }));
@@ -101,6 +119,12 @@ export const useChatCompletion = (
           selectedAIProvider,
           allAiProviders
         );
+
+        // Guard post-validation await before mutating state
+        if (!isCurrent(requestId, signal, generation)) {
+          return;
+        }
+
         if (!providerValidation.ok) {
           setError(providerValidation.error);
           return;
@@ -115,8 +139,8 @@ export const useChatCompletion = (
         };
 
         const updatedMessages = {
-          ...messages!,
-          messages: [...(messages?.messages || []), userMsg],
+          ...activeMessages!,
+          messages: [...(activeMessages?.messages || []), userMsg],
         };
         setMessages(updatedMessages);
 
@@ -141,92 +165,139 @@ export const useChatCompletion = (
           userMessage: userText,
           imagesBase64,
           signal,
-          isCurrent: () => isCurrent(requestId, signal),
+          isCurrent: () => isCurrent(requestId, signal, generation),
           onChunk: (_chunk, accumulated) => {
-            const assistantMsg: ChatMessage = {
-              id: generateMessageId(
-                "assistant",
-                timestamp + MESSAGE_ID_OFFSET
-              ),
-              role: "assistant",
-              content: accumulated,
-              timestamp: timestamp + MESSAGE_ID_OFFSET,
-            };
-
-            const updatedWithResponse = {
-              ...updatedMessages,
-              messages: [...updatedMessages.messages, assistantMsg],
-            };
-
-            const lastMessage =
-              updatedWithResponse.messages[
-                updatedWithResponse.messages.length - 1
-              ];
-            if (lastMessage.role === "assistant") {
-              updatedWithResponse.messages[
-                updatedWithResponse.messages.length - 1
-              ] = assistantMsg;
-            } else {
-              updatedWithResponse.messages.push(assistantMsg);
+            if (!isCurrent(requestId, signal, generation)) {
+              return;
             }
 
-            setMessages(updatedWithResponse);
-            scrollToBottom();
-          },
-          onError: (errorMessage) => {
-            setError(errorMessage, true);
-          },
-          logTag: "[chat-completion]",
-        });
+            const assistantMsg: ChatMessage = {
+              id: generateMessageId(
+                 "assistant",
+                 timestamp + MESSAGE_ID_OFFSET
+               ),
+               role: "assistant",
+               content: accumulated,
+               timestamp: timestamp + MESSAGE_ID_OFFSET,
+             };
 
-        if (fullResponse === null || !isCurrent(requestId, signal)) {
+             const updatedWithResponse = {
+               ...updatedMessages,
+               messages: [...updatedMessages.messages, assistantMsg],
+             };
+
+             const lastMessage =
+               updatedWithResponse.messages[
+                 updatedWithResponse.messages.length - 1
+               ];
+             if (lastMessage.role === "assistant") {
+               updatedWithResponse.messages[
+                 updatedWithResponse.messages.length - 1
+               ] = assistantMsg;
+             } else {
+               updatedWithResponse.messages.push(assistantMsg);
+             }
+
+             setMessages(updatedWithResponse);
+             scrollToBottom();
+           },
+           onError: (errorMessage) => {
+            if (!isCurrent(requestId, signal, generation)) {
+              return;
+            }
+             setError(errorMessage, true);
+           },
+           logTag: "[chat-completion]",
+         });
+
+        if (fullResponse === null) {
+          if (isCurrent(requestId, signal, generation)) {
+            setState((prev) => ({ ...prev, isLoading: false }));
+          }
           return;
         }
 
-        setState((prev) => ({ ...prev, isLoading: false }));
-
-        if (options.focusInputOnComplete) {
-          setTimeout(() => {
-            inputRef.current?.focus();
-          }, 100);
-        }
-
         if (fullResponse) {
-          try {
-            await persistConversationTurn({
-              conversationId,
-              lookupExistingId: conversationId || null,
-              existingMessages: messages?.messages || [],
-              userMessage: userText,
-              assistantResponse: fullResponse,
-              timestamp,
-              fallbackTitle: messages?.title,
-              fallbackCreatedAt: messages?.createdAt,
-              preferNewTitleWhenEmpty: false,
-            });
+          if (pendingSaveRef.current) {
+            try {
+              await pendingSaveRef.current;
+            } catch {
+              // Allow subsequent turn to proceed even if previous save failed
+            }
+          }
 
-            if (conversationId) {
-              const updatedConversation = await getConversationById(
-                conversationId
-              );
+          const savePromise = persistConversationTurn({
+            conversationId: activeConversationId,
+            lookupExistingId: activeConversationId || null,
+            existingMessages: activeMessages?.messages || [],
+            userMessage: userText,
+            assistantResponse: fullResponse,
+            timestamp,
+            fallbackTitle: activeMessages?.title,
+            fallbackCreatedAt: activeMessages?.createdAt,
+            preferNewTitleWhenEmpty: false,
+          });
+          pendingSaveRef.current = savePromise;
+
+          try {
+            // Legitimate save of completed old chat is preserved
+            const conversation = await savePromise;
+
+            let updatedConversation: ChatConversation | null = null;
+            if (activeConversationId) {
+              try {
+                updatedConversation = await getConversationById(
+                  activeConversationId
+                );
+              } catch (err) {
+                console.error("Failed to fetch updated conversation:", err);
+              }
+            }
+
+            // Guard post-persist/read awaits before mutating state
+            if (isCurrent(requestId, signal, generation)) {
               if (updatedConversation) {
                 setMessages(updatedConversation);
+              } else if (conversation) {
+                setMessages(conversation);
+              }
+
+              setState((prev) => ({ ...prev, isLoading: false }));
+
+              if (options.focusInputOnComplete) {
+                setTimeout(() => {
+                  inputRef.current?.focus();
+                }, 100);
               }
             }
           } catch (error) {
             console.error("Failed to save conversation:", error);
-            if (options.focusInputOnComplete) {
+            if (isCurrent(requestId, signal, generation)) {
+              setState((prev) => ({
+                ...prev,
+                isLoading: false,
+                input: userText,
+              }));
               setError("Failed to save conversation. Please try again.");
             }
+          } finally {
+            if (pendingSaveRef.current === savePromise) {
+              pendingSaveRef.current = null;
+            }
+          }
+        } else {
+          if (isCurrent(requestId, signal, generation)) {
+            setState((prev) => ({ ...prev, isLoading: false }));
           }
         }
       } catch (error) {
         console.warn("[chat-completion]", error);
-        if (isCurrent(requestId, signal)) {
+        if (isCurrent(requestId, signal, generation)) {
           setError(
             error instanceof Error ? error.message : "An error occurred",
             true
           );
+          setState((prev) => ({ ...prev, isLoading: false }));
         }
       }
     },

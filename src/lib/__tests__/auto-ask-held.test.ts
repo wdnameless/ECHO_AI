@@ -51,7 +51,7 @@ describe("AutoAskManager held question", () => {
     m.releaseHeld();
 
     expect(onDispatch).toHaveBeenCalledTimes(1);
-    expect(onDispatch).toHaveBeenCalledWith("А как вы решали конфликты?");
+    expect(onDispatch).toHaveBeenCalledWith("А как вы решали конфликты?", undefined, { fromHeld: true });
     expect(m.hasHeld()).toBe(false);
   });
 
@@ -93,6 +93,6 @@ describe("AutoAskManager held question", () => {
 
     // One answer can only serve one question; the newest is the live one.
     expect(onDispatch).toHaveBeenCalledTimes(1);
-    expect(onDispatch).toHaveBeenCalledWith("второй вопрос");
+    expect(onDispatch).toHaveBeenCalledWith("второй вопрос", undefined, { fromHeld: true });
   });
 });

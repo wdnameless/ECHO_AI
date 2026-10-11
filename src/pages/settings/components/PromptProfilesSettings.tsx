@@ -39,14 +39,19 @@ import {
 import {
   getUserFacts,
   getUserStylePreferences,
+  saveUserStylePreferences,
   getFeedbackLog,
+  saveFeedbackLog,
   addUserFact,
   removeUserFact,
   UserFact,
+  FeedbackEntry,
   getUserMarkdownProfile,
   saveUserMarkdownProfile,
   resetUserMarkdownProfile,
+  resetLearning,
 } from "@/lib/storage/user-facts";
+import { SelfLearningToggle } from "@/components/SelfLearningToggle";
 
 export const AVAILABLE_TOOLBAR_BUTTONS: Array<{ id: ToolbarButtonId; label: string }> = [
   { id: "length", label: "Длина ответа (Авто/Кратко/Подробно)" },
@@ -114,6 +119,7 @@ export const PromptProfilesSettings = () => {
   // Self-Evolution Memory States
   const [facts, setFacts] = useState<UserFact[]>(() => getUserFacts());
   const [newFactText, setNewFactText] = useState("");
+  const [newCustomRuleText, setNewCustomRuleText] = useState("");
   const [stylePrefs, setStylePrefs] = useState(() => getUserStylePreferences());
   const [feedbackLogs, setFeedbackLogs] = useState(() => getFeedbackLog());
 
@@ -300,25 +306,105 @@ export const PromptProfilesSettings = () => {
     [handleImportJson]
   );
 
+  const logManualEdit = useCallback((question: string, response: string, rating: "like" | "dislike", reason: string) => {
+    const entry: FeedbackEntry = {
+      id: `fb-manual-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      question,
+      response,
+      rating,
+      reason,
+      topic: "manual",
+      timestamp: Date.now(),
+    };
+    saveFeedbackLog([entry, ...getFeedbackLog()]);
+    setFeedbackLogs(getFeedbackLog());
+  }, []);
+
   const handleAddFact = useCallback(() => {
-    if (!newFactText.trim()) return;
-    addUserFact(newFactText.trim());
+    const text = newFactText.trim();
+    if (!text) return;
+    addUserFact(text, "general");
     setFacts(getUserFacts());
     setMarkdownText(getUserMarkdownProfile());
     setNewFactText("");
+    logManualEdit("Добавление факта в память", text, "like", "Добавлено пользователем вручную (source=manual)");
   }, [newFactText]);
 
   const handleRemoveFact = useCallback((id: string) => {
+    const target = facts.find((f) => f.id === id);
     removeUserFact(id);
     setFacts(getUserFacts());
     setMarkdownText(getUserMarkdownProfile());
-  }, []);
+    if (target) {
+      logManualEdit("Удаление факта из памяти", target.fact, "dislike", "Удалено пользователем в редакторе (source=manual)");
+    }
+  }, [facts]);
 
-  const handleResetLearning = useCallback(() => {
-    localStorage.removeItem("user_feedback_log");
-    localStorage.removeItem("user_memory_style");
-    localStorage.removeItem("user_memory_facts");
-    resetUserMarkdownProfile();
+  const handleRemoveFavoritePattern = useCallback((index: number) => {
+    const removed = stylePrefs.favoritePatterns[index];
+    const next = {
+      ...stylePrefs,
+      favoritePatterns: stylePrefs.favoritePatterns.filter((_, i) => i !== index),
+    };
+    saveUserStylePreferences(next);
+    setStylePrefs(next);
+    setMarkdownText(getUserMarkdownProfile());
+    if (removed) {
+      logManualEdit("Удаление эталона стиля", removed, "dislike", "Удалено пользователем в редакторе (source=manual)");
+    }
+  }, [stylePrefs]);
+
+  const handleRemoveAvoidPattern = useCallback((index: number) => {
+    const removed = stylePrefs.avoidPatterns[index];
+    const next = {
+      ...stylePrefs,
+      avoidPatterns: stylePrefs.avoidPatterns.filter((_, i) => i !== index),
+    };
+    saveUserStylePreferences(next);
+    setStylePrefs(next);
+    setMarkdownText(getUserMarkdownProfile());
+    if (removed) {
+      logManualEdit("Удаление ограничения", removed, "like", "Снято ограничение (source=manual)");
+    }
+  }, [stylePrefs]);
+
+  const handleRemoveCustomRule = useCallback((index: number) => {
+    const removed = stylePrefs.customRules[index];
+    const next = {
+      ...stylePrefs,
+      customRules: stylePrefs.customRules.filter((_, i) => i !== index),
+    };
+    saveUserStylePreferences(next);
+    setStylePrefs(next);
+    setMarkdownText(getUserMarkdownProfile());
+    if (removed) {
+      logManualEdit("Удаление правила", removed, "dislike", "Удалено пользователем в редакторе (source=manual)");
+    }
+  }, [stylePrefs]);
+
+  const handleAddCustomRule = useCallback(() => {
+    const text = newCustomRuleText.trim();
+    if (!text) return;
+    const next = {
+      ...stylePrefs,
+      customRules: [text, ...stylePrefs.customRules],
+    };
+    saveUserStylePreferences(next);
+    setStylePrefs(next);
+    setMarkdownText(getUserMarkdownProfile());
+    setNewCustomRuleText("");
+    logManualEdit("Добавление правила", text, "like", "Добавлено пользователем в редакторе (source=manual)");
+  }, [newCustomRuleText, stylePrefs]);
+
+  const handleResetLearning = useCallback(async () => {
+    try {
+      await resetLearning();
+    } catch {
+      localStorage.removeItem("user_feedback_log");
+      localStorage.removeItem("user_memory_style");
+      localStorage.removeItem("user_memory_facts");
+      resetUserMarkdownProfile();
+    }
     setFacts(getUserFacts());
     setStylePrefs(getUserStylePreferences());
     setFeedbackLogs([]);
@@ -482,6 +568,7 @@ export const PromptProfilesSettings = () => {
       {/* SELF-EVOLUTION KNOWLEDGE BASE & STYLE MEMORY PANEL */}
       {activeProfile?.id === SELF_EVOLUTION_PROFILE_ID && (
         <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-4 animate-in fade-in duration-200">
+          <SelfLearningToggle variant="full" />
           <div className="flex items-center justify-between border-b border-primary/20 pb-2">
             <div className="flex items-center gap-2">
               <SparklesIcon className="size-4 text-primary" />
@@ -611,11 +698,23 @@ export const PromptProfilesSettings = () => {
                     ⭐ Favorite Patterns (Reinforced by 👍)
                   </Label>
                   <div className="space-y-1">
-                    {stylePrefs.favoritePatterns.map((p, i) => (
-                      <div key={i} className="text-xs p-1.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-foreground/90">
-                        {p}
-                      </div>
-                    ))}
+                    {stylePrefs.favoritePatterns.length === 0 ? (
+                      <p className="text-[11px] text-muted-foreground italic">Нет эталонов стиля</p>
+                    ) : (
+                      stylePrefs.favoritePatterns.map((p, i) => (
+                        <div key={i} className="flex items-center justify-between gap-1 text-xs p-1.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-foreground/90">
+                          <span className="truncate flex-1">{p}</span>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0"
+                            onClick={() => handleRemoveFavoritePattern(i)}
+                          >
+                            <Trash2Icon className="size-3" />
+                          </Button>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
 
@@ -624,12 +723,116 @@ export const PromptProfilesSettings = () => {
                     🚫 Avoid Constraints (Learned from 👎)
                   </Label>
                   <div className="space-y-1">
-                    {stylePrefs.avoidPatterns.map((p, i) => (
-                      <div key={i} className="text-xs p-1.5 rounded bg-red-500/10 border border-red-500/20 text-foreground/90">
-                        {p}
-                      </div>
-                    ))}
+                    {stylePrefs.avoidPatterns.length === 0 ? (
+                      <p className="text-[11px] text-muted-foreground italic">Нет ограничений</p>
+                    ) : (
+                      stylePrefs.avoidPatterns.map((p, i) => (
+                        <div key={i} className="flex items-center justify-between gap-1 text-xs p-1.5 rounded bg-red-500/10 border border-red-500/20 text-foreground/90">
+                          <span className="truncate flex-1">{p}</span>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0"
+                            onClick={() => handleRemoveAvoidPattern(i)}
+                          >
+                            <Trash2Icon className="size-3" />
+                          </Button>
+                        </div>
+                      ))
+                    )}
                   </div>
+                </div>
+              </div>
+
+              {/* Custom Rules Editor */}
+              <div className="space-y-2 pt-2 border-t border-primary/20">
+                <Label className="text-xs font-semibold text-violet-700 dark:text-violet-400">
+                  📝 Custom Rules ({stylePrefs.customRules.length})
+                </Label>
+                <div className="space-y-1">
+                  {stylePrefs.customRules.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground italic">Нет кастомных правил</p>
+                  ) : (
+                    stylePrefs.customRules.map((r, i) => (
+                      <div key={i} className="flex items-center justify-between gap-1 text-xs p-1.5 rounded bg-violet-500/10 border border-violet-500/20 text-foreground/90">
+                        <span className="truncate flex-1">{r}</span>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0"
+                          onClick={() => handleRemoveCustomRule(i)}
+                        >
+                          <Trash2Icon className="size-3" />
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <Input
+                    value={newCustomRuleText}
+                    onChange={(e) => setNewCustomRuleText(e.target.value)}
+                    placeholder="Add custom rule (e.g. Always explain time complexity)..."
+                    className="h-8 text-xs"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleAddCustomRule();
+                    }}
+                  />
+                  <Button size="sm" className="h-8 px-3 text-xs" onClick={handleAddCustomRule} disabled={!newCustomRuleText.trim()}>
+                    Add
+                  </Button>
+                </div>
+              </div>
+
+              {/* Feedback & Evolution Journal (Last 20) */}
+              <div className="space-y-2 pt-3 border-t border-primary/20">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Журнал обучения (последние {Math.min(20, feedbackLogs.length)} событий)
+                  </Label>
+                </div>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                  {feedbackLogs.length === 0 ? (
+                    <div className="p-3 text-center text-xs text-muted-foreground rounded-lg bg-background/50 border border-border/30">
+                      Журнал пуст. Здесь появятся последние 20 сигналов обучения (оценки ответов и ручные правки).
+                    </div>
+                  ) : (
+                    feedbackLogs.slice(0, 20).map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="p-2 rounded-lg bg-background/80 border border-border/40 text-xs space-y-1"
+                      >
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span
+                            className={cn(
+                              "px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-1",
+                              entry.topic === "manual"
+                                ? "bg-primary/10 text-primary"
+                                : entry.rating === "like"
+                                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                                : "bg-red-500/10 text-red-600 dark:text-red-400"
+                            )}
+                          >
+                            {entry.topic === "manual" ? "✏️ manual" : entry.rating === "like" ? "👍 like" : "👎 dislike"}
+                          </span>
+                          <span className="text-muted-foreground font-mono">
+                            {new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                          </span>
+                        </div>
+                        <div className="text-[11px] font-medium text-foreground truncate">
+                          <span className="text-muted-foreground">Вопрос:</span> {entry.question}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground line-clamp-2">
+                          <span className="text-foreground/70">Ответ:</span> {entry.response}
+                        </div>
+                        {entry.reason && (
+                          <div className="text-[10px] text-amber-600 dark:text-amber-400">
+                            <span>Причина:</span> {entry.reason}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </>

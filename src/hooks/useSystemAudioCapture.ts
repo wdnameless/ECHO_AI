@@ -8,7 +8,7 @@ import { recordPartialLatency, recordFirstText } from "@/lib/metrics";
 import { micStateStore } from "@/stores/mic-state";
 import { useThemWsStreaming } from "./useThemWsStreaming";
 import { getAsrCapabilities } from "@/lib/asr-capabilities";
-import { withNoStream } from "@/lib/asr-gate";
+import { isAsrModelBusyError, withNoStream } from "@/lib/asr-gate";
 
 export interface VadConfig {
   enabled: boolean;
@@ -167,8 +167,9 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     setError,
   } = props;
 
-  const [capturing, setCapturing] = useState(false);
+  const [capturing, setCapturingState] = useState(false);
   const capturingRef = useRef<boolean>(capturing);
+  const captureEpochRef = useRef(0);
   const [isMicProcessing, setIsMicProcessing] = useState(false);
   const [isSystemProcessing, setIsSystemProcessing] = useState(false);
   const [setupRequired, setSetupRequired] = useState<boolean>(false);
@@ -190,6 +191,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
    * the sidecar answers "model busy: a stream is active on this model".
    */
   const micStreamOwnsModelRef = useRef(false);
+  const utteranceActiveRef = useRef(false);
   const speechEpochRef = useRef(0);
   /** Text accumulated from streamed chunks, awaiting the real end of speech. */
   const rolledTextRef = useRef("");
@@ -240,7 +242,19 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   const liveBusyRef = useRef(false);
 
   useEffect(() => {
+    return () => {
+      captureEpochRef.current += 1;
+      capturingRef.current = false;
+      if (flushSafetyTimerRef.current !== null) {
+        clearTimeout(flushSafetyTimerRef.current);
+        flushSafetyTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     capturingRef.current = capturing;
+    const epoch = captureEpochRef.current;
     // Resolve the model's capabilities when capture starts, not on the first
     // `speech-start`: the microphone channel asks `canStream()` from its own VAD,
     // and if the candidate spoke before the interviewer, the flag was still its
@@ -249,6 +263,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     if (capturing) {
       void (async () => {
         const caps = await getAsrCapabilities();
+        if (epoch !== captureEpochRef.current || !capturingRef.current) return;
         streamingModelRef.current = caps.streaming;
       })();
     }
@@ -293,8 +308,17 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     async (
       audioBlob: Blob,
       source: "me" | "them",
-      options?: { skipOnInterviewerTranscription?: boolean; pauseBeforeMs?: number }
+      options?: {
+        skipOnInterviewerTranscription?: boolean;
+        pauseBeforeMs?: number;
+        /** Rechecked if the gate wait times out: true means another path transcribed it. */
+        isCoveredByOtherPath?: () => boolean;
+      }
     ) => {
+      const epoch = captureEpochRef.current;
+      const isCurrent = () => epoch === captureEpochRef.current &&
+        (source === "me" || capturingRef.current);
+      if (!isCurrent()) return;
       const setSegmentProcessing =
         source === "me" ? setIsMicProcessing : setIsSystemProcessing;
 
@@ -305,28 +329,37 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
         // A stream holds the model; the sidecar answers 500 "model busy" for
         // HTTP transcription while one is open, so wait for it to finish.
+        // The mic batch is the ONLY path when its stream was skipped (see
+        // onMicSegment), so it waits for a full utterance, not 300ms.
         const sttPromise = withNoStream(
-          () => transcribeWithFallback({
+          () => isCurrent() ? transcribeWithFallback({
             selectedProvider: selectedSttProvider,
             audio: audioBlob,
             priority: "high",
             prompt: buildInitialPrompt(),
-          }),
-          source === "them" ? 45000 : 300
+          }) : Promise.resolve(""),
+          source === "them" ? 45000 : 5000
         );
 
         // Sidecar waits for the GPU lease up to 30s (busy-retry) and the
         // batch queue holds up to 40s; the race timeout must stay above the
         // server-side worst case so a legitimately queued request is not
         // abandoned mid-wait (its slot would still be parked server-side).
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
         const timeoutPromise = new Promise<string>((_, reject) => {
-          setTimeout(
+          timeoutId = setTimeout(
             () => reject(new Error("Speech transcription timed out (45s)")),
             45000
           );
         });
 
-        const transcription = await Promise.race([sttPromise, timeoutPromise]);
+        let transcription: string;
+        try {
+          transcription = await Promise.race([sttPromise, timeoutPromise]);
+        } finally {
+          clearTimeout(timeoutId);
+        }
+        if (!isCurrent()) return;
         // The timer shows what a finished utterance costs end to end.
         recordPartialLatency(Date.now() - batchStarted);
 
@@ -375,12 +408,20 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
           setError("");
         }
       } catch (sttError: unknown) {
+        if (!isCurrent()) return;
+        // Lost the race for the single model. Drop silently ONLY if another
+        // path covered this audio; otherwise the utterance is lost entirely.
+        if (isAsrModelBusyError(sttError)) {
+          if (source === "me" && !options?.isCoveredByOtherPath?.()) {
+            setError("Распознавание занято другим каналом, речь пропущена");
+            return;
+          }
+          console.debug("[system-audio] batch skipped, stream holds model:", sttError.owner);
+          return;
+        }
         console.error("STT Error:", sttError);
-        const err = sttError as { message?: string };
-        setError(err?.message || "Failed to transcribe audio");
-        setIsPopoverOpen(true);
       } finally {
-        setSegmentProcessing(false);
+        if (isCurrent()) setSegmentProcessing(false);
       }
     },
     [
@@ -441,10 +482,12 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   const themWs = useThemWsStreaming({
     capturingRef,
     onPartialTranscript: (text) => {
+      if (!capturingRef.current) return;
       onInterviewerSpeechActivity?.();
       appendLiveSegment("them", text, true);
     },
     onFinalTranscript: (text) => {
+      if (!capturingRef.current) return;
       onInterviewerSpeechActivity?.();
       const chunk = text.trim();
       if (!chunk) return;
@@ -467,6 +510,27 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   });
   const themWsRef = useRef(themWs);
   themWsRef.current = themWs;
+
+  // Invalidate synchronously: React may batch stop and restart into one render.
+  const setCapturing = useCallback((value: boolean | ((previous: boolean) => boolean)) => {
+    const next = typeof value === "function" ? value(capturingRef.current) : value;
+    if (next !== capturingRef.current) {
+      captureEpochRef.current += 1;
+      speechEpochRef.current += 1;
+      capturingRef.current = next;
+      if (flushSafetyTimerRef.current !== null) {
+        clearTimeout(flushSafetyTimerRef.current);
+        flushSafetyTimerRef.current = null;
+      }
+      rolledTextRef.current = "";
+      utteranceEndedRef.current = false;
+      if (!next) {
+        utteranceActiveRef.current = false;
+        themWsRef.current.close();
+      }
+    }
+    setCapturingState(next);
+  }, []);
 
   /**
    * Sends the accumulated utterance to the question assembler once, and clears
@@ -561,6 +625,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
     const wav = encodeWav16kMono(pcm.subarray(0, written));
     const started = Date.now();
+    const epoch = speechEpochRef.current;
     try {
       const text = await transcribeWithFallback({
         selectedProvider: selectedSttProvider,
@@ -568,6 +633,9 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
         priority: "high",
         prompt: buildInitialPrompt(),
       });
+      // The utterance rotated while this pass was in flight: its preview
+      // belongs to finished audio and must not overwrite the new line.
+      if (epoch !== speechEpochRef.current) return;
       const clean = text.trim();
       if (!clean || isSttErrorMessage(clean)) return;
       recordPartialLatency(Date.now() - started);
@@ -654,6 +722,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
     listen("speech-start", () => {
       if (!capturingRef.current) return;
+      utteranceActiveRef.current = true;
       const epoch = ++speechEpochRef.current;
       // A new utterance starts empty: the previous monologue was already
       // dispatched (or dropped) when its speech ended.
@@ -668,28 +737,14 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
           Date.now() - lastAudioSpeechEndRef.current
         );
       }
-      rolledTextRef.current = "";
-      utteranceEndedRef.current = false;
-      // Cancel the previous utterance's flush-safety timer.
-      //
-      // The safety timer belonged to the utterance that is now over: dispatch it
-      // BEFORE cancelling, then start clean.
-      //
-      // It is armed for 1200ms when speech ends. If the person resumes inside
-      // that window it must not fire later against the NEXT utterance — that was
-      // the original bug, which truncated a live stream mid-sentence and asked
-      // the AI a half-formed question. But simply cancelling it is the opposite
-      // mistake: the text already recognised for the finished utterance was then
-      // never dispatched at all, because the socket's own final had not arrived
-      // yet (recognition lags ~1s) and this handler wipes the accumulator that
-      // held it. Flushing first, then clearing, keeps both properties.
+      // Flush the previous utterance before clearing its accumulated text.
       if (flushSafetyTimerRef.current) {
         clearTimeout(flushSafetyTimerRef.current);
         flushSafetyTimerRef.current = null;
-        // Only if there is something to dispatch: `flushUtteranceRef` also clears
-        // the accumulator and re-arms nothing, so this is safe when empty.
         flushUtteranceRef.current();
       }
+      rolledTextRef.current = "";
+      utteranceEndedRef.current = false;
       livePcmRef.current = [];
       liveTextRef.current = "";
       utteranceStartedAtRef.current = Date.now();
@@ -721,6 +776,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
   useEffect(() => {
     if (!capturing) {
+      utteranceActiveRef.current = false;
       themWsRef.current.finalizeAndClose();
       speechEpochRef.current += 1;
       // Stop the live cadence with the capture: a pending timer used to fire
@@ -735,6 +791,8 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       utteranceStartedAtRef.current = null;
     }
     return () => {
+      utteranceActiveRef.current = false;
+      micStreamOwnsModelRef.current = false;
       themWsRef.current.finalizeAndClose();
       if (liveTimerRef.current !== null) {
         clearTimeout(liveTimerRef.current);
@@ -758,6 +816,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
       // before the next utterance is measured from here rather than from the
       // text that this transcription will produce much later.
       lastAudioSpeechEndRef.current = Date.now();
+      utteranceActiveRef.current = false;
       speechEpochRef.current += 1;
       if (
         !micStreamOwnsModelRef.current &&
@@ -869,6 +928,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
 
         const discardedUnlisten = await listen("speech-discarded", (event) => {
           const reason = event.payload as string;
+          utteranceActiveRef.current = false;
           console.log("Speech discarded:", reason);
           // The VAD opened a stream on `speech-start`, but the engine judged the
           // clip too short to transcribe and will never send a `final`. Nothing
@@ -1006,6 +1066,14 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     /** Takes the stream back once the microphone utterance ended. */
     releaseMicModelOwnership: useCallback(() => {
       micStreamOwnsModelRef.current = false;
+      if (
+        capturingRef.current &&
+        streamingModelRef.current &&
+        utteranceActiveRef.current
+      ) {
+        themWsRef.current.beginUtterance();
+        themWsRef.current.start();
+      }
     }, []),
     startContinuousRecording,
     ignoreContinuousRecording,

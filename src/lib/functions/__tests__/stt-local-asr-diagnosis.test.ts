@@ -12,6 +12,7 @@ import type { TYPE_PROVIDER } from "@/types";
 const invokeMock = vi.fn();
 const pluginFetchMock = vi.fn();
 const windowFetchMock = vi.fn();
+const baseUrlMock = vi.fn();
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -28,7 +29,7 @@ vi.mock("@/lib", () => ({
 }));
 
 vi.mock("@/lib/asr-discovery", () => ({
-  getAsrBaseUrl: async () => "http://127.0.0.1:9877",
+  getAsrBaseUrl: () => baseUrlMock(),
   resetAsrBaseUrlCache: () => {},
 }));
 
@@ -66,12 +67,24 @@ const transcribe = () =>
 
 beforeEach(() => {
   invokeMock.mockReset();
+  baseUrlMock.mockReset().mockResolvedValue("http://127.0.0.1:9877");
   pluginFetchMock.mockReset();
   windowFetchMock.mockReset();
   window.fetch = windowFetchMock as unknown as typeof window.fetch;
 });
 
 describe("local ASR failure diagnosis", () => {
+  it("does not upload audio without a verified sidecar endpoint", async () => {
+    baseUrlMock.mockResolvedValue("");
+    invokeMock.mockResolvedValue({
+      engine_running: false, model_found: true, model_path: "fixture.gguf",
+      models_dir: "fixture", reason: "Локальный движок распознавания не запущен.",
+    });
+    await expect(transcribe()).rejects.toThrow("Локальный движок распознавания не запущен.");
+    expect(windowFetchMock).not.toHaveBeenCalled();
+    expect(pluginFetchMock).not.toHaveBeenCalled();
+  });
+
   it("reports what the backend says is missing instead of a network error", async () => {
     const reason =
       "Модель распознавания не найдена. Откройте «Настройки → Хранилище и модели» и скачайте подходящую.";

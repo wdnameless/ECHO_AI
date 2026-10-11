@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseSync, type SupportedValueType } from "node:sqlite";
 import {
   createConversation,
@@ -6,26 +6,34 @@ import {
   getAllConversations,
   migrateLocalStorageToSQLite,
 } from "../chat-history.action";
+import { runRetentionCleanup } from "@/lib/retention";
 import type { ChatConversation } from "@/types";
 import { safeLocalStorage } from "@/lib";
+import monotonicTimestampMigration from "../../../../src-tauri/src/db/migrations/monotonic-conversation-timestamp.sql?raw";
 
 let memoryDb: DatabaseSync;
 let selectQueries: string[] = [];
+let afterExecute: ((query: string) => Promise<void>) | null = null;
 
 vi.mock("../config", () => ({
-  // Passthrough: these tests assert BEGIN/COMMIT ordering, so the lock must run.
-  withWriteLock: (fn: () => unknown) => fn(),
   getDatabase: vi.fn().mockImplementation(() => {
     return Promise.resolve({
       execute: async (query: string, params: unknown[] = []) => {
         const stmt = memoryDb.prepare(query);
-        const result = stmt.run(...(params as SupportedValueType[]));
+        const values = params as SupportedValueType[];
+        const result = /\$\d+\b/.test(query)
+          ? stmt.run(Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])))
+          : stmt.run(...values);
+        await afterExecute?.(query);
         return { rowsAffected: Number(result.changes) };
       },
       select: async <T>(query: string, params: unknown[] = []): Promise<T> => {
         selectQueries.push(query);
         const stmt = memoryDb.prepare(query);
-        const rows = stmt.all(...(params as SupportedValueType[]));
+        const values = params as SupportedValueType[];
+        const rows = /\$\d+\b/.test(query)
+          ? stmt.all(Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])))
+          : stmt.all(...values);
         return rows as unknown as T;
       },
     });
@@ -35,11 +43,13 @@ vi.mock("../config", () => ({
 describe("chat-history actions audit fixes (R01, R02, R26, R27)", () => {
   beforeEach(() => {
     selectQueries = [];
+    afterExecute = null;
     safeLocalStorage.removeItem("chat_history");
     safeLocalStorage.removeItem("chat_history_migrated_to_sqlite");
 
     memoryDb = new DatabaseSync(":memory:");
     memoryDb.exec(`
+      PRAGMA foreign_keys = ON;
       CREATE TABLE conversations (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
@@ -54,10 +64,13 @@ describe("chat-history actions audit fixes (R01, R02, R26, R27)", () => {
         timestamp INTEGER NOT NULL,
         attached_files TEXT,
         -- Mirrors migration 7 in src-tauri/src/db/migrations/message-source.sql.
-        source TEXT
+        source TEXT,
+        FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
       );
     `);
+    memoryDb.exec(monotonicTimestampMigration);
   });
+  afterEach(() => { memoryDb.close(); });
 
   describe("R01 / R02: Retention of >100 messages on update", () => {
     it("retains all 150 messages when updating a conversation (R01, R02)", async () => {
@@ -259,5 +272,89 @@ describe("chat-history actions audit fixes (R01, R02, R26, R27)", () => {
       expect(conv0?.messages.length).toBe(1);
       expect(conv0?.messages[0].id).toBe("msg-multi-0");
     });
+  });
+
+  describe("Interleaved retention cleanup and monotonic triggers", () => {
+    it("preserves active conversation and its messages across batched update interleaved with retention cleanup", async () => {
+      const now = 1_700_000_000_000;
+      const fortyDaysMs = 40 * 24 * 60 * 60 * 1000;
+      const oldTimestamp = now - fortyDaysMs;
+
+      // Create an initial conversation with 60 messages: 50 from 40 days ago, 10 fresh
+      const messages = [
+        ...Array.from({ length: 50 }, (_, i) => ({
+          id: `hist-${i}`,
+          role: "user" as const,
+          content: `Old query ${i}`,
+          timestamp: oldTimestamp + i * 1000,
+        })),
+        ...Array.from({ length: 10 }, (_, i) => ({
+          id: `fresh-${i}`,
+          role: "assistant" as const,
+          content: `Fresh reply ${i}`,
+          timestamp: now - 5000 + i * 100,
+        })),
+      ];
+
+      const conv: ChatConversation = {
+        id: "conv-active-interleaved",
+        title: "Active Chat",
+        createdAt: oldTimestamp,
+        updatedAt: now,
+        messages,
+      };
+
+      await createConversation(conv);
+
+      const updatedConv = { ...conv, title: "Active Chat Renamed", updatedAt: now };
+      let interleaved = false;
+      afterExecute = async (query) => {
+        if (!interleaved && /^INSERT.*INTO\s+messages\b/i.test(query)) {
+          interleaved = true;
+          await runRetentionCleanup(30, now);
+        }
+      };
+      await updateConversation(updatedConv);
+      expect(interleaved).toBe(true);
+
+      // Conversation and all 60 messages survive
+      const all = await getAllConversations();
+      const active = all.find((c) => c.id === "conv-active-interleaved");
+      expect(active).toBeDefined();
+      expect(active?.title).toBe("Active Chat Renamed");
+      expect(active?.messages.length).toBe(60);
+    });
+
+    it("does not expose an empty revived parent between retention deletion phases", async () => {
+      const now = 1_700_000_000_000;
+      const oldTimestamp = now - 40 * 24 * 60 * 60 * 1000;
+      await createConversation({
+        id: "expired", title: "Expired conversation", createdAt: oldTimestamp, updatedAt: oldTimestamp,
+        messages: [
+          { id: "old-q", role: "user", content: "Old question", timestamp: oldTimestamp },
+          { id: "old-a", role: "assistant", content: "Old answer", timestamp: oldTimestamp + 1 },
+        ],
+      });
+      let attempted = false;
+      let revived = false;
+      afterExecute = async (query) => {
+        if (!attempted && /^DELETE\b/i.test(query)) {
+          attempted = true;
+          try {
+            memoryDb.prepare("INSERT INTO messages (id,conversation_id,role,content,timestamp) VALUES ('new','expired','user','Concurrent message',?)").run(now);
+            revived = true;
+          } catch {
+            // Once the atomic parent deletion commits, a writer must see missing-parent failure.
+          }
+        }
+      };
+      const result = await runRetentionCleanup(30, now);
+      expect(attempted).toBe(true);
+      expect(result.deletedConversations).toBe(1);
+      expect(revived).toBe(false);
+      expect(await getAllConversations()).toEqual([]);
+      expect(memoryDb.prepare("SELECT count(*) AS count FROM messages").get()?.count).toBe(0);
+    });
+
   });
 });

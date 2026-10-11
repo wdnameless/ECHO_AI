@@ -61,9 +61,11 @@ export function useMicWsStreaming({
   const micOwnerEpochRef = useRef<number | null>(null);
 
   const releaseMicOwner = useCallback((epoch = micOwnerEpochRef.current) => {
+    // Always drop queued requests: a channel that never owned the slot can
+    // still have a pending handoff entry waiting for it.
+    cancelSlotQueue("me");
     if (epoch === null || micOwnerEpochRef.current !== epoch) return;
     micOwnerEpochRef.current = null;
-    cancelSlotQueue("me");
     releaseStream("me");
   }, []);
 
@@ -160,7 +162,9 @@ export function useMicWsStreaming({
           enqueueStreamSlot("me", () => {
             if (capturingRef.current && micWsWantRef.current && micUtteranceActiveRef.current) {
               micWsConnectRef.current();
+              return true;
             }
+            return false;
           });
           scheduleMicWsReconnect();
           return;

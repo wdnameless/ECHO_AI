@@ -29,6 +29,7 @@ import {
   getActiveProfile,
 } from "@/lib/storage/prompt-profiles";
 import { selectFillerForText } from "@/lib/transcript-stabilizer";
+import { scrubAsrHallucinations } from "@/lib/asr-hallucinations";
 import { setUnthrottledTimeout } from "@/lib/timer-worker";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { STORAGE_KEYS } from "@/config/constants";
@@ -286,6 +287,12 @@ export function useQuestionPipeline({
     cancelGapTimerRef.current?.();
     cancelGapTimerRef.current = null;
     const emitted = questionAssemblerRef.current?.flush("them", { allowContinuation: true });
+    // Flush the monologue twin too: leaving it filled prepends this stale
+    // question to the next speech via the monologue buffer.
+    monologueBufferRef.current?.clear();
+    setMonologueText("");
+    setIsMonologueReady(false);
+    setMonologueStatus("idle");
     updateTurnGate(false);
     if (emitted?.kind === "emitted" && emitted.question) {
       await onTriggerAI(emitted.question, "them");
@@ -332,22 +339,36 @@ export function useQuestionPipeline({
       const profile = currentProfile;
       const monoMode: MonologueMode = profile.monologue?.mode ?? "auto";
 
-      const monoPush = monoBuffer.push(transcription);
-      setMonologueText(monoPush.text);
+      const trimmed = transcription.trim();
+      if (!trimmed) {
+        console.log(`[Echo AI] Question fragment discarded (empty): "${transcription}"`);
+        return;
+      }
+
+      const text = scrubAsrHallucinations(trimmed);
+      if (!text) {
+        console.log(
+          `[Echo AI] Question fragment discarded (hallucination): "${transcription}"`
+        );
+        return;
+      }
 
       const result = assembler.push({
         source: "them",
-        text: transcription,
+        text,
         timestamp: Date.now(),
         pauseBeforeMs,
       });
 
       if (result.kind === "discarded") {
         console.log(
-          `[Echo AI] Question fragment discarded (${result.reason}): "${transcription}"`
+          `[Echo AI] Question fragment discarded (${result.reason}): "${text}"`
         );
         return;
       }
+
+      const monoPush = monoBuffer.push(text);
+      setMonologueText(monoPush.text);
 
       // Fast-path in interview mode on explicit question mark
       if (
@@ -356,6 +377,7 @@ export function useQuestionPipeline({
         profile.interviewMode &&
         !monoPush.windowExceeded
       ) {
+        const rotated = assembler.current;
         cancelGapTimerRef.current?.();
         cancelGapTimerRef.current = null;
         monoBuffer.clear();
@@ -364,6 +386,20 @@ export function useQuestionPipeline({
         setIsMonologueReady(false);
         setMonologueStatus("idle");
         await onTriggerAI(result.question, "them");
+        // Early-pause emission rotates a NEW segment into pending: without a
+        // re-armed timer it would sit there un-flushed if the speaker stops.
+        if (rotated && assembler.current) {
+          const gapMs = profile.flushGapMs ?? assembler.currentGapMs;
+          cancelGapTimerRef.current = setUnthrottledTimeout(() => {
+            cancelGapTimerRef.current = null;
+            const flushed = assembler.flush("them", { allowContinuation: true });
+            updateTurnGate(false);
+            if (flushed?.kind === "emitted") {
+              void onTriggerAI(flushed.question, "them");
+            }
+          }, gapMs);
+          updateTurnGate(true);
+        }
         return;
       }
 

@@ -664,5 +664,205 @@ describe("useQuestionPipeline", () => {
         expect(result.current.turnGateWaiting).toBe(false);
       });
     });
+    describe("Discarded speech fragment & hallucination exclusion", () => {
+      it("excludes assembler-discarded duplicate fragments from monologue buffer and AI dispatch in auto mode", async () => {
+        const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+        const liveSegmentsRef = { current: [] as LiveSegment[] };
+
+        const { result } = renderHook(() =>
+          useQuestionPipeline({ onTriggerAI, liveSegmentsRef })
+        );
+
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Как работает");
+        });
+
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("сборщик мусора");
+        });
+
+        // Re-transcription of full sentence by STT - discarded by assembler as duplicate
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Как работает сборщик мусора");
+        });
+
+        // Fast forward past flushGapMs (1500ms)
+        await act(async () => {
+          vi.advanceTimersByTime(1600);
+        });
+
+        expect(onTriggerAI).toHaveBeenCalledTimes(1);
+        expect(onTriggerAI).toHaveBeenCalledWith("Как работает сборщик мусора", "them");
+      });
+
+      it("excludes discarded duplicate fragments in semi and manual monologue modes", async () => {
+        const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+        const liveSegmentsRef = { current: [] as LiveSegment[] };
+        const semiProfile = {
+          id: "semi",
+          name: "Semi",
+          description: "",
+          systemPrompt: "",
+          humanizerEnabled: false,
+          interviewMode: false,
+          customStyle: "",
+          ragResumeEnabled: false,
+          ragJobEnabled: false,
+          flushGapMs: 1000,
+          monologue: { mode: "semi" as const, maxWindow: 20000 },
+        };
+
+        const { result } = renderHook(() =>
+          useQuestionPipeline({ onTriggerAI, liveSegmentsRef, profile: semiProfile })
+        );
+
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Как работает");
+        });
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("сборщик мусора");
+        });
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Как работает сборщик мусора");
+        });
+
+        await act(async () => {
+          vi.advanceTimersByTime(1100);
+        });
+
+        expect(result.current.isMonologueReady).toBe(true);
+        expect(result.current.monologueText).toBe("Как работает сборщик мусора");
+
+        await act(async () => {
+          await result.current.confirmMonologue();
+        });
+
+        expect(onTriggerAI).toHaveBeenCalledTimes(1);
+        expect(onTriggerAI).toHaveBeenCalledWith("Как работает сборщик мусора", "them");
+
+        // Manual mode verification
+        const manualProfile = {
+          ...semiProfile,
+          id: "manual",
+          monologue: { mode: "manual" as const, maxWindow: 20000 },
+        };
+        const manualHook = renderHook(() =>
+          useQuestionPipeline({ onTriggerAI, liveSegmentsRef, profile: manualProfile })
+        );
+
+        await act(async () => {
+          await manualHook.result.current.handleInterviewerTranscription("Архитектура микросервисов");
+        });
+        await act(async () => {
+          await manualHook.result.current.handleInterviewerTranscription("Архитектура микросервисов");
+        });
+
+        await act(async () => {
+          await manualHook.result.current.flushMonologue();
+        });
+
+        expect(onTriggerAI).toHaveBeenCalledTimes(2);
+        expect(onTriggerAI).toHaveBeenLastCalledWith("Архитектура микросервисов", "them");
+      });
+
+      it("excludes ASR hallucination boilerplate without polluting monologue buffer or dispatching", async () => {
+        const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+        const liveSegmentsRef = { current: [] as LiveSegment[] };
+
+        const { result } = renderHook(() =>
+          useQuestionPipeline({ onTriggerAI, liveSegmentsRef })
+        );
+
+        // Pure hallucination segment
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Субтитры сделал DimaTorzok");
+        });
+
+        await act(async () => {
+          vi.advanceTimersByTime(2000);
+        });
+
+        expect(onTriggerAI).not.toHaveBeenCalled();
+        expect(result.current.monologueText).toBe("");
+
+        // Hallucination interleaved between real speech fragments
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Расскажите про ваш опыт");
+        });
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Субтитры сделал DimaTorzok");
+        });
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("в распределенных системах");
+        });
+
+        await act(async () => {
+          vi.advanceTimersByTime(1600);
+        });
+
+        expect(onTriggerAI).toHaveBeenCalledTimes(1);
+        expect(onTriggerAI).toHaveBeenCalledWith(
+          "Расскажите про ваш опыт в распределенных системах",
+          "them"
+        );
+      });
+
+      it("preserves continuous speech accumulation and maxWindow emission in monologue buffer", async () => {
+        const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+        const liveSegmentsRef = { current: [] as LiveSegment[] };
+        const autoProfile = {
+          id: "auto-mw",
+          name: "Auto MW",
+          description: "",
+          systemPrompt: "",
+          humanizerEnabled: false,
+          interviewMode: false,
+          customStyle: "",
+          ragResumeEnabled: false,
+          ragJobEnabled: false,
+          flushGapMs: 1500,
+          monologue: { mode: "auto" as const, maxWindow: 3000 },
+        };
+
+        const { result } = renderHook(() =>
+          useQuestionPipeline({ onTriggerAI, liveSegmentsRef, profile: autoProfile })
+        );
+
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Первая часть длинного ответа.");
+        });
+
+        await act(async () => {
+          vi.advanceTimersByTime(1000);
+        });
+
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Вторая часть длинного ответа.");
+        });
+
+        await act(async () => {
+          vi.advanceTimersByTime(1000);
+        });
+
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Третья часть длинного ответа.");
+        });
+
+        await act(async () => {
+          vi.advanceTimersByTime(1100);
+        });
+
+        // 3100ms >= maxWindowMs 3000ms: maxWindow exceeded
+        await act(async () => {
+          await result.current.handleInterviewerTranscription("Четвертая часть длинного ответа.");
+        });
+
+        expect(onTriggerAI).toHaveBeenCalledTimes(1);
+        expect(onTriggerAI).toHaveBeenCalledWith(
+          "Первая часть длинного ответа. Вторая часть длинного ответа. Третья часть длинного ответа. Четвертая часть длинного ответа.",
+          "them"
+        );
+      });
+    });
   });
 });

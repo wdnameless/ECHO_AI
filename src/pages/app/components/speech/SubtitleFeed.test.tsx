@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { SubtitleFeed } from "./SubtitleFeed";
 import type { ChatConversation } from "@/hooks/useSystemAudio";
+import { isSelfLearningEnabled, recordFeedback } from "@/lib/storage/user-facts";
 const invokeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock, Channel: class {} }));
 
@@ -32,6 +33,8 @@ vi.mock("@/lib/metrics", () => ({
 
 vi.mock("@/lib/storage/user-facts", () => ({
   recordFeedback: vi.fn(),
+  isSelfLearningEnabled: vi.fn(() => true),
+  setSelfLearningEnabled: vi.fn(),
   getSelfEvolutionStats: () => ({
     totalEdits: 0,
     likes: 0,
@@ -121,9 +124,10 @@ describe("R18: SubtitleFeed streaming isolation", () => {
 
     expect(screen.getByText("«Hold on, thinking...»")).toBeDefined();
     expect(screen.getByText("Заполните паузу (зачитайте вслух):")).toBeDefined();
-    expect(screen.getByRole("button", { name: "Другой" })).toBeDisabled();
+    // No stall toolbar while healthy: no recovery buttons rendered at all.
+    expect(screen.queryByRole("button", { name: "Другой" })).toBeNull();
   });
-  it("renders quiet stall control row while AI is processing and prominent banner when stalled", () => {
+  it("hides stall recovery while healthy and shows the banner only when stalled", () => {
     const onWait = vi.fn();
     const onRetry = vi.fn();
     const onNext = vi.fn();
@@ -150,11 +154,10 @@ describe("R18: SubtitleFeed streaming isolation", () => {
       />
     );
 
-    // Quiet row has the action buttons and link
-    expect(screen.getByText("Ждать")).toBeDefined();
-    expect(screen.getByText("Повторить")).toBeDefined();
-    expect(screen.getByText("Другой (gemini-flash)")).toBeDefined();
-    expect(screen.getByText("Провайдеры")).toBeDefined();
+    // Healthy streaming: no recovery buttons at all (retry would kill the answer).
+    expect(screen.queryByText("Ждать")).toBeNull();
+    expect(screen.queryByText("Повторить")).toBeNull();
+    expect(screen.queryByText("Провайдеры")).toBeNull();
     expect(screen.queryByText(/Провайдер молчит/)).toBeNull();
 
     // Rerender as stalled
@@ -181,6 +184,9 @@ describe("R18: SubtitleFeed streaming isolation", () => {
 
     // Prominent text appears
     expect(screen.getByText(/Провайдер молчит \d+с — решайте: ждать, повторить или взять gemini-flash/)).toBeDefined();
+    expect(screen.getByText("Ждать")).toBeDefined();
+    expect(screen.getByText("Повторить")).toBeDefined();
+    expect(screen.getByText("Провайдеры")).toBeDefined();
   });
 
   it("renders streaming AI tail separately when tokens arrive without clobbering committed rows", () => {
@@ -455,4 +461,78 @@ describe("a row whose translation fails", () => {
     expect(mock.mock.calls.length).toBe(afterFailure);
   });
 
+});
+
+describe("T2: SubtitleFeed self-learning feedback gate and toast", () => {
+  const feedbackConversation: ChatConversation = {
+    id: "conv-feedback",
+    title: "Feedback Conv",
+    messages: [
+      {
+        id: "msg-q",
+        role: "user",
+        content: "What is concurrency?",
+        timestamp: 1000,
+        source: "them",
+      },
+      {
+        id: "msg-ai",
+        role: "assistant",
+        content: "Concurrency is about structure.",
+        timestamp: 2000,
+      },
+    ],
+    createdAt: 1000,
+    updatedAt: 2000,
+  };
+
+  it("shows toast and does NOT call recordFeedback when self-learning is disabled", () => {
+    vi.mocked(isSelfLearningEnabled).mockReturnValue(false);
+
+    render(
+      <SubtitleFeed
+        conversation={feedbackConversation}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    const likeBtn = screen.getByTitle("Лайк: закрепить стиль ответа");
+    fireEvent.click(likeBtn);
+
+    expect(recordFeedback).not.toHaveBeenCalled();
+    expect(screen.getByText("Самообучение выключено")).toBeInTheDocument();
+  });
+
+  it("calls recordFeedback when self-learning is enabled", () => {
+    vi.mocked(isSelfLearningEnabled).mockReturnValue(true);
+
+    render(
+      <SubtitleFeed
+        conversation={feedbackConversation}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    const likeBtn = screen.getByTitle("Лайк: закрепить стиль ответа");
+    fireEvent.click(likeBtn);
+
+    expect(recordFeedback).toHaveBeenCalled();
+    expect(screen.getByText(/Стиль закреплён/)).toBeInTheDocument();
+  });
 });

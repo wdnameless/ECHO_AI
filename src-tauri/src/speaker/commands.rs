@@ -112,11 +112,6 @@ pub async fn start_system_audio_capture(
     }
 
     let app_clone = app.clone();
-    let vad_config = state
-        .vad_config
-        .lock()
-        .map_err(|e| format!("Failed to read VAD config: {}", e))?
-        .clone();
 
     // Mark as capturing BEFORE spawning task
     *state
@@ -139,9 +134,14 @@ pub async fn start_system_audio_capture(
     let _ = app_clone.emit("capture-started", sr);
 
     let state_clone = app.state::<crate::AudioState>();
+    let vad_config_shared = state_clone.inner().vad_config.clone();
+    let vad_config = vad_config_shared
+        .lock()
+        .map_err(|e| format!("Failed to read VAD config: {}", e))?
+        .clone();
     let task = tokio::spawn(async move {
         if vad_config.enabled {
-            run_vad_capture(app_clone.clone(), stream, sr, vad_config).await;
+            run_vad_capture(app_clone.clone(), stream, sr, vad_config, vad_config_shared).await;
         } else {
             run_continuous_capture(app_clone.clone(), stream, sr, vad_config).await;
         }
@@ -203,14 +203,33 @@ fn finish_speech_segment(
     flush_pending_speech_frame(samples, emitted_len, emit_frame);
     emit_final(samples);
 }
+/// Applies slider changes from shared state into the running capture loop.
+/// Non-blocking: a contended lock skips this refresh, the next chunk retries.
+fn refresh_live_config(
+    config: &mut VadConfig,
+    live_config: &std::sync::Arc<std::sync::Mutex<VadConfig>>,
+) {
+    if let Ok(fresh) = live_config.try_lock() {
+        config.sensitivity_rms = fresh.sensitivity_rms;
+        config.peak_threshold = fresh.peak_threshold;
+        config.silence_chunks = fresh.silence_chunks;
+        config.min_speech_chunks = fresh.min_speech_chunks;
+        config.pre_speech_chunks = fresh.pre_speech_chunks;
+        config.noise_gate_threshold = fresh.noise_gate_threshold;
+        config.hop_size = fresh.hop_size;
+    }
+}
+
 
 // VAD-enabled capture - OPTIMIZED for real-time speech detection
 async fn run_vad_capture(
     app: AppHandle,
     stream: impl StreamExt<Item = f32> + Unpin,
     sr: u32,
-    config: VadConfig,
+    initial_config: VadConfig,
+    live_config: std::sync::Arc<std::sync::Mutex<VadConfig>>,
 ) {
+    let mut config = initial_config;
     let mut stream = stream;
     let mut buffer: VecDeque<f32> = VecDeque::new();
     let mut pre_speech: VecDeque<f32> =
@@ -262,8 +281,10 @@ async fn run_vad_capture(
         }
     };
     while let Some(sample) = stream.next().await {
+        // Live config refresh (see refresh_live_config): slider changes apply
+        // without restarting the capture.
+        refresh_live_config(&mut config, &live_config);
         buffer.push_back(sample);
-
         // Process in fixed chunks for VAD analysis
         while buffer.len() >= config.hop_size {
             let mut mono = Vec::with_capacity(config.hop_size);
@@ -860,6 +881,23 @@ pub fn get_output_devices() -> Result<Vec<AudioDevice>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_live_config_refresh_applies_sliders() {
+        use std::sync::{Arc, Mutex};
+        let mut running = VadConfig::default();
+        let shared = Arc::new(Mutex::new(VadConfig::default()));
+        {
+            let mut fresh = shared.lock().unwrap();
+            fresh.silence_chunks = 30;
+            fresh.noise_gate_threshold = 0.009;
+            fresh.enabled = false; // must NOT leak into a running loop
+        }
+        refresh_live_config(&mut running, &shared);
+        assert_eq!(running.silence_chunks, 30);
+        assert_eq!(running.noise_gate_threshold, 0.009);
+        assert!(running.enabled, "enabled stays a stop/start operation");
+    }
 
     #[test]
     fn test_vad_config_defaults() {

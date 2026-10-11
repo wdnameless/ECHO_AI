@@ -49,8 +49,19 @@ export function useEffectiveProvider(
     return () => window.removeEventListener("storage", handleStorage);
   }, [effectiveSetSelectedAIProvider]);
 
-  const effectiveProviderId =
-    syncedProviderId || propActiveProviderId || selectedAIProvider?.provider || "";
+  // Live failover wins over a stale manual pick. A failover moves ONLY the
+  // live prop (the store keeps the configured provider), while a manual or
+  // cross-window pick moves the synced/store value — so the prop wins only
+  // when it diverges from BOTH. Without this, the badge kept showing the dead
+  // provider while generation already ran on the next one.
+  const storeProviderId = selectedAIProvider?.provider;
+  const isLiveFailover =
+    !!propActiveProviderId &&
+    propActiveProviderId !== syncedProviderId &&
+    propActiveProviderId !== storeProviderId;
+  const effectiveProviderId = isLiveFailover
+    ? propActiveProviderId
+    : syncedProviderId || propActiveProviderId || storeProviderId || "";
   const effectiveProvider = allAiProviders?.find((p) => p.id === effectiveProviderId);
   const effectiveModel = resolveProviderModel(
     effectiveProvider || allAiProviders?.find((p) => p.id === selectedAIProvider?.provider),

@@ -304,10 +304,21 @@ export class QuestionAssembler {
         return prevEmitted;
       }
     }
-
     if (gap > this.gapMs) {
       // Long pause. If the pending text was already emitted and answered,
       // this fragment may be a follow-up tail - merge it with the parent.
+      // UNLESS the caller extended the window (gap timer re-armed at 1.4x):
+      // then the speaker is still on the same thought and the fragment
+      // continues it instead of wiping the accumulation.
+      if (gap <= this.gapMs * 1.4 && QuestionAssembler.looksUnfinished(p.segments.join(" "))) {
+        p.segments.push(text);
+        p.lastTs = segment.timestamp;
+        const question = p.segments.join(" ");
+        if (this.immediateOnQuestionMark && question.endsWith("?")) {
+          return this.emit();
+        }
+        return { kind: "pending", question };
+      }
       const seed = this.isFollowUpTail(text) ? this.lastEmitted!.text : undefined;
       return this.rotateOrEmit(segment, seed);
     }

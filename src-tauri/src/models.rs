@@ -13,6 +13,8 @@
 //! matches, so a truncated or substituted file can never reach the engine.
 
 use std::io::{Read, Seek, Write};
+use std::collections::HashSet;
+use std::sync::{Condvar, LazyLock, Mutex};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -271,17 +273,23 @@ impl DownloadTarget {
         Ok(())
     }
 
-    /// Flushes and renames the completed file into place.
-    fn finish(mut self) -> Result<PathBuf, String> {
+    /// Flushes, syncs, and closes the partial file handle without publishing it.
+    /// Returns the path to the flushed partial file for digest validation.
+    fn close_partial(mut self) -> Result<PathBuf, String> {
         self.file.flush().map_err(|e| format!("ошибка записи: {e}"))?;
         self.file
             .sync_all()
             .map_err(|e| format!("ошибка записи: {e}"))?;
         drop(self.file);
-        std::fs::rename(&self.temp, &self.final_path).map_err(|e| {
+        Ok(self.temp)
+    }
+
+    /// Atomically publishes the verified partial file to its final destination.
+    fn publish(temp: &Path, final_path: &Path) -> Result<PathBuf, String> {
+        std::fs::rename(temp, final_path).map_err(|e| {
             format!("не удалось сохранить модель: {e}")
         })?;
-        Ok(self.final_path)
+        Ok(final_path.to_path_buf())
     }
 
     /// Keeps the partial file, so the next attempt can resume.
@@ -290,6 +298,31 @@ impl DownloadTarget {
     }
 }
 
+static ACTIVE_DOWNLOADS: LazyLock<(Mutex<HashSet<PathBuf>>, Condvar)> =
+    LazyLock::new(|| (Mutex::new(HashSet::new()), Condvar::new()));
+
+struct DownloadLockGuard(PathBuf);
+
+impl DownloadLockGuard {
+    fn acquire(path: &Path) -> Self {
+        let (lock, cvar) = &*ACTIVE_DOWNLOADS;
+        let mut active = lock.lock().unwrap_or_else(|p| p.into_inner());
+        while active.contains(path) {
+            active = cvar.wait(active).unwrap_or_else(|p| p.into_inner());
+        }
+        active.insert(path.to_path_buf());
+        DownloadLockGuard(path.to_path_buf())
+    }
+}
+
+impl Drop for DownloadLockGuard {
+    fn drop(&mut self) {
+        let (lock, cvar) = &*ACTIVE_DOWNLOADS;
+        let mut active = lock.lock().unwrap_or_else(|p| p.into_inner());
+        active.remove(&self.0);
+        cvar.notify_all();
+    }
+}
 /// Progress reported while downloading.
 pub type ProgressFn<'a> = &'a mut dyn FnMut(u64, u64);
 
@@ -401,6 +434,13 @@ pub fn download_into(
         return Ok(target_path);
     }
 
+    // Serialize concurrent downloads of the same file to prevent trampling
+    // the shared partial file or exposing unverified bytes to other callers.
+    let _lock = DownloadLockGuard::acquire(&target_path);
+    if target_path.is_file() {
+        return Ok(target_path);
+    }
+
     let client = reqwest::blocking::Client::builder()
         .timeout(None)
         .build()
@@ -432,19 +472,19 @@ pub fn download_into(
                     continue;
                 }
 
-                let saved = sink.finish()?;
+                // Close and flush the partial file BEFORE computing SHA-256.
+                // The file must not be published to target_path yet, ensuring
+                // corrupt or in-flight models never become discoverable.
+                let partial = sink.close_partial()?;
 
-                // Hash the result and refuse anything that does not match the
-                // published digest: a corrupted model would otherwise fail deep
-                // inside the engine with an error nobody can interpret.
-                let actual = sha256_file(&saved)?;
+                let actual = sha256_file(&partial)?;
                 if actual.eq_ignore_ascii_case(&file.sha256) {
-                    return Ok(saved);
+                    return DownloadTarget::publish(&partial, &target_path);
                 }
 
                 // A mismatch means the bytes are wrong, not merely incomplete.
-                // Keeping them would make every retry fail the same way.
-                let _ = std::fs::remove_file(&saved);
+                // Delete the corrupt partial file; target_path was never touched.
+                let _ = std::fs::remove_file(&partial);
                 last_error = format!(
                     "файл повреждён: ожидался SHA-256 {}, получен {actual}",
                     file.sha256
@@ -1132,5 +1172,59 @@ mod download_tests {
             hits_after_first,
             "a present file must not trigger another request"
         );
+    }
+
+    #[test]
+    fn closing_a_download_does_not_publish_unverified_bytes() {
+        let scratch = ScratchDir::new("unverified_partial_visibility");
+        let payload: Vec<u8> = (0..25_000u32).map(|i| (i % 43) as u8).collect();
+        let file = entry_for(&payload);
+        let final_path = scratch.path().join(&file.filename);
+        let mut transfer = DownloadTarget::open(final_path.clone()).unwrap();
+        transfer.write(&payload).unwrap();
+        let partial = transfer.close_partial().unwrap();
+        assert!(
+            !final_path.is_file(),
+            "closing a transfer must not expose a model before digest validation"
+        );
+        assert_eq!(sha256_file(&partial).unwrap(), file.sha256);
+        let published = DownloadTarget::publish(&partial, &final_path).unwrap();
+        assert_eq!(sha256_file(&published).unwrap(), file.sha256);
+    }
+
+    #[test]
+    fn concurrent_downloads_do_not_trample_or_expose_unverified_bytes() {
+        let scratch = ScratchDir::new("concurrent_downloads");
+        let payload: Vec<u8> = (0..35_000u32).map(|i| (i % 53) as u8).collect();
+        let file = entry_for(&payload);
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let url = serve(payload.clone(), Behaviour::Normal, hits.clone());
+
+        let t1 = {
+            let scratch_path = scratch.path().to_path_buf();
+            let url = url.clone();
+            let file = file.clone();
+            std::thread::spawn(move || {
+                download_into(&scratch_path, &url, &file, &mut |_, _| {})
+            })
+        };
+
+        let t2 = {
+            let scratch_path = scratch.path().to_path_buf();
+            let url = url.clone();
+            let file = file.clone();
+            std::thread::spawn(move || {
+                download_into(&scratch_path, &url, &file, &mut |_, _| {})
+            })
+        };
+
+        let res1 = t1.join().expect("thread 1 panic").expect("thread 1 download");
+        let res2 = t2.join().expect("thread 2 panic").expect("thread 2 download");
+
+        assert_eq!(res1, res2);
+        assert!(res1.is_file());
+        assert_eq!(std::fs::metadata(&res1).expect("meta").len(), payload.len() as u64);
+        assert_eq!(sha256_file(&res1).expect("hash"), file.sha256);
     }
 }

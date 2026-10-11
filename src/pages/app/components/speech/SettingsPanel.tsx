@@ -32,6 +32,8 @@ import {
   setAsrLanguage,
   type AsrLanguage,
 } from "@/lib/asr-language";
+import { useApp } from "@/contexts";
+import { getActiveProfile } from "@/lib/storage/prompt-profiles";
 
 // Sensitivity presets for simpler UX.
 //
@@ -97,6 +99,8 @@ export const SettingsPanel = ({
     getAsrLanguage()
   );
 
+  const { activeProfileId, updatePromptProfile } = useApp();
+  const activeFlushGapMs = getActiveProfile().flushGapMs ?? 450;
   // Determine current sensitivity preset based on values
   const getCurrentPreset = (): SensitivityPreset | "custom" => {
     for (const [key, preset] of Object.entries(SENSITIVITY_PRESETS)) {
@@ -360,12 +364,36 @@ export const SettingsPanel = ({
 
             {showAdvanced && (
               <div className="mt-3 space-y-3">
+                <div className="space-y-2">
+                  <Label className="text-xs font-medium flex items-center justify-between">
+                    <span>Пауза перед ответом</span>
+                    <span className="text-muted-foreground font-normal">
+                      {(activeFlushGapMs / 1000).toFixed(1)}s
+                    </span>
+                  </Label>
+                  <Slider
+                    value={[activeFlushGapMs]}
+                    onValueChange={([value]) =>
+                      updatePromptProfile(activeProfileId, {
+                        flushGapMs: Math.round(value),
+                      })
+                    }
+                    min={200}
+                    max={3000}
+                    step={50}
+                    className="w-full"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Сколько ждать тишины перед отправкой вопроса ИИ. Применяется сразу, без перезапуска.
+                  </p>
+                </div>
+
                 {/* VAD-specific advanced settings */}
                 {vadConfig.enabled && (
                   <>
                     <div className="space-y-2">
                       <Label className="text-xs font-medium flex items-center justify-between">
-                        <span>Speech Sensitivity (Raw)</span>
+                        <span>Speech Sensitivity (Raw) — не влияет, речь решает SNR+Peak</span>
                         <span className="text-muted-foreground font-normal">
                           {(vadConfig.sensitivity_rms * 1000).toFixed(1)}
                         </span>

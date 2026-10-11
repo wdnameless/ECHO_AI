@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import type {
   ChatConversation,
+  ChatMessage,
   CompletionState,
 } from "@/types";
 import { toChronologicalMessages } from "./useConversationStore";
@@ -47,7 +48,8 @@ export const useCompletion = () => {
   const [keepEngaged, setKeepEngaged] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-
+  const conversationIdRef = useRef<string | null>(null);
+  const pendingSaveRef = useRef<Promise<ChatConversation> | null>(null);
   const { resizeWindow } = useWindowResize();
 
   const {
@@ -71,19 +73,26 @@ export const useCompletion = () => {
     setState((prev) => ({ ...prev, response: value }));
   }, []);
 
-  const loadConversation = useCallback((conversation: ChatConversation) => {
-    setState((prev) => ({
-      ...prev,
-      currentConversationId: conversation.id,
-      conversationHistory: conversation.messages,
-      input: "",
-      response: "",
-      error: null,
-      isLoading: false,
-    }));
-  }, []);
+  const loadConversation = useCallback(
+    (conversation: ChatConversation) => {
+      conversationIdRef.current = conversation.id;
+      cancel();
+      setState((prev) => ({
+        ...prev,
+        currentConversationId: conversation.id,
+        conversationHistory: conversation.messages,
+        input: "",
+        response: "",
+        error: null,
+        isLoading: false,
+      }));
+    },
+    [cancel]
+  );
 
   const startNewConversation = useCallback(() => {
+    conversationIdRef.current = null;
+    cancel();
     setState((prev) => ({
       ...prev,
       currentConversationId: null,
@@ -94,41 +103,73 @@ export const useCompletion = () => {
       isLoading: false,
       attachedFiles: [],
     }));
-  }, []);
+  }, [cancel]);
+
+  useEffect(() => {
+    conversationIdRef.current = state.currentConversationId;
+  }, [state.currentConversationId]);
 
   const saveCurrentConversation = useCallback(
-    async (userMessage: string, assistantResponse: string) => {
+    async (
+      userMessage: string,
+      assistantResponse: string,
+      targetConversationId: string,
+      targetHistory: ChatMessage[],
+      requestId: string,
+      signal: AbortSignal,
+      generation: number
+    ): Promise<boolean> => {
       if (!userMessage || !assistantResponse) {
         console.error("Cannot save conversation: missing message content");
-        return;
+        return false;
       }
 
-      const conversationId =
-        state.currentConversationId || generateConversationId("chat");
+      if (pendingSaveRef.current) {
+        try {
+          await pendingSaveRef.current;
+        } catch {
+          // Allow subsequent save to proceed even if earlier failed
+        }
+      }
+
       const timestamp = Date.now();
+      const savePromise = persistConversationTurn({
+        conversationId: targetConversationId,
+        lookupExistingId: targetConversationId,
+        existingMessages: targetHistory,
+        userMessage,
+        assistantResponse,
+        timestamp,
+        preferNewTitleWhenEmpty: true,
+      });
+      pendingSaveRef.current = savePromise;
 
       try {
-        const conversation = await persistConversationTurn({
-          conversationId,
-          lookupExistingId: state.currentConversationId,
-          existingMessages: state.conversationHistory,
-          userMessage,
-          assistantResponse,
-          timestamp,
-          preferNewTitleWhenEmpty: true,
-        });
+        const conversation = await savePromise;
 
-        setState((prev) => ({
-          ...prev,
-          currentConversationId: conversation.id,
-          conversationHistory: conversation.messages,
-        }));
+        // Guard post-persist await before mutating state
+        if (isCurrent(requestId, signal, generation)) {
+          conversationIdRef.current = conversation.id;
+          setState((prev) => ({
+            ...prev,
+            currentConversationId: conversation.id,
+            conversationHistory: conversation.messages,
+          }));
+        }
+        return true;
       } catch (error) {
         console.error("Failed to save conversation:", error);
-        setError("Failed to save conversation. Please try again.");
+        if (isCurrent(requestId, signal, generation)) {
+          setError("Failed to save conversation. Please try again.");
+        }
+        return false;
+      } finally {
+        if (pendingSaveRef.current === savePromise) {
+          pendingSaveRef.current = null;
+        }
       }
     },
-    [state.currentConversationId, state.conversationHistory, setError]
+    [isCurrent, setError]
   );
 
   const runCompletionTurn = useCallback(
@@ -138,11 +179,18 @@ export const useCompletion = () => {
       clearAttachedOnSuccess: boolean,
       setPromptAsInput: boolean
     ) => {
-      const { requestId, signal } = beginRequest();
+      let activeConversationId =
+        conversationIdRef.current || state.currentConversationId;
+      if (!activeConversationId) {
+        activeConversationId = generateConversationId("chat");
+        conversationIdRef.current = activeConversationId;
+      }
+      const activeHistory = state.conversationHistory;
+      const { requestId, signal, generation } = beginRequest();
 
       try {
         const messageHistory = toChronologicalMessages(
-          state.conversationHistory
+          activeHistory
         ).map((msg) => ({
           role: msg.role,
           content: msg.content,
@@ -152,6 +200,12 @@ export const useCompletion = () => {
           selectedAIProvider,
           allAiProviders
         );
+
+        // Guard post-validation await before mutating state
+        if (!isCurrent(requestId, signal, generation)) {
+          return;
+        }
+
         if (!providerValidation.ok) {
           setError(providerValidation.error);
           return;
@@ -176,50 +230,79 @@ export const useCompletion = () => {
           userMessage,
           imagesBase64,
           signal,
-          isCurrent: () => isCurrent(requestId, signal),
+          isCurrent: () => isCurrent(requestId, signal, generation),
           onChunk: (_chunk, accumulated) => {
-            setState((prev) => isCurrent(requestId, signal) ? ({
-              ...prev,
-              response: accumulated,
-            }) : prev);
+            if (isCurrent(requestId, signal, generation)) {
+              setState((prev) => ({
+                ...prev,
+                response: accumulated,
+              }));
+            }
           },
           onError: (errorMessage) => {
-            setError(errorMessage, true);
+            if (isCurrent(requestId, signal, generation)) {
+              setError(errorMessage, true);
+            }
           },
           logTag: "[completion]",
         });
 
-        if (isCurrent(requestId, signal)) {
-          setState((prev) => ({ ...prev, isLoading: false }));
-        }
-
-        if (fullResponse === null || !isCurrent(requestId, signal)) {
+        if (fullResponse === null) {
+          if (isCurrent(requestId, signal, generation)) {
+            setState((prev) => ({ ...prev, isLoading: false }));
+          }
           return;
         }
 
-        setTimeout(() => {
-          inputRef.current?.focus();
-        }, 100);
-
         if (fullResponse) {
-          await saveCurrentConversation(userMessage, fullResponse);
-          setState((prev) => ({
-            ...prev,
-            input: "",
-            ...(clearAttachedOnSuccess ? { attachedFiles: [] } : {}),
-          }));
+          // Legitimate save of completed old chat is preserved
+          const saved = await saveCurrentConversation(
+            userMessage,
+            fullResponse,
+            activeConversationId,
+            activeHistory,
+            requestId,
+            signal,
+            generation
+          );
+
+          // Guard post-persist await before mutating state
+          if (isCurrent(requestId, signal, generation)) {
+            setState((prev) => ({
+              ...prev,
+              isLoading: false,
+              ...(saved
+                ? {
+                    input: "",
+                    ...(clearAttachedOnSuccess ? { attachedFiles: [] } : {}),
+                  }
+                : {}),
+            }));
+
+            if (saved) {
+              setTimeout(() => {
+                inputRef.current?.focus();
+              }, 100);
+            }
+          }
+        } else {
+          if (isCurrent(requestId, signal, generation)) {
+            setState((prev) => ({ ...prev, isLoading: false }));
+          }
         }
       } catch (error) {
         console.warn("[completion]", error);
-        if (isCurrent(requestId, signal)) {
+        if (isCurrent(requestId, signal, generation)) {
           setError(
             error instanceof Error ? error.message : "An error occurred",
             true
           );
+          setState((prev) => ({ ...prev, isLoading: false }));
         }
       }
     },
     [
+      state.currentConversationId,
       state.conversationHistory,
       selectedAIProvider,
       allAiProviders,
@@ -251,6 +334,7 @@ export const useCompletion = () => {
       return;
     }
     cancel();
+    conversationIdRef.current = state.currentConversationId;
     setState((prev) => ({
       ...prev,
       input: "",
@@ -258,7 +342,7 @@ export const useCompletion = () => {
       error: null,
       attachedFiles: [],
     }));
-  }, [cancel, keepEngaged]);
+  }, [cancel, keepEngaged, state.currentConversationId]);
 
   const onAutoScreenshotPrompt = useCallback(
     async (base64: string, prompt: string) => {

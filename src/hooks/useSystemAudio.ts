@@ -100,7 +100,7 @@ export function useSystemAudio() {
 
   // 3. Question Pipeline Hook (Assembler & Filler)
   const handleTriggerAIRef = useRef<
-    (question: string, source: "me" | "them") => Promise<void>
+    (question: string, source: "me" | "them", opts?: { fromHeld?: boolean }) => Promise<void>
   >(async () => {});
 
   // Permission to send is decided here. What the question is, and when a pause
@@ -117,8 +117,8 @@ export function useSystemAudio() {
     autoAskManagerRef.current = new AutoAskManager({
       getConfig: getAutoAskConfig,
       isAIProcessing: () => isAIProcessingRef.current,
-      onDispatch: (question) => {
-        void handleTriggerAIRef.current(question, "them");
+      onDispatch: (question, _target, opts) => {
+        void handleTriggerAIRef.current(question, "them", opts);
       },
     });
   }
@@ -374,7 +374,9 @@ export function useSystemAudio() {
       if (micHasProducedText()) {
         return;
       }
-      void transcribeSegment(audioBlob, "me");
+      void transcribeSegment(audioBlob, "me", {
+        isCoveredByOtherPath: () => micHasProducedText(),
+      });
     },
     onMicFrame: (pcm) => {
       micFeedFrame(pcm);

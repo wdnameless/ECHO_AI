@@ -293,4 +293,182 @@ describe("useConversationStore", () => {
     const fromOldest = toChronologicalMessages(oldestFirst, 2);
     expect(fromOldest.map((m) => m.content)).toEqual(["three", "four"]);
   });
+
+  it("authoritatively replaces current draft when final is shorter or reworded (R05)", () => {
+    const { result } = renderHook(() => useConversationStore());
+    act(() => {
+      result.current.appendLiveSegment(
+        "them",
+        "Я никогда не работал с Docker в production.",
+        true
+      );
+    });
+    const initialId = result.current.liveSegments[0].id;
+
+    act(() => {
+      result.current.appendLiveSegment(
+        "them",
+        "Я работал с Docker в production.",
+        false
+      );
+    });
+
+    expect(result.current.liveSegments).toHaveLength(1);
+    expect(result.current.liveSegments[0].text).toBe(
+      "Я работал с Docker в production."
+    );
+    expect(result.current.liveSegments[0].partial).toBe(false);
+    expect(result.current.liveSegments[0].id).toBe(initialId);
+  });
+
+  it("flushes pending conversation save on resetConversation before debounce expires (R06)", async () => {
+    const saveMock = vi.mocked(saveConversation);
+    saveMock.mockClear();
+
+    const { result, unmount } = renderHook(() => useConversationStore());
+    act(() => {
+      result.current.setConversation({
+        id: "conv-before-reset",
+        title: "test title",
+        createdAt: 1000,
+        updatedAt: 2000,
+        messages: [
+          { id: "m1", role: "user", content: "hello before reset", timestamp: 1500 },
+        ],
+      });
+    });
+
+    // Before 500ms debounce expires, call resetConversation
+    act(() => {
+      result.current.resetConversation();
+    });
+
+    // Unmount later
+    unmount();
+
+    // The old conversation snapshot must have been flushed and saved
+    expect(saveMock).toHaveBeenCalled();
+    const savedConv = saveMock.mock.calls[0][0] as ChatConversation;
+    expect(savedConv.id).toBe("conv-before-reset");
+    expect(savedConv.messages).toHaveLength(1);
+    expect(savedConv.messages[0].content).toBe("hello before reset");
+  });
+
+  it("flushes previous conversation on direct setConversation ID switch without dropping it (R06)", async () => {
+    const saveMock = vi.mocked(saveConversation);
+    saveMock.mockClear();
+
+    const { result, unmount } = renderHook(() => useConversationStore());
+    act(() => {
+      result.current.setConversation({
+        id: "conv-direct-switch-1",
+        title: "title 1",
+        createdAt: 1000,
+        updatedAt: 2000,
+        messages: [
+          { id: "m1", role: "user", content: "direct switch msg", timestamp: 1500 },
+        ],
+      });
+    });
+
+    // Switch ID directly as done in useSystemAudio:660
+    act(() => {
+      result.current.setConversation({
+        id: "conv-direct-switch-2",
+        title: "",
+        createdAt: 0,
+        updatedAt: 0,
+        messages: [],
+      });
+    });
+
+    unmount();
+
+    expect(saveMock).toHaveBeenCalled();
+    const savedConv = saveMock.mock.calls[0][0] as ChatConversation;
+    expect(savedConv.id).toBe("conv-direct-switch-1");
+  });
+
+  it("retains queued snapshots from prior IDs when switching while save is in flight (R06)", async () => {
+    const saveMock = vi.mocked(saveConversation);
+    saveMock.mockClear();
+
+    let resolveFirstSave: () => void = () => {};
+    saveMock.mockImplementationOnce(
+      (conversation) =>
+        new Promise<ChatConversation>((resolve) => {
+          resolveFirstSave = () => resolve(conversation);
+        })
+    );
+
+    const { result } = renderHook(() => useConversationStore());
+    act(() => {
+      result.current.setConversation({
+        id: "conv-flight-1",
+        title: "title 1",
+        createdAt: 1000,
+        updatedAt: 2000,
+        messages: [
+          { id: "m1", role: "user", content: "m1", timestamp: 1500 },
+        ],
+      });
+    });
+
+    // Trigger save for conv-flight-1
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(saveMock).toHaveBeenCalledTimes(1);
+
+    // Update conv-flight-1 with another message while save is in flight
+    act(() => {
+      result.current.setConversation({
+        id: "conv-flight-1",
+        title: "title 1",
+        createdAt: 1000,
+        updatedAt: 2500,
+        messages: [
+          { id: "m1", role: "user", content: "m1", timestamp: 1500 },
+          { id: "m2", role: "user", content: "m2", timestamp: 2500 },
+        ],
+      });
+    });
+
+    // Switch to conv-flight-2 while first save is still in flight
+    act(() => {
+      result.current.setConversation({
+        id: "conv-flight-2",
+        title: "title 2",
+        createdAt: 2000,
+        updatedAt: 3000,
+        messages: [
+          { id: "m3", role: "user", content: "m3", timestamp: 2800 },
+        ],
+      });
+    });
+
+    // Trigger debounce for conv-flight-2
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    // Still only first call in flight
+    expect(saveMock).toHaveBeenCalledTimes(1);
+
+    // First save finishes
+    await act(async () => {
+      resolveFirstSave();
+    });
+
+    // Both trailing conv-flight-1 (with m1 and m2) and conv-flight-2 are saved
+    expect(saveMock).toHaveBeenCalledTimes(3);
+    const secondCall = saveMock.mock.calls[1][0] as ChatConversation;
+    expect(secondCall.id).toBe("conv-flight-1");
+    expect(secondCall.messages).toHaveLength(2);
+
+    const thirdCall = saveMock.mock.calls[2][0] as ChatConversation;
+    expect(thirdCall.id).toBe("conv-flight-2");
+    expect(thirdCall.messages).toHaveLength(1);
+  });
 });

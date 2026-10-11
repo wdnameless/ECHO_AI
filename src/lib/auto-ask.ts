@@ -135,7 +135,7 @@ export function shouldAutoAsk(params: ShouldAutoAskParams): boolean {
 
 export interface AutoAskManagerOptions {
   getConfig?: () => AutoAskConfig;
-  onDispatch: (text: string, target?: AutoAskTarget) => void | Promise<void>;
+  onDispatch: (text: string, target?: AutoAskTarget, opts?: { fromHeld?: boolean }) => void | Promise<void>;
   onDispatchCode?: (text: string) => void | Promise<void>;
   isAIProcessing: () => boolean;
   getAnswerMode?: () => AnswerMode;
@@ -274,7 +274,7 @@ export class AutoAskManager {
       this.heldText = text;
       return;
     }
-    this.dispatchTarget(text);
+    this.dispatchTarget(text, { fromHeld: true });
   }
 
   /** True when a question is waiting for the current answer to finish. */
@@ -359,7 +359,7 @@ export class AutoAskManager {
     }
   }
 
-  private dispatchTarget(text: string): void {
+  private dispatchTarget(text: string, opts?: { fromHeld?: boolean }): void {
     const mode = this.options.getAnswerMode
       ? this.options.getAnswerMode()
       : getAnswerMode();
@@ -367,7 +367,10 @@ export class AutoAskManager {
     if (target === "code" && this.options.onDispatchCode) {
       void this.options.onDispatchCode(text);
     } else if (target === "code") {
-      void this.options.onDispatch(text, "code");
+      if (opts) void this.options.onDispatch(text, "code", opts);
+      else void this.options.onDispatch(text, "code");
+    } else if (opts) {
+      void this.options.onDispatch(text, undefined, opts);
     } else {
       void this.options.onDispatch(text);
     }

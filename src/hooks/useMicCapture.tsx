@@ -368,11 +368,13 @@ export function useMicCapture({
   const [streamKey, setStreamKey] = useState(0);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [errored, setErrored] = useState<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const vadApiRef = useRef<{ start: () => void; stop: () => void } | null>(null);
   const wantListeningRef = useRef(false);
+  const [acquisitionEpoch, setAcquisitionEpoch] = useState(0);
+  const acquisitionEpochRef = useRef(0);
 
   // Acquire the microphone stream ourselves so the correct device is used.
   // The stored device id is a WASAPI id which does not match WebRTC device
@@ -380,43 +382,65 @@ export function useMicCapture({
   useEffect(() => {
     let cancelled = false;
     let acquired: MediaStream | null = null;
+    const isCurrent = () => !cancelled && wantListeningRef.current &&
+      acquisitionEpoch === acquisitionEpochRef.current;
+    const releaseAcquired = () => {
+      const released = acquired;
+      acquired = null;
+      released?.getTracks().forEach((track) => track.stop());
+      if (streamRef.current === released) streamRef.current = null;
+    };
 
-    setLoading(true);
     setErrored(null);
     setListening(false);
     setSpeaking(false);
     vadApiRef.current = null;
+    if (!wantListeningRef.current) {
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+
+    // Keep raw-signal processing settings for both the permission probe and capture.
+    const audioConstraints: MediaTrackConstraints = {
+      channelCount: 1,
+      autoGainControl: false,
+      echoCancellation: false,
+      noiseSuppression: false,
+    };
 
     const acquire = async () => {
       try {
         let deviceId: string | undefined;
         if (microphoneDeviceId && microphoneDeviceId !== "default") {
-          const devices = await navigator.mediaDevices.enumerateDevices();
-          const audioInputs = devices.filter((d) => d.kind === "audioinput");
-          const byName = microphoneDeviceName
-            ? audioInputs.find((d) => d.label === microphoneDeviceName)
-            : undefined;
-          const byId = audioInputs.find(
-            (d) => d.deviceId === microphoneDeviceId
-          );
-          deviceId = (byName ?? byId)?.deviceId;
+          // Browser labels may be hidden before the first permission grant.
+          // A temporary probe reveals them; it is never sent to the VAD.
+          for (let pass = 0; pass < 2; pass++) {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            if (!isCurrent()) return;
+            const byName = microphoneDeviceName
+              ? devices.find((device) => device.kind === "audioinput" && device.label === microphoneDeviceName)
+              : undefined;
+            const byId = devices.find(
+              (device) => device.kind === "audioinput" && device.deviceId === microphoneDeviceId
+            );
+            deviceId = (byName ?? byId)?.deviceId;
+            if (deviceId) break;
+            if (pass === 1) throw new Error("Selected microphone is unavailable. Select another input device.");
+            acquired = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+            if (!isCurrent()) {
+              releaseAcquired();
+              return;
+            }
+          }
         }
-
+        releaseAcquired();
+        if (!isCurrent()) return;
         acquired = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-            channelCount: 1,
-            // AGC/echo cancellation/noise suppression are disabled: they
-            // aggressively suppress quiet signals (e.g. a virtual cable feed),
-            // which breaks VAD detection. The raw signal is what Silero wants.
-            autoGainControl: false,
-            echoCancellation: false,
-            noiseSuppression: false,
-          },
+          audio: deviceId ? { ...audioConstraints, deviceId: { exact: deviceId } } : audioConstraints,
         });
-
-        if (cancelled) {
-          acquired.getTracks().forEach((t) => t.stop());
+        if (!isCurrent()) {
+          releaseAcquired();
           return;
         }
 
@@ -426,7 +450,9 @@ export function useMicCapture({
         setLoading(false);
       } catch (e) {
         console.warn("[mic-acquire]", e);
-        if (cancelled) return;
+        releaseAcquired();
+        if (!isCurrent()) return;
+        wantListeningRef.current = false;
         setLoading(false);
         setErrored(e instanceof Error ? e.message : String(e));
       }
@@ -436,16 +462,10 @@ export function useMicCapture({
 
     return () => {
       cancelled = true;
-      if (acquired) {
-        acquired.getTracks().forEach((t) => t.stop());
-      }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-      }
+      releaseAcquired();
       setStream(null);
     };
-  }, [microphoneDeviceId, microphoneDeviceName]);
+  }, [microphoneDeviceId, microphoneDeviceName, acquisitionEpoch]);
 
   const handleStateChange = useCallback(
     (state: {
@@ -473,13 +493,20 @@ export function useMicCapture({
   );
 
   const start = useCallback(() => {
-    wantListeningRef.current = true;
-    vadApiRef.current?.start();
+    if (!wantListeningRef.current) {
+      wantListeningRef.current = true;
+      setAcquisitionEpoch(++acquisitionEpochRef.current);
+    } else {
+      vadApiRef.current?.start();
+    }
   }, []);
 
   const stop = useCallback(() => {
+    if (!wantListeningRef.current) return;
     wantListeningRef.current = false;
     vadApiRef.current?.stop();
+    vadApiRef.current = null;
+    setAcquisitionEpoch(++acquisitionEpochRef.current);
   }, []);
 
   const bridge: ReactNode = stream ? (

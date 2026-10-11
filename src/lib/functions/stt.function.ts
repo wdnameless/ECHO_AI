@@ -274,9 +274,12 @@ export async function fetchSTT(params: STTParams): Promise<string> {
 
     let finalHeaders = { ...headers };
     let body: FormData | string | Blob;
-    const asrBase = await getAsrBaseUrl();
     const isLocalAsr = /127\.0\.0\.1|localhost|0\.0\.0\.0/.test(curlJson.url || "");
     if (isLocalAsr) {
+      const asrBase = await getAsrBaseUrl();
+      if (!asrBase) {
+        throw new Error(await describeLocalAsrFailure() || "Локальный движок распознавания не запущен.");
+      }
       url = url.replace(
         /^http:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0):\d+/,
         asrBase

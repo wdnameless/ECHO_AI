@@ -229,11 +229,50 @@ export function useConversationStore() {
   const [theirLastTranscription, setTheirLastTranscription] =
     useState<string>("");
 
+  const pendingSavesRef = useRef<Map<string, ChatConversation>>(new Map());
+  const isProcessingQueueRef = useRef<boolean>(false);
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const isSavingRef = useRef<boolean>(false);
-  const hasPendingSaveRef = useRef<boolean>(false);
+  const hasPendingDebounceRef = useRef<boolean>(false);
+  const prevConversationRef = useRef(conversation);
   const latestConversationRef = useRef(conversation);
   latestConversationRef.current = conversation;
+
+  const processQueue = useCallback(async () => {
+    if (isProcessingQueueRef.current) {
+      return;
+    }
+    isProcessingQueueRef.current = true;
+    try {
+      while (pendingSavesRef.current.size > 0) {
+        const firstEntry = pendingSavesRef.current.entries().next().value;
+        if (!firstEntry) break;
+        const [id, convToSave] = firstEntry;
+        pendingSavesRef.current.delete(id);
+
+        try {
+          await saveConversation(convToSave);
+        } catch (error) {
+          console.error("Failed to save system audio conversation:", error);
+        }
+      }
+    } finally {
+      isProcessingQueueRef.current = false;
+      if (pendingSavesRef.current.size > 0) {
+        void processQueue();
+      }
+    }
+  }, []);
+
+  const enqueueSave = useCallback(
+    (conv: ChatConversation) => {
+      if (!conv.id || conv.updatedAt === 0 || conv.messages.length === 0) {
+        return;
+      }
+      pendingSavesRef.current.set(conv.id, conv);
+      void processQueue();
+    },
+    [processQueue]
+  );
 
   useEffect(() => {
     void loadCorrections();
@@ -248,8 +287,25 @@ export function useConversationStore() {
     return () => clearInterval(id);
   }, [finalizeStalePartials]);
 
-  // Debounced save to prevent race conditions and improve performance
+  // Debounced save with ID transition flush and serialized writes
   useEffect(() => {
+    const prevConv = prevConversationRef.current;
+    const currentConv = conversation;
+
+    // Flush captured previous latest snapshot on ID transition
+    if (prevConv.id && prevConv.id !== currentConv.id) {
+      if (hasPendingDebounceRef.current) {
+        if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current);
+          saveTimeoutRef.current = null;
+        }
+        hasPendingDebounceRef.current = false;
+        enqueueSave(prevConv);
+      }
+    }
+
+    prevConversationRef.current = currentConv;
+
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = null;
@@ -257,91 +313,43 @@ export function useConversationStore() {
 
     // Only debounce if there are messages to save
     if (
-      !conversation.id ||
-      conversation.updatedAt === 0 ||
-      conversation.messages.length === 0
+      !currentConv.id ||
+      currentConv.updatedAt === 0 ||
+      currentConv.messages.length === 0
     ) {
+      hasPendingDebounceRef.current = false;
       return;
     }
 
-    const performSave = async () => {
-      const conv = latestConversationRef.current;
-      if (!conv.id || conv.updatedAt === 0 || conv.messages.length === 0) {
-        return;
-      }
-
-      // If save is in flight, remember that another save is required when finished
-      if (isSavingRef.current) {
-        hasPendingSaveRef.current = true;
-        return;
-      }
-
-      isSavingRef.current = true;
-      hasPendingSaveRef.current = false;
-
-      try {
-        await saveConversation(conv);
-      } catch (error) {
-        console.error("Failed to save system audio conversation:", error);
-      } finally {
-        isSavingRef.current = false;
-        // Execute trailing save if an update arrived while saving
-        if (hasPendingSaveRef.current) {
-          hasPendingSaveRef.current = false;
-          void performSave();
-        }
-      }
-    };
-
-    // Debounce saves (only save 500ms after last change)
+    hasPendingDebounceRef.current = true;
     saveTimeoutRef.current = setTimeout(() => {
-      void performSave();
+      saveTimeoutRef.current = null;
+      hasPendingDebounceRef.current = false;
+      enqueueSave(latestConversationRef.current);
     }, CONVERSATION_SAVE_DEBOUNCE_MS);
 
     return () => {
       if (!saveTimeoutRef.current) return;
-      // Cancel the pending timer, but only FLUSH when this cleanup is a real
-      // unmount.
-      //
-      // This effect depends on the conversation, so its cleanup also runs before
-      // every re-execution — i.e. on every new message. Flushing there would save
-      // immediately on each update, destroying the debounce entirely: during a
-      // meeting that is one SQLite write per spoken line, which is what the
-      // debounce exists to prevent.
       clearTimeout(saveTimeoutRef.current);
       saveTimeoutRef.current = null;
     };
-  }, [
-    conversation.messages.length,
-    conversation.title,
-    conversation.id,
-    conversation.updatedAt,
-  ]);
+  }, [conversation, enqueueSave]);
 
   /**
    * Flush the pending save when the component actually goes away.
-   *
-   * A mount-only effect, so its cleanup runs exactly once — on unmount — and can
-   * safely write. That matters because the meeting panel is opened and closed as
-   * the conversation comes and goes, and a 500ms debounce was still pending on
-   * every close: the last thing said before closing was never written, with no
-   * retry, because nothing else knew the conversation had changed.
    */
   useEffect(() => {
     return () => {
-      const conv = latestConversationRef.current;
-      if (!conv.id || conv.updatedAt === 0 || conv.messages.length === 0) return;
-      // A save may already be running; `performSave`'s own in-flight guard turns
-      // this into a trailing save instead of racing it.
-      if (isSavingRef.current) {
-        hasPendingSaveRef.current = true;
-        return;
+      if (hasPendingDebounceRef.current) {
+        if (saveTimeoutRef.current) {
+          clearTimeout(saveTimeoutRef.current);
+          saveTimeoutRef.current = null;
+        }
+        hasPendingDebounceRef.current = false;
+        enqueueSave(latestConversationRef.current);
       }
-      void saveConversation(conv).catch((error) => {
-        console.error("Failed to save conversation on unmount:", error);
-      });
     };
-  }, []);
+  }, [enqueueSave]);
 
   const appendLiveSegment = useCallback(
     (source: "me" | "them", text: string, partial = false) => {
@@ -388,9 +396,13 @@ export function useConversationStore() {
                 readingsOverlap(last.text, processedText)));
           if (continuesSameUtterance) {
             const updated = [...prev];
+            const nextText =
+              last.partial && !partial
+                ? processedText
+                : mergeUtteranceText(last.text, processedText);
             updated[idx] = {
               ...last,
-              text: mergeUtteranceText(last.text, processedText),
+              text: nextText,
               timestamp,
               partial,
             };

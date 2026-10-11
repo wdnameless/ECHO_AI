@@ -37,7 +37,7 @@ export function setHostTrustPrompt(handler: TrustPrompt): () => void {
 
 /** Имена заголовков, несущих учётные данные. */
 const SECRET_HEADER_PATTERN =
-  /^(authorization|cookie|cookie2|proxy-authorization|www-authenticate)$|api[_-]?key|token|secret|auth/i;
+  /^(authorization|cookie|cookie2|proxy-authorization|www-authenticate|ocp-apim-subscription-key)$|api[_-]?key|token|secret|auth/i;
 /**
  * Возвращает имена заголовков, содержащих учётные данные, без их значений.
  * Значения в диалог не попадают никогда.

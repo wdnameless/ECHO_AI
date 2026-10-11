@@ -1,9 +1,15 @@
 import { safeLocalStorage } from "./helper";
+import {
+  mirrorFeedback,
+  mirrorStyle,
+  resetSelfEvolutionDb,
+} from "@/lib/self-evolution-persist";
 
 export const USER_FACTS_STORAGE_KEY = "user_memory_facts";
 export const USER_STYLE_STORAGE_KEY = "user_memory_style";
 export const FEEDBACK_LOG_STORAGE_KEY = "user_feedback_log";
 export const USER_MARKDOWN_STORAGE_KEY = "user_markdown_profile";
+export const SELF_LEARNING_STORAGE_KEY = "self_learning_enabled";
 
 export interface UserFact {
   id: string;
@@ -22,6 +28,12 @@ export interface UserStylePreference {
   customRules: string[];
 }
 
+export interface LearningProfile {
+  facts: UserFact[];
+  style: UserStylePreference;
+  rules: string[];
+}
+
 export interface FeedbackEntry {
   id: string;
   question: string;
@@ -36,17 +48,8 @@ export interface FeedbackEntry {
 export const DEFAULT_STYLE_PREFERENCES: UserStylePreference = {
   tone: "живой, естественный, как разговор двух опытных инженеров",
   preferredLength: "concise",
-  favoritePatterns: [
-    "Объяснять ход мыслей (почему именно так)",
-    "Приводить реальные примеры из продакшена",
-    "Использовать естественные разговорные заходы",
-  ],
-  avoidPatterns: [
-    "Маркированные и нумерованные списки",
-    "Робо-клише ('Стоит отметить', 'В заключение')",
-    "Сухой книжный тон из учебников",
-    "Длинные абзацы текста",
-  ],
+  favoritePatterns: [],
+  avoidPatterns: [],
   customRules: [],
 };
 
@@ -71,13 +74,33 @@ export const DEFAULT_FACTS: UserFact[] = [
 
 export function getUserFacts(): UserFact[] {
   const raw = safeLocalStorage.getItem(USER_FACTS_STORAGE_KEY);
-  if (!raw) return [...DEFAULT_FACTS];
+  if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : [...DEFAULT_FACTS];
+    return Array.isArray(parsed) ? parsed : [];
   } catch {
-    return [...DEFAULT_FACTS];
+    return [];
   }
+}
+
+export function isSelfLearningEnabled(): boolean {
+  const raw = safeLocalStorage.getItem(SELF_LEARNING_STORAGE_KEY);
+  if (raw === null) return true;
+  return raw === "true";
+}
+
+export function setSelfLearningEnabled(on: boolean): void {
+  safeLocalStorage.setItem(SELF_LEARNING_STORAGE_KEY, on ? "true" : "false");
+}
+
+export function getLearningProfile(): LearningProfile {
+  const facts = getUserFacts();
+  const style = getUserStylePreferences();
+  return {
+    facts,
+    style,
+    rules: style.customRules,
+  };
 }
 
 export function saveUserFacts(facts: UserFact[]): void {
@@ -114,13 +137,37 @@ export function removeUserFact(id: string): void {
 }
 
 export function getUserStylePreferences(): UserStylePreference {
+  const createDefault = (): UserStylePreference => ({
+    tone: DEFAULT_STYLE_PREFERENCES.tone,
+    preferredLength: DEFAULT_STYLE_PREFERENCES.preferredLength,
+    favoritePatterns: [],
+    avoidPatterns: [],
+    customRules: [],
+  });
+
   const raw = safeLocalStorage.getItem(USER_STYLE_STORAGE_KEY);
-  if (!raw) return { ...DEFAULT_STYLE_PREFERENCES };
+  if (!raw) return createDefault();
   try {
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_STYLE_PREFERENCES, ...parsed };
+    const defaults = createDefault();
+    return {
+      tone: typeof parsed?.tone === "string" ? parsed.tone : defaults.tone,
+      preferredLength:
+        parsed?.preferredLength === "balanced" || parsed?.preferredLength === "detailed"
+          ? parsed.preferredLength
+          : "concise",
+      favoritePatterns: Array.isArray(parsed?.favoritePatterns)
+        ? [...parsed.favoritePatterns]
+        : defaults.favoritePatterns,
+      avoidPatterns: Array.isArray(parsed?.avoidPatterns)
+        ? [...parsed.avoidPatterns]
+        : defaults.avoidPatterns,
+      customRules: Array.isArray(parsed?.customRules)
+        ? [...parsed.customRules]
+        : defaults.customRules,
+    };
   } catch {
-    return { ...DEFAULT_STYLE_PREFERENCES };
+    return createDefault();
   }
 }
 
@@ -150,6 +197,17 @@ export function recordFeedback(
   reason?: string,
   topic?: string
 ): FeedbackEntry {
+  if (!isSelfLearningEnabled()) {
+    return {
+      id: "noop",
+      question: question.trim(),
+      response: response.trim(),
+      rating,
+      reason: reason?.trim(),
+      topic: topic || "general",
+      timestamp: Date.now(),
+    };
+  }
   const logs = getFeedbackLog();
   const entry: FeedbackEntry = {
     id: `fb-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -220,9 +278,6 @@ export function recordFeedback(
   // localStorage stays the synchronous read source.
   void (async () => {
     try {
-      const { mirrorFeedback, mirrorStyle } = await import(
-        "@/lib/self-evolution-persist"
-      );
       await mirrorFeedback(entry);
       await mirrorStyle(getUserStylePreferences());
     } catch {
@@ -310,6 +365,32 @@ export function resetUserMarkdownProfile(): void {
 }
 
 /**
+ * Hard language rule applied globally to all responses.
+ */
+export const LANGUAGE_RULE = `[ЖЁСТКОЕ ПРАВИЛО ЯЗЫКА (без исключений)]
+- Отвечай ТОЛЬКО на русском или английском языке — всегда на том языке, на котором задан вопрос.
+- Никогда не отвечай, не вставляй слова и фразы на других языках.
+- Если вопрос смешанный (RU+EN), отвечай на языке основного текста вопроса.
+[/ЖЁСТКОЕ ПРАВИЛО ЯЗЫКА]`.trim();
+
+/**
+ * Resets learning state across both localStorage and SQLite.
+ */
+export async function resetLearning(): Promise<void> {
+  safeLocalStorage.removeItem(USER_FACTS_STORAGE_KEY);
+  safeLocalStorage.removeItem(USER_STYLE_STORAGE_KEY);
+  safeLocalStorage.removeItem(FEEDBACK_LOG_STORAGE_KEY);
+  safeLocalStorage.removeItem(USER_MARKDOWN_STORAGE_KEY);
+  setSelfEvolutionStyleOverride(null);
+
+  try {
+    await resetSelfEvolutionDb();
+  } catch {
+    /* durability clear is best-effort */
+  }
+}
+
+/**
  * Builds the compiled prompt injection for the Self-Evolution profile.
  *
  * `styleOverride` (optional) lets the async prompt path (useSystemAudio →
@@ -330,6 +411,10 @@ export function setSelfEvolutionStyleOverride(
 export function buildSelfEvolutionPromptBlock(
   styleOverride?: UserStylePreference
 ): string {
+  if (!isSelfLearningEnabled()) {
+    return "";
+  }
+
   const customMd = safeLocalStorage.getItem(USER_MARKDOWN_STORAGE_KEY);
   if (customMd && customMd.trim()) {
     return `[SELF-EVOLUTION PROFILE (USER.md)]\n${customMd.trim()}\n[/SELF-EVOLUTION PROFILE]`;
@@ -343,6 +428,17 @@ export function buildSelfEvolutionPromptBlock(
 
   const likesCount = logs.filter((l) => l.rating === "like").length;
   const dislikesCount = logs.filter((l) => l.rating === "dislike").length;
+
+  const hasHistory =
+    facts.length > 0 ||
+    logs.length > 0 ||
+    style.favoritePatterns.length > 0 ||
+    style.avoidPatterns.length > 0 ||
+    style.customRules.length > 0;
+
+  if (!hasHistory) {
+    return "";
+  }
 
   const factsLines = facts.map((f) => `- ${f.fact}`).join("\n");
   const favoritesLines = style.favoritePatterns
@@ -358,25 +454,31 @@ export function buildSelfEvolutionPromptBlock(
     .map((r) => `- Личное правило: ${r}`)
     .join("\n");
 
-  return `
-[SELF-EVOLUTION ADAPTIVE PROFILE - ПЕРСОНАЛЬНЫЙ ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ (USER.md)]
-Ты работаешь в режиме самообучения (Self-Evolution). Ты обязан максимально адаптироваться под личность, опыт и предпочтения этого конкретного пользователя (на основе ${likesCount} одобрений и ${dislikesCount} замечаний). Замечания и примеры ниже применяй НЕМЕДЛЕННО к каждому следующему ответу.
+  const sections: string[] = [
+    `[SELF-EVOLUTION ADAPTIVE PROFILE - ПЕРСОНАЛЬНЫЙ ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ (USER.md)]`,
+    `Ты работаешь в режиме самообучения (Self-Evolution). Ты обязан максимально адаптироваться под личность, опыт и предпочтения этого конкретного пользователя (на основе ${likesCount} одобрений и ${dislikesCount} замечаний). Замечания и примеры ниже применяй НЕМЕДЛЕННО к каждому следующему ответу.`,
+  ];
 
-1. БАЗА ЗНАНИЙ И ФАКТОВ О ПОЛЬЗОВАТЕЛЕ:
-${factsLines || "- Опытный специалист, ценит точность и практичность"}
+  if (factsLines) {
+    sections.push(`\n1. БАЗА ЗНАНИЙ И ФАКТОВ О ПОЛЬЗОВАТЕЛЕ:\n${factsLines}`);
+  }
 
-2. ВЫУЧЕННЫЙ СТИЛЬ И ПАТТЕРНЫ ОТВЕТОВ:
-- Тональность: ${style.tone}
-- Желаемый объем: ${style.preferredLength === "concise" ? "Максимально краткий" : "Краткий и ёмкий"} (1-3 коротких предложения, 35-50 слов max, БЕЗ ЛИШНЕЙ ВОДЫ)
-${favoritesLines}
-${avoidLines}
-${customLines ? `\n3. КАСТОМНЫЕ ПРАВИЛА:\n${customLines}` : ""}
+  const styleBody = [
+    `- Тональность: ${style.tone}`,
+    `- Желаемый объем: ${style.preferredLength === "concise" ? "Максимально краткий" : "Краткий и ёмкий"} (1-3 коротких предложения, 35-50 слов max, БЕЗ ЛИШНЕЙ ВОДЫ)`,
+    favoritesLines,
+    avoidLines,
+  ]
+    .filter(Boolean)
+    .join("\n");
 
-4. ЖЁСТКОЕ ПРАВИЛО ЯЗЫКА (без исключений):
-- Отвечай ТОЛЬКО на русском или английском языке — всегда на том языке, на котором задан вопрос.
-- Никогда не отвечай, не вставляй слова и фразы на других языках.
-- Если вопрос смешанный (RU+EN), отвечай на языке основного текста вопроса.
+  sections.push(`\n2. ВЫУЧЕННЫЙ СТИЛЬ И ПАТТЕРНЫ ОТВЕТОВ:\n${styleBody}`);
 
-Подстраивай каждый ответ под эту модель личности!
-`.trim();
+  if (customLines) {
+    sections.push(`\n3. КАСТОМНЫЕ ПРАВИЛА:\n${customLines}`);
+  }
+
+  sections.push(`\nПодстраивай каждый ответ под эту модель личности!\n[/SELF-EVOLUTION PROFILE]`);
+
+  return sections.join("\n").trim();
 }

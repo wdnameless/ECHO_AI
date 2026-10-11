@@ -22,6 +22,7 @@ struct NormalizedSqlStrings {
     m5: String,
     m6: String,
     m7: String,
+    m8: String,
 }
 
 static NORMALIZED_SQL: LazyLock<NormalizedSqlStrings> = LazyLock::new(|| NormalizedSqlStrings {
@@ -32,6 +33,7 @@ static NORMALIZED_SQL: LazyLock<NormalizedSqlStrings> = LazyLock::new(|| Normali
     m5: normalize_eol(include_str!("migrations/asr-corrections.sql")),
     m6: normalize_eol(include_str!("migrations/retention.sql")),
     m7: normalize_eol(include_str!("migrations/message-source.sql")),
+    m8: normalize_eol(include_str!("migrations/monotonic-conversation-timestamp.sql")),
 });
 
 /// Returns all database migrations with guaranteed LF-normalized SQL content.
@@ -46,6 +48,7 @@ pub fn migrations() -> Vec<Migration> {
     let s5: &'static str = unsafe { &*(sql_store.m5.as_str() as *const str) };
     let s6: &'static str = unsafe { &*(sql_store.m6.as_str() as *const str) };
     let s7: &'static str = unsafe { &*(sql_store.m7.as_str() as *const str) };
+    let s8: &'static str = unsafe { &*(sql_store.m8.as_str() as *const str) };
     vec![
         // Migration 1: Create system_prompts table with indexes and triggers
         Migration {
@@ -94,6 +97,13 @@ pub fn migrations() -> Vec<Migration> {
             version: 7,
             description: "add_message_source",
             sql: s7,
+            kind: MigrationKind::Up,
+        },
+        // Migration 8: Ensure conversation updated_at advances monotonically
+        Migration {
+            version: 8,
+            description: "monotonic_conversation_timestamp",
+            sql: s8,
             kind: MigrationKind::Up,
         },
     ]
@@ -300,5 +310,49 @@ mod tests {
 
         drop(conn);
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_migration_8_monotonic_conversation_timestamp() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let all = migrations();
+        // Run migration 2 (chat history) and migration 7 (message source)
+        conn.execute_batch(all[1].sql).unwrap();
+        conn.execute_batch(all[6].sql).unwrap();
+
+        // Seed conversation with fresh updated_at
+        conn.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('c1', 'Test', 1000, 5000)",
+            [],
+        ).unwrap();
+        let add_msg = |id: &str, ts: i64| {
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files, source) VALUES (?1, 'c1', 'user', 'msg', ?2, NULL, NULL)",
+                rusqlite::params![id, ts],
+            ).unwrap();
+        };
+        let get_updated = || -> i64 {
+            conn.query_row("SELECT updated_at FROM conversations WHERE id = 'c1'", [], |r| r.get(0)).unwrap()
+        };
+
+        // Old trigger in migration 2 rewinds updated_at
+        add_msg("m-old", 1500);
+        assert_eq!(get_updated(), 1500, "old trigger regressed updated_at to 1500");
+
+        // Apply migration 8
+        conn.execute_batch(all[7].sql).unwrap();
+        conn.execute("UPDATE conversations SET updated_at = 5000 WHERE id = 'c1'", []).unwrap();
+
+        // Inserting an older message must NOT regress updated_at
+        add_msg("m-old-2", 1200);
+        assert_eq!(get_updated(), 5000, "migration 8 preserved updated_at against older message insert");
+
+        // Updating an older message must NOT regress updated_at
+        conn.execute("UPDATE messages SET content = 'edited content' WHERE id = 'm-old-2'", []).unwrap();
+        assert_eq!(get_updated(), 5000, "migration 8 preserved updated_at against older message update");
+
+        // Inserting a newer message MUST advance updated_at
+        add_msg("m-new", 9000);
+        assert_eq!(get_updated(), 9000, "migration 8 advanced updated_at on newer message");
     }
 }

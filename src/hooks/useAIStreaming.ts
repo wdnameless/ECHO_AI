@@ -330,7 +330,7 @@ export function useAIStreaming({
   // Runs all the guards (filler/cooldown) and starts the AI response.
   // When livecode toggle is active, persistent mode routes auto-ask into code prompt.
   const triggerAIForQuestion = useCallback(
-    async (question: string, source: "me" | "them") => {
+    async (question: string, source: "me" | "them", opts?: { fromHeld?: boolean }) => {
       // Check if the transcription is a meaningful query/question rather than
       // a conversational filler/backchannel.
       if (!shouldTriggerAIResponse(question)) {
@@ -355,6 +355,7 @@ export function useAIStreaming({
           question.trim()
         );
       if (
+        !opts?.fromHeld &&
         lastAIResponseAtRef.current > 0 &&
         sinceLastResponse < AI_RESPONSE_COOLDOWN_MS &&
         question.trim().length < 60 &&

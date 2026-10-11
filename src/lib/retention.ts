@@ -108,12 +108,11 @@ export async function runRetentionCleanup(
       return { deletedConversations: 0, cutoffMs };
     }
 
-    // Delete messages and conversations
-    await db.execute(
-      `DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE updated_at < $1)`,
-      [cutoffMs]
-    );
-
+    // Delete expired conversations atomically.
+    // SQLite's ON DELETE CASCADE (enforced by sqlx on every pooled connection)
+    // atomically removes child messages. Deleting messages in a separate prior phase
+    // created a race condition where a concurrent new message revived the parent conversation's
+    // updated_at between deletes, leaving the conversation alive but its previous history wiped.
     const res = await db.execute(
       `DELETE FROM conversations WHERE updated_at < $1`,
       [cutoffMs]

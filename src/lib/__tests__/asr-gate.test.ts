@@ -74,6 +74,34 @@ describe("ASR stream gate", () => {
     await assertion;
     expect(work).not.toHaveBeenCalled();
   });
+  it("marks gate-timeout as retryable busy instead of hard failure", async () => {
+    vi.useFakeTimers();
+    expect(tryAcquireStream("them")).toBe(true);
+    const pending = withNoStream(vi.fn().mockResolvedValue("late"), 1000);
+    const assertion = expect(pending).rejects.toMatchObject({
+      code: "ASR_MODEL_BUSY",
+      retryable: true,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await assertion;
+  });
+  it("reclaims the slot when the handoff callback declines it", () => {
+    expect(tryAcquireStream("them")).toBe(true);
+    const declined = vi.fn().mockReturnValue(false);
+    enqueueStreamSlot("me", declined);
+    releaseStream("them");
+    expect(declined).toHaveBeenCalledTimes(1);
+    // Slot leaked would keep "me" refused here forever (gate deadlock).
+    expect(tryAcquireStream("me")).toBe(true);
+  });
+
+  it("coalesces repeated enqueue from the same owner into one entry", () => {
+    expect(tryAcquireStream("them")).toBe(true);
+    enqueueStreamSlot("me", () => true);
+    enqueueStreamSlot("me", () => true);
+    enqueueStreamSlot("me", () => true);
+    expect(getSlotQueueLength()).toBe(1);
+  });
 
   describe("explicit slot queue", () => {
     it("calls callback immediately when model is free", () => {
@@ -102,17 +130,14 @@ describe("ASR stream gate", () => {
 
     it("grants slot in FIFO order to multiple queued requests", () => {
       expect(tryAcquireStream("them")).toBe(true);
+      // Release first so both channels can queue: re-acquire keeps "them"
+      // owner, then "me" queues behind it.
       const calls: string[] = [];
-      enqueueStreamSlot("me", () => calls.push("me-1"));
-      enqueueStreamSlot("me", () => calls.push("me-2"));
-      expect(getSlotQueueLength()).toBe(2);
+      enqueueStreamSlot("me", () => { calls.push("me-1"); return true; });
+      expect(getSlotQueueLength()).toBe(1);
 
       releaseStream("them");
       expect(calls).toEqual(["me-1"]);
-      expect(getSlotQueueLength()).toBe(1);
-
-      releaseStream("me");
-      expect(calls).toEqual(["me-1", "me-2"]);
       expect(getSlotQueueLength()).toBe(0);
     });
 
