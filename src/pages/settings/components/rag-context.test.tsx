@@ -6,6 +6,7 @@ import { ResumeContext } from "@/pages/settings/components/ResumeContext";
 import { JobContext } from "@/pages/settings/components/JobContext";
 import { getRagContext, setRagContext, deleteRagContext } from "@/lib/rag";
 import { extractPdfText } from "@/lib/pdf";
+import { extractDocxText } from "@/lib/docx";
 
 vi.mock("@/lib/rag", () => ({
   getRagContext: vi.fn(),
@@ -16,11 +17,15 @@ vi.mock("@/lib/rag", () => ({
 vi.mock("@/lib/pdf", () => ({
   extractPdfText: vi.fn(),
 }));
+vi.mock("@/lib/docx", () => ({
+  extractDocxText: vi.fn(),
+}));
 
 const mockedGetRagContext = vi.mocked(getRagContext);
 const mockedSetRagContext = vi.mocked(setRagContext);
 const mockedDeleteRagContext = vi.mocked(deleteRagContext);
 const mockedExtractPdfText = vi.mocked(extractPdfText);
+const mockedExtractDocxText = vi.mocked(extractDocxText);
 
 const PDF_TEXT = "VLADYSLAV OLIINYK\nAI Software Engineer / LLM Workflows\nBatumi, Georgia";
 
@@ -32,6 +37,11 @@ function makePdfFile(name = "resume.pdf"): File {
 
 function makeTxtFile(name = "resume.txt"): File {
   return new File(["Hello from txt"], name, { type: "text/plain" });
+}
+function makeDocxFile(name = "resume.docx"): File {
+  return new File([new Uint8Array([80, 75, 3, 4])], name, {
+    type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  });
 }
 
 async function uploadFile(input: HTMLInputElement, file: File) {
@@ -49,6 +59,7 @@ beforeEach(() => {
   mockedSetRagContext.mockResolvedValue(undefined);
   mockedDeleteRagContext.mockResolvedValue(undefined);
   mockedExtractPdfText.mockResolvedValue(PDF_TEXT);
+  mockedExtractDocxText.mockResolvedValue("DOCX RESUME CONTENT");
 });
 
 describe("ResumeContext PDF upload flow", () => {
@@ -137,7 +148,34 @@ describe("ResumeContext PDF upload flow", () => {
     expect(mockedSetRagContext).not.toHaveBeenCalled();
     expect(localStorage.getItem("rag_resume_enabled")).toBeNull();
   });
-});
+
+  it("extracts DOCX text, shows it in textarea, shows file name, and enables the switch", async () => {
+    renderWithRouter(<ResumeContext />);
+
+    await waitFor(() => expect(screen.getByText("My Resume")).toBeInTheDocument());
+
+    const input = document.querySelector(
+      'input[type="file"]'
+    ) as HTMLInputElement;
+    expect(input.accept).toContain(".docx");
+
+    await uploadFile(input, makeDocxFile());
+
+    await waitFor(() => {
+      expect(mockedExtractDocxText).toHaveBeenCalledTimes(1);
+      expect(mockedSetRagContext).toHaveBeenCalledWith(
+        "resume",
+        "DOCX RESUME CONTENT",
+        "resume.docx"
+      );
+    });
+
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("DOCX RESUME CONTENT");
+    expect(screen.getByText("resume.docx")).toBeInTheDocument();
+    expect(localStorage.getItem("rag_resume_enabled")).toBe("true");
+  });
+  });
 
 describe("JobContext PDF upload flow", () => {
   it("extracts PDF text, shows it in textarea, shows file name, and enables the switch", async () => {
