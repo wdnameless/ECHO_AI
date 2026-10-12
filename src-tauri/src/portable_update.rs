@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Serialize;
@@ -749,6 +749,7 @@ pub async fn install_portable_update<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
 

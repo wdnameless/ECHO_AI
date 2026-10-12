@@ -25,6 +25,7 @@ const BUILT_IN_SERVICE_HOSTS: readonly string[] = [
   "api.tavily.com",
   "api.duckduckgo.com",
   "translate.googleapis.com",
+  "api.deepgram.com",
 ];
 
 /** True for hosts the app itself names (not user-supplied templates). */
@@ -39,12 +40,12 @@ export function normalizeHost(hostOrUrl: string): string | null {
   if (!trimmed) return null;
 
   try {
-    const url = trimmed.startsWith("http://") || trimmed.startsWith("https://")
+    const url = /^[a-z]+:\/\//i.test(trimmed)
       ? new URL(trimmed)
       : new URL(`https://${trimmed}`);
     return url.hostname.toLowerCase();
   } catch {
-    const match = trimmed.match(/^(?:https?:\/\/)?([^/:]+)/i);
+    const match = trimmed.match(/^(?:(?:https?|wss?):\/\/)?([^/:]+)/i);
     return match ? match[1].toLowerCase() : null;
   }
 }

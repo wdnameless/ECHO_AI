@@ -3,6 +3,8 @@ import {
   getAllConversations,
   deleteConversation,
   DOWNLOAD_SUCCESS_DISPLAY_MS,
+  downloadBlob,
+  generateConversationMarkdown,
 } from "@/lib";
 import { ChatConversation } from "@/types/completion";
 
@@ -95,14 +97,7 @@ export function useHistory(): UseHistoryReturn {
 
       // Create and download the file
       const blob = new Blob([markdown], { type: "text/markdown" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = generateFilename(conversation.title);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, generateFilename(conversation.title));
     } catch (error) {
       console.error("Failed to download conversation:", error);
       // Remove from success state if download failed
@@ -177,31 +172,6 @@ export function useHistory(): UseHistoryReturn {
         setIsDownloaded(false);
       }, DOWNLOAD_SUCCESS_DISPLAY_MS);
     }
-  };
-
-  // Helper functions
-  const generateConversationMarkdown = (
-    conversation: ChatConversation
-  ): string => {
-    let markdown = `# ${conversation.title}\n\n`;
-    markdown += `**Created:** ${new Date(
-      conversation.createdAt
-    ).toLocaleString()}\n`;
-    markdown += `**Updated:** ${new Date(
-      conversation.updatedAt
-    ).toLocaleString()}\n`;
-    markdown += `**Messages:** ${conversation.messages.length}\n\n---\n\n`;
-
-    conversation.messages.forEach((message, index) => {
-      const roleLabel = message.role.toUpperCase();
-      markdown += `## ${roleLabel}: ${message.content}\n`;
-
-      if (index < conversation.messages.length - 1) {
-        markdown += "\n";
-      }
-    });
-
-    return markdown;
   };
 
   const generateFilename = (title: string): string => {

@@ -14,3 +14,5 @@ export * from "./metrics";
 export * from "./retention";
 export * from "./auto-ask";
 export * from "./filler-filter";
+export * from "./visual-answers";
+export * from "./document-text";

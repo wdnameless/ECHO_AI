@@ -12,6 +12,8 @@ mod tray;
 mod vocab;
 mod window;
 pub mod portable_update;
+pub mod memory;
+pub mod stt_stream;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tauri_plugin_posthog::{init as posthog_init, PostHogConfig, PostHogOptions};
@@ -89,6 +91,7 @@ pub fn run() {
                     }
                     db::patch_migration_checksums(&path).map_err(std::io::Error::other)?;
                     db::apply_pragmas(&path);
+                    memory::init_sqlite_vec();
                     Ok(())
                 })
                 .build(),
@@ -243,6 +246,11 @@ pub fn run() {
             models::select_model,
             models::selected_model,
             portable_update::install_portable_update,
+            memory::memory_index,
+            memory::memory_search,
+            stt_stream::stt_stream_connect,
+            stt_stream::stt_stream_send,
+            stt_stream::stt_stream_close,
         ])
         .setup(|app| {
             portable_update::cleanup_old_staging_if_needed();

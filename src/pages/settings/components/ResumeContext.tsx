@@ -7,7 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { STORAGE_KEYS } from "@/config/constants";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { getRagContext, setRagContext, deleteRagContext } from "@/lib/rag";
-import { extractPdfText } from "@/lib/pdf";
+import { extractDocumentText } from "@/lib/document-text";
 
 export function ResumeContext() {
   const [enabled, setEnabled] = useState(false);
@@ -38,10 +38,7 @@ export function ResumeContext() {
     setFileError(null);
     setSaving(true);
     try {
-      const text =
-        file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
-          ? await extractPdfText(file)
-          : await file.text();
+      const text = await extractDocumentText(file);
       if (!text.trim()) {
         setFileError("No text could be extracted from this file.");
         return;
@@ -97,7 +94,7 @@ export function ResumeContext() {
       <input
         ref={fileInputRef}
         type="file"
-        accept=".txt,.md,.markdown,.pdf,application/pdf"
+        accept=".txt,.md,.markdown,.pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -129,7 +126,7 @@ export function ResumeContext() {
       <Textarea
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        placeholder="Paste your resume text here or upload a .txt / .md / .pdf file..."
+        placeholder="Paste your resume text here or upload a .txt / .md / .pdf / .docx file..."
         className="min-h-[160px]"
       />
       <div className="flex items-center gap-2">

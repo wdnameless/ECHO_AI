@@ -40,10 +40,12 @@ import {
   cacheSearchResults,
   getCachedSearchResults,
 } from "./parallel-search";
-import { getRagContext } from "@/lib/rag";
+import { getRagContext, searchMemory } from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { detectLanguage } from "@/lib/language-detect";
 import { getAIProviderVariables } from "@/lib/storage/ai-providers";
+import { getActiveProfileId } from "@/lib/storage/prompt-profiles";
+import { shouldOfferVisual, VISUAL_PROMPT_HINT } from "@/lib/visual-answers";
 
 export const THOUGHT_TRACE_PROMPT =
   "THOUGHT-TRACE MODE (ХОД МЫСЛЕЙ):\n" +
@@ -211,7 +213,8 @@ export function resolveProviderModel(
 export async function buildEnhancedSystemPrompt(
   baseSystemPrompt?: string,
   userMessage?: string,
-  mode?: AnswerMode
+  mode?: AnswerMode,
+  profileId?: string
 ): Promise<string> {
   const activeMode = mode ?? getAnswerMode();
   const responseSettings = getResponseSettings();
@@ -233,6 +236,15 @@ export async function buildEnhancedSystemPrompt(
 
   // Add markdown formatting instructions
   prompts.push(MARKDOWN_FORMATTING_INSTRUCTIONS);
+  // Visual diagram rule (S5 / R15, R16)
+  const activeProfileId = profileId ?? getActiveProfileId();
+  if (
+    shouldOfferVisual(activeProfileId, userMessage || "") &&
+    !baseSystemPrompt?.includes("VISUAL DIAGRAM RULE")
+  ) {
+    prompts.push(VISUAL_PROMPT_HINT);
+  }
+
 
   // Answer length: per-question, not per-settings. The toolbar override and
   // explicit prefixes beat the heuristic; the settings preset is the fallback
@@ -301,6 +313,26 @@ export async function buildEnhancedSystemPrompt(
     prompts.push(
       `[CONTEXT: JOB DESCRIPTION]\n${jobCtx.content.trim()}\n[/CONTEXT]`
     );
+  }
+  // Meeting RAG memory context: searches past meetings for relevant context
+  const memoryEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_MEMORY_ENABLED) !== "false";
+  if (memoryEnabled && userMessage?.trim()) {
+    try {
+      const memoryHits = await searchMemory(userMessage, 3);
+      if (memoryHits && memoryHits.length > 0) {
+        const relevantHits = memoryHits.filter((h) => h.score > 0.05);
+        if (relevantHits.length > 0) {
+          const memoryBlock = relevantHits
+            .map((h) => `[MEETING CONVERSATION: ${h.conversationId}]\n${h.text}`)
+            .join("\n\n");
+          prompts.push(
+            `[CONTEXT: RELEVANT PAST MEETINGS]\n${memoryBlock}\n[/CONTEXT]`
+          );
+        }
+      }
+    } catch {
+      // Memory search failure must never fail prompt assembly
+    }
   }
 
   const detected = detectLanguage(userMessage || "");
@@ -848,6 +880,7 @@ export async function* fetchAIResponse(params: {
   imagesBase64?: string[];
   signal?: AbortSignal;
   mode?: AnswerMode;
+  profileId?: string;
 }): AsyncIterable<string> {
   const { userMessage, signal } = params;
   if (signal?.aborted) return;
@@ -883,7 +916,7 @@ export async function* fetchAIResponse(params: {
   if (signal?.aborted) return;
   let baseSystemPrompt: string;
   try {
-    baseSystemPrompt = await abortable(buildEnhancedSystemPrompt(params.systemPrompt, userMessage, params.mode), signal);
+    baseSystemPrompt = await abortable(buildEnhancedSystemPrompt(params.systemPrompt, userMessage, params.mode, params.profileId), signal);
   } catch (error) {
     if (signal?.aborted) return;
     throw error;

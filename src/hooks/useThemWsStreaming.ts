@@ -13,6 +13,23 @@
  * - Feeds inbound frames into the shared ASR status/metrics store.
  */
 
+import { getStreamingProvider, type StreamingSTTSession } from "@/lib/stt/streaming";
+import { acquireCloudStreamSlot, releaseCloudStreamSlot } from "@/lib/asr-gate";
+import { STORAGE_KEYS } from "@/config/constants";
+import { safeLocalStorage } from "@/lib";
+
+function toPcm16(buf: ArrayBuffer): Int16Array {
+  if (buf.byteLength % 4 === 0) {
+    const f32 = new Float32Array(buf);
+    const i16 = new Int16Array(f32.length);
+    for (let i = 0; i < f32.length; i++) {
+      const s = Math.max(-1, Math.min(1, f32[i]));
+      i16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return i16;
+  }
+  return new Int16Array(buf);
+}
 import { useCallback, useRef } from "react";
 import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
 import { getAsrLanguage } from "@/lib/asr-language";
@@ -33,13 +50,19 @@ export interface UseThemWsStreamingProps {
   capturingRef: React.MutableRefObject<boolean>;
   onPartialTranscript: (text: string) => void;
   onFinalTranscript?: (text: string) => void;
+  selectedSttProvider?: {
+    provider: string;
+    variables?: Record<string, string>;
+  };
 }
 
 export function useThemWsStreaming({
   capturingRef,
   onPartialTranscript,
   onFinalTranscript,
+  selectedSttProvider,
 }: UseThemWsStreamingProps) {
+  const cloudSessionRef = useRef<StreamingSTTSession | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const frameBufferRef = useRef<ArrayBuffer[]>([]);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -85,6 +108,10 @@ export function useThemWsStreaming({
       clearTimeout(closeTimerRef.current);
       closeTimerRef.current = null;
     }
+    if (cloudSessionRef.current) {
+      cloudSessionRef.current = null;
+      releaseCloudStreamSlot();
+    }
     const ws = wsRef.current;
     wsRef.current = null;
     socketStateRef.current = null;
@@ -114,9 +141,52 @@ export function useThemWsStreaming({
   const connectRef = useRef<() => Promise<void>>(async () => {});
   connectRef.current = async () => {
     if (!capturingRef.current || !wantRef.current) return;
+    if (cloudSessionRef.current) return;
     if (ownerEpochRef.current !== null ||
         (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN)) return;
 
+    let providerId = selectedSttProvider?.provider;
+    if (!providerId) {
+      try {
+        const raw = safeLocalStorage.getItem(STORAGE_KEYS.SELECTED_STT_PROVIDER);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && "provider" in parsed && typeof parsed.provider === "string") {
+            providerId = parsed.provider;
+          }
+        }
+      } catch (err) {
+        console.warn("[them-ws] failed to parse stored STT provider:", err);
+      }
+    }
+
+    const cloudProvider = providerId ? getStreamingProvider(providerId) : null;
+    if (providerId && cloudProvider) {
+      const apiKey =
+        selectedSttProvider?.variables?.API_KEY ||
+        selectedSttProvider?.variables?.apiKey ||
+        "";
+      const session = cloudProvider.connect({
+        apiKey,
+        language: getAsrLanguage(),
+        onTranscript: (text, isFinal) => {
+          if (isFinal) {
+            onFinalTranscript?.(text);
+          } else {
+            onPartialTranscript(text);
+          }
+        },
+      });
+      acquireCloudStreamSlot(providerId, session);
+      cloudSessionRef.current = session;
+      while (frameBufferRef.current.length > 0) {
+        const frame = frameBufferRef.current.shift();
+        if (frame) {
+          session.send(toPcm16(frame));
+        }
+      }
+      return;
+    }
     // One stream at a time: while the candidate's microphone streams, this
     // channel waits instead of collecting "model busy" for every frame.
     if (!tryAcquireStream("them")) {
@@ -290,8 +360,11 @@ export function useThemWsStreaming({
   /** Sends one PCM frame (f32 LE @16 kHz), dropping it if the socket is not up. */
   const feedFrame = useCallback((pcm: ArrayBuffer) => {
     if (!wantRef.current) return;
+    if (cloudSessionRef.current) {
+      cloudSessionRef.current.send(toPcm16(pcm));
+      return;
+    }
     const ws = wsRef.current;
-    // A finalized socket cannot accept audio for the next utterance.
     const belongsToFinishedUtterance = socketStateRef.current?.stoppedByUs;
 
     if (ws && ws.readyState === WebSocket.OPEN && !belongsToFinishedUtterance) {
@@ -401,8 +474,11 @@ export function useThemWsStreaming({
 
   /** True while the streaming socket is open (it owns the model). */
   const isStreaming = useCallback(
-    () => wsRef.current?.readyState === WebSocket.OPEN &&
-      !socketStateRef.current?.stoppedByUs && ownerEpochRef.current !== null,
+    () =>
+      cloudSessionRef.current !== null ||
+      (wsRef.current?.readyState === WebSocket.OPEN &&
+        !socketStateRef.current?.stoppedByUs &&
+        ownerEpochRef.current !== null),
     []
   );
 

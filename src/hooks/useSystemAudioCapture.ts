@@ -481,6 +481,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   // the text that was already on screen.
   const themWs = useThemWsStreaming({
     capturingRef,
+    selectedSttProvider,
     onPartialTranscript: (text) => {
       if (!capturingRef.current) return;
       onInterviewerSpeechActivity?.();

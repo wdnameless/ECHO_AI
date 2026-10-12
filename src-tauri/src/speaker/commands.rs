@@ -393,7 +393,7 @@ async fn run_vad_capture(
                 frames_since_frame += mono.len();
                 if frames_since_frame >= sr as usize / 4 {
                     flush_pending_speech_frame(
-                        &speech_buffer, &mut frame_emitted_len, &emit_frame,
+                        &speech_buffer, &mut frame_emitted_len, emit_frame,
                     );
                     frames_since_frame = 0;
                 }
@@ -402,7 +402,7 @@ async fn run_vad_capture(
                 // Safety cap: force emit if exceeds 30s
                 if speech_buffer.len() > max_samples {
                     finish_speech_segment(
-                        &speech_buffer, &mut frame_emitted_len, &emit_frame, &emit_final,
+                        &speech_buffer, &mut frame_emitted_len, emit_frame, emit_final,
                     );
                     speech_buffer.clear();
                     in_speech = false;
@@ -433,7 +433,7 @@ async fn run_vad_capture(
                             }
 
                             finish_speech_segment(
-                                &speech_buffer, &mut frame_emitted_len, &emit_frame, &emit_final,
+                                &speech_buffer, &mut frame_emitted_len, emit_frame, emit_final,
                             );
                         } else {
                             let _ = app.emit(
