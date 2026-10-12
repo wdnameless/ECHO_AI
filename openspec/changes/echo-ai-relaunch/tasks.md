@@ -65,5 +65,5 @@
 - [x] `npm test` + `cargo test` + `npm run build` на объединённой ветке
 - [x] `npm run tauri build -- --no-bundle`
 - [x] Запуск и смоук: окно «Echo AI», версия 1.0.0, сохранность БД
-- [ ] Blind-аудит `@oracle` против `manifest.md`
-- [ ] `openspec archive echo-ai-relaunch --yes` после приёмки
+- [ ] ~~Blind-аудит `@oracle` против `manifest.md`~~ STALE: релиз 1.0.0 давно вышел без него; код всех 6 слайсов влит
+- [ ] ~~`openspec archive echo-ai-relaunch --yes` после приёмки~~ BLOCKED: см. выше; архивировать вручную при желании

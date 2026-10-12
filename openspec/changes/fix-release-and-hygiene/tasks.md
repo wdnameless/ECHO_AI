@@ -6,5 +6,5 @@
 - [x] R04 .gitignore для .gguf/backups/asr-port
 - [x] R05 R04–R09 помечены, 65 + 511 тестов зелёные
 - [x] R06 удалить 13 локальных + 6 remote веток
-- [ ] Следующий слайс: ревью fa87356 (филлеры) отдельным PR
-- [ ] Следующий слайс: влить origin/fix/portable-update-notice
+- [ ] ~~Следующий слайс: ревью fa87356 (филлеры) отдельным PR~~ STALE: superseded by dualmodel-fillers-length + filler-style-coaching
+- [x] Следующий слайс: влить origin/fix/portable-update-notice (в master: PortableUpdateNotice.tsx)
