@@ -3,7 +3,7 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 import { SubtitleFeed } from "./SubtitleFeed";
 import type { ChatConversation } from "@/hooks/useSystemAudio";
 import { isSelfLearningEnabled, recordFeedback, addUserRule } from "@/lib/storage/user-facts";
-import { saveSmartRule, getSmartRules } from "@/lib/storage/smart-rules";
+import { saveSmartRule, getSmartRules, type SmartRule } from "@/lib/storage/smart-rules";
 import { refineRuleCandidate } from "@/lib/rule-extract";
 const invokeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock, Channel: class {} }));
@@ -741,5 +741,62 @@ describe("T2: SubtitleFeed self-learning feedback gate and toast", () => {
         }),
       })
     );
+  });
+
+  it("R08: Self-Evolution popover shows rule origin, hits, weight and allows one-click deletion", () => {
+    localStorage.clear();
+    const testRule: SmartRule = {
+      id: "sr-test-1",
+      text: "отвечай прямо на одном примере",
+      weight: 1.5,
+      scope: { kind: "global" },
+      hits: 12,
+      createdAt: 1000,
+      lastHitAt: 2000,
+      ttlDays: null,
+      archived: false,
+      origin: {
+        source: "coach",
+        quote: "реплика 14:32",
+        at: 1000,
+      },
+    };
+    saveSmartRule(testRule);
+
+    render(
+      <SubtitleFeed
+        conversation={mockConversation}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    // Open the Self-Evolution popover via the brain button
+    const brainBtn = screen.getByTitle("Что ИИ выучил из ваших оценок");
+    fireEvent.pointerDown(brainBtn, { button: 0 });
+    fireEvent.click(brainBtn);
+
+    // Verify rule text, origin quote, hits, and weight are rendered in the popover
+    expect(screen.getByText(/отвечай прямо на одном примере/i)).toBeInTheDocument();
+    expect(screen.getByText(/реплика 14:32/i)).toBeInTheDocument();
+    expect(screen.getByText(/хиты: 12/i)).toBeInTheDocument();
+    expect(screen.getByText(/вес: 1.5/i)).toBeInTheDocument();
+
+    // Verify one-click delete button is present and clickable
+    const deleteBtn = screen.getByRole("button", { name: /Удалить правило/i });
+    expect(deleteBtn).toBeInTheDocument();
+
+    fireEvent.click(deleteBtn);
+
+    // Verify rule is deleted from storage and disappears from UI
+    expect(getSmartRules()).toHaveLength(0);
+    expect(screen.queryByText(/отвечай прямо на одном примере/i)).not.toBeInTheDocument();
   });
 });

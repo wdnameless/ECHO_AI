@@ -14,6 +14,7 @@ import {
   SparklesIcon,
   ThumbsDownIcon,
   ThumbsUpIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -32,7 +33,10 @@ import {
 } from "@/lib/storage/user-facts";
 import {
   createDefaultSmartRule,
+  deleteSmartRule,
+  getSmartRules,
   saveSmartRule,
+  type SmartRule,
 } from "@/lib/storage/smart-rules";
 import {
   extractRuleCandidate,
@@ -1036,6 +1040,23 @@ export const SubtitleFeed = ({
   const [evoStats, setEvoStats] = useState<SelfEvolutionStats>(() =>
     getSelfEvolutionStats()
   );
+  const [smartRules, setSmartRules] = useState<SmartRule[]>(() =>
+    getSmartRules()
+  );
+
+  const handleOpenBrainChange = useCallback((open: boolean) => {
+    setShowBrain(open);
+    if (open) {
+      setEvoStats(getSelfEvolutionStats());
+      setSmartRules(getSmartRules());
+    }
+  }, []);
+
+  const handleDeleteSmartRule = useCallback((id: string) => {
+    deleteSmartRule(id);
+    setSmartRules(getSmartRules());
+    setEvoStats(getSelfEvolutionStats());
+  }, []);
 
   // Word-correction overrides keyed by a STABLE text key (first 40
   // normalized chars) so a correction survives the live-to-final id change.
@@ -1470,6 +1491,7 @@ export const SubtitleFeed = ({
       setRuleTakenMap((prev) => ({ ...prev, [entryId]: true }));
       setRulePreview(null);
       setEvoStats(getSelfEvolutionStats());
+      setSmartRules(getSmartRules());
       showEvolutionNote("Совет собеседника сохранён как правило");
     },
     [propOnTakeAsRule, rulePreview, showEvolutionNote]
@@ -1603,7 +1625,7 @@ export const SubtitleFeed = ({
           </Button>
           <DropdownMenu
             open={showBrain}
-            onOpenChange={setShowBrain}
+            onOpenChange={handleOpenBrainChange}
           >
             <DropdownMenuTrigger asChild>
               <Button
@@ -1654,7 +1676,50 @@ export const SubtitleFeed = ({
                   ))}
                 </div>
               )}
-              {evoStats.customRules.length > 0 && (
+              {smartRules.length > 0 ? (
+                <div>
+                  <div className="font-semibold text-violet-500 mb-0.5">
+                    Личные правила:
+                  </div>
+                  <div className="space-y-1 max-h-48 overflow-y-auto">
+                    {smartRules.map((r) => {
+                      const originLabel = r.origin.quote || r.origin.source;
+                      return (
+                        <div
+                          key={r.id}
+                          className="flex items-start justify-between gap-1 p-1 rounded bg-muted/40 text-[0.95em]"
+                          data-testid={`smart-rule-${r.id}`}
+                        >
+                          <div className="min-w-0 flex-1 space-y-0.5">
+                            <div className="font-medium text-foreground truncate" title={r.text}>
+                              • {r.text}
+                            </div>
+                            <div className="flex items-center gap-1.5 text-[0.85em] text-muted-foreground flex-wrap">
+                              <span
+                                className="px-1 py-px rounded bg-violet-500/10 text-violet-500 shrink-0"
+                                title="Источник"
+                              >
+                                источник: {originLabel}
+                              </span>
+                              <span>хиты: {r.hits}</span>
+                              <span>вес: {r.weight}</span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSmartRule(r.id)}
+                            className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive shrink-0 transition-colors"
+                            title="Удалить правило"
+                            aria-label={`Удалить правило ${r.text}`}
+                          >
+                            <Trash2Icon className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : evoStats.customRules.length > 0 ? (
                 <div>
                   <div className="font-semibold text-violet-500 mb-0.5">
                     Личные правила:
@@ -1674,7 +1739,7 @@ export const SubtitleFeed = ({
                     );
                   })}
                 </div>
-              )}
+              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
 
