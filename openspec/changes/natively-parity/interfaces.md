@@ -47,7 +47,7 @@ export interface StreamingSTTProvider {
   connect(opts: { apiKey: string; language: string; onTranscript: (text: string, isFinal: boolean) => void }): StreamingSTTSession;
 }
 export interface StreamingSTTSession { send(pcm16: Int16Array): void; close(): void; }
-export function getStreamingProvider(id: string): StreamingSTTProvider | null;
+export function getStreamingProvider(id: string): StreamingSTTProvider | null; // static map + custom registry (Stage-B: без list)
 ```
 
 ### Изменяемые швы
@@ -70,7 +70,7 @@ export function getStreamingProvider(id: string): StreamingSTTProvider | null;
 ```rust
 // src-tauri/src/window.rs — расширение set_stealth_mode
 // Было: SetWindowDisplayAffinity + TOOLWINDOW
-// Стало: + скрытие из таскбара/Alt-Tab (Win), sharingType none для aux-окон (mac), no-op Linux честно
+// Стало: + скрытие из таскбара/Alt-Tab через set_skip_taskbar (Stage-B), sharingType none для aux-окон (mac), no-op Linux честно
 ```
 
 ### Зоны владения
@@ -95,8 +95,13 @@ export async function extractDocxText(file: File): Promise<string>;
 ```
 
 ```ts
-// src/lib/database/history-export.ts
+// src/lib/database/history-export.ts (Stage-B: md через generateConversationMarkdown из useHistory)
 export async function exportHistory(format: "md" | "json", conversationIds?: string[]): Promise<Blob>;
+```
+
+```ts
+// src/lib/document-text.ts (Stage-B: общий PDF/DOCX/txt, pdf — lazy import для jsdom)
+export async function extractDocumentText(file: File): Promise<string>;
 ```
 
 ### Зоны владения
@@ -107,7 +112,8 @@ export async function exportHistory(format: "md" | "json", conversationIds?: str
 | `src/pages/settings/components/JobContext.tsx` (+.docx) | S4 |
 | `src/pages/settings/components/ResumeContext.tsx` (+.docx) | S4 |
 | `src/lib/database/history-export.ts` | S4 |
-| `package.json` (+docx-парсер) | S4 |
+| `src/lib/document-text.ts` | S4/Stage-B |
+| `src/hooks/useHistory.ts` (generateConversationMarkdown) | S4/Stage-B |
 
 ## S5 — visual-answers
 
