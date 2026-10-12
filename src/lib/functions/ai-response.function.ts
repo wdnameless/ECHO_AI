@@ -44,6 +44,8 @@ import { getRagContext } from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { detectLanguage } from "@/lib/language-detect";
 import { getAIProviderVariables } from "@/lib/storage/ai-providers";
+import { getActiveProfileId } from "@/lib/storage/prompt-profiles";
+import { shouldOfferVisual, VISUAL_PROMPT_HINT } from "@/lib/visual-answers";
 
 export const THOUGHT_TRACE_PROMPT =
   "THOUGHT-TRACE MODE (ХОД МЫСЛЕЙ):\n" +
@@ -211,7 +213,8 @@ export function resolveProviderModel(
 export async function buildEnhancedSystemPrompt(
   baseSystemPrompt?: string,
   userMessage?: string,
-  mode?: AnswerMode
+  mode?: AnswerMode,
+  profileId?: string
 ): Promise<string> {
   const activeMode = mode ?? getAnswerMode();
   const responseSettings = getResponseSettings();
@@ -233,6 +236,15 @@ export async function buildEnhancedSystemPrompt(
 
   // Add markdown formatting instructions
   prompts.push(MARKDOWN_FORMATTING_INSTRUCTIONS);
+  // Visual diagram rule (S5 / R15, R16)
+  const activeProfileId = profileId ?? getActiveProfileId();
+  if (
+    shouldOfferVisual(activeProfileId, userMessage || "") &&
+    !baseSystemPrompt?.includes("VISUAL DIAGRAM RULE")
+  ) {
+    prompts.push(VISUAL_PROMPT_HINT);
+  }
+
 
   // Answer length: per-question, not per-settings. The toolbar override and
   // explicit prefixes beat the heuristic; the settings preset is the fallback
@@ -848,6 +860,7 @@ export async function* fetchAIResponse(params: {
   imagesBase64?: string[];
   signal?: AbortSignal;
   mode?: AnswerMode;
+  profileId?: string;
 }): AsyncIterable<string> {
   const { userMessage, signal } = params;
   if (signal?.aborted) return;
@@ -883,7 +896,7 @@ export async function* fetchAIResponse(params: {
   if (signal?.aborted) return;
   let baseSystemPrompt: string;
   try {
-    baseSystemPrompt = await abortable(buildEnhancedSystemPrompt(params.systemPrompt, userMessage, params.mode), signal);
+    baseSystemPrompt = await abortable(buildEnhancedSystemPrompt(params.systemPrompt, userMessage, params.mode, params.profileId), signal);
   } catch (error) {
     if (signal?.aborted) return;
     throw error;
