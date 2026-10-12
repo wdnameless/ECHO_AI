@@ -19,9 +19,9 @@
 - [ ] T6 R06: закрытие по final + скип IDLE (fixer)
 
 ## F5 — Rust/VAD
-- [ ] T5 R05: батчи 125мс, safety 350мс, бинарный IPC (fixer)
-- [ ] T7 R07: пол шума только в тишине (fixer)
-- [ ] T10 R10: envelope-follower вместо waveshaping (fixer)
+- [x] T5 R05: батчи 125мс, safety 350мс, бинарный IPC (fixer)
+- [x] T7 R07: пол шума только в тишине (fixer)
+- [x] T10 R10: envelope-follower вместо waveshaping (fixer)
 
 ## F6 — Фильтры
 - [ ] T8 R08: сузить фиолетовый regex + русские YouTube-халлюцинации (fixer)

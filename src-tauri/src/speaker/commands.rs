@@ -49,6 +49,27 @@ const AGC_TARGET_FLOOR: f32 = 0.01;
 /// the speech band.
 const AGC_MAX_GAIN: f32 = 60.0;
 
+/// Frame cadence divisor for real-time speech frame streaming.
+/// sr / 8 gives ~125ms frames at any sample rate (R05).
+pub const FRAME_CADENCE_DIVISOR: usize = 8;
+
+/// Updates rolling tracking window only while not in speech (R07).
+pub fn update_noise_tracking_window(
+    window: &mut VecDeque<f32>,
+    val: f32,
+    max_len: usize,
+    in_speech: bool,
+) -> bool {
+    if in_speech {
+        return false;
+    }
+    window.push_back(val);
+    if window.len() > max_len {
+        window.pop_front();
+    }
+    true
+}
+
 impl Default for VadConfig {
     fn default() -> Self {
         Self {
@@ -266,7 +287,7 @@ async fn run_vad_capture(
         for sample in pcm.iter() {
             bytes.extend_from_slice(&sample.to_le_bytes());
         }
-        let _ = app.emit("speech-frame", B64.encode(&bytes));
+        let _ = app.emit("speech-frame", bytes);
     };
     let emit_final = |samples: &[f32]| {
         let normalized = normalize_audio_level(samples, 0.1);
@@ -309,25 +330,23 @@ async fn run_vad_capture(
             // intact — a device whose room noise sits at 0.0001 gets the same
             // effective sensitivity as one at 0.01.
             let (pre_rms, _) = calculate_audio_metrics(&mono);
-            level_peak_window.push_back(pre_rms);
-            if level_peak_window.len() > 200 {
-                level_peak_window.pop_front();
-            }
-            if gain_cooldown > 0 {
-                gain_cooldown -= 1;
-            } else if let Some(&quietest) = level_peak_window
-                .iter()
-                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            {
-                // Below the measurable floor there is nothing to calibrate.
-                let desired = if quietest > 1e-6 {
-                    (AGC_TARGET_FLOOR / quietest).clamp(1.0, AGC_MAX_GAIN)
-                } else {
-                    input_gain
-                };
-                // Ease toward the target so the level never jumps audibly.
-                input_gain += (desired - input_gain) * 0.25;
-                gain_cooldown = 40; // ~1s at 1024-sample chunks of 44.1kHz
+            if update_noise_tracking_window(&mut level_peak_window, pre_rms, 200, in_speech) {
+                if gain_cooldown > 0 {
+                    gain_cooldown -= 1;
+                } else if let Some(&quietest) = level_peak_window
+                    .iter()
+                    .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                {
+                    // Below the measurable floor there is nothing to calibrate.
+                    let desired = if quietest > 1e-6 {
+                        (AGC_TARGET_FLOOR / quietest).clamp(1.0, AGC_MAX_GAIN)
+                    } else {
+                        input_gain
+                    };
+                    // Ease toward the target so the level never jumps audibly.
+                    input_gain += (desired - input_gain) * 0.25;
+                    gain_cooldown = 40; // ~1s at 1024-sample chunks of 44.1kHz
+                }
             }
 
             let mut mono = if (input_gain - 1.0).abs() > 0.01 {
@@ -351,10 +370,7 @@ async fn run_vad_capture(
 
             let (rms, peak) = calculate_audio_metrics(&mono);
             // Rolling noise floor over ~2s sliding window (capped at ~90 chunks)
-            noise_floor_window.push_back(rms);
-            if noise_floor_window.len() > 90 {
-                noise_floor_window.pop_front();
-            }
+            update_noise_tracking_window(&mut noise_floor_window, rms, 90, in_speech);
             // Speech is decided on the PRE-gain signal-to-noise ratio, not on
             // the amplified absolute level. Measured failure of the absolute
             // rule: the calibration lifted room noise until it crossed the
@@ -394,7 +410,7 @@ async fn run_vad_capture(
                 // renderer pipes it straight into the socket, and the older
                 // base64 hop only added a decode per frame.
                 frames_since_frame += mono.len();
-                if frames_since_frame >= sr as usize / 4 {
+                if frames_since_frame >= sr as usize / FRAME_CADENCE_DIVISOR {
                     flush_pending_speech_frame(
                         &speech_buffer, &mut frame_emitted_len, emit_frame,
                     );
@@ -577,20 +593,38 @@ async fn run_continuous_capture(
 }
 
 // Apply noise gate
-fn apply_noise_gate(samples: &[f32], threshold: f32) -> Vec<f32> {
-    const KNEE_RATIO: f32 = 3.0; // Compression ratio for soft knee
+/// Monotonic gain calculation for noise gate envelope follower / RMS multiplier (R10).
+pub fn envelope_gain(level: f32, threshold: f32) -> f32 {
+    if threshold <= 0.0 {
+        return 1.0;
+    }
+    if level >= threshold {
+        1.0
+    } else {
+        (level / threshold).clamp(0.0, 1.0)
+    }
+}
 
-    samples
-        .iter()
-        .map(|&s| {
-            let abs = s.abs();
-            if abs < threshold {
-                s * (abs / threshold).powf(1.0 / KNEE_RATIO)
-            } else {
-                s
-            }
-        })
-        .collect()
+/// Apply noise gate via RMS multiplier / envelope follower.
+/// Scales blocks linearly by RMS-derived envelope gain instead of per-sample powf
+/// waveshaping, avoiding harmonic distortion on quiet consonants (/s/, /f/).
+pub fn apply_noise_gate(samples: &[f32], threshold: f32) -> Vec<f32> {
+    if threshold <= 0.0 || samples.is_empty() {
+        return samples.to_vec();
+    }
+
+    const BLOCK_SIZE: usize = 256;
+    let mut out = Vec::with_capacity(samples.len());
+
+    for chunk in samples.chunks(BLOCK_SIZE) {
+        let (rms, _) = calculate_audio_metrics(chunk);
+        let gain = envelope_gain(rms, threshold);
+        for &s in chunk {
+            out.push(s * gain);
+        }
+    }
+
+    out
 }
 
 // Calculate RMS and peak (optimized)
@@ -937,6 +971,100 @@ mod tests {
         let eff_capped =
             sensitivity_rms.max((floor_very_noisy * 3.0 + 0.004).min(sensitivity_rms * 1.8));
         assert!((eff_capped - 0.0216).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_cadence_constant() {
+        assert_eq!(FRAME_CADENCE_DIVISOR, 8, "frame cadence must be sr/8 (125ms) per R05");
+    }
+
+    #[test]
+    fn test_envelope_gain_monotonic() {
+        let threshold = 0.01f32;
+        let mut prev_gain = -1.0f32;
+        for i in 0..=100 {
+            let level = (i as f32) * 0.0002;
+            let gain = envelope_gain(level, threshold);
+            assert!(
+                gain >= prev_gain,
+                "envelope gain must be monotonically non-decreasing: level {}, gain {}, prev {}",
+                level, gain, prev_gain
+            );
+            assert!(gain >= 0.0 && gain <= 1.0);
+            prev_gain = gain;
+        }
+        assert_eq!(envelope_gain(threshold, threshold), 1.0);
+        assert_eq!(envelope_gain(threshold * 2.0, threshold), 1.0);
+    }
+
+    #[test]
+    fn test_noise_floor_frozen_during_speech() {
+        let mut level_window = VecDeque::new();
+        for _ in 0..50 {
+            update_noise_tracking_window(&mut level_window, 0.001, 200, false);
+        }
+        assert_eq!(level_window.len(), 50);
+
+        for _ in 0..300 {
+            let updated = update_noise_tracking_window(&mut level_window, 0.05, 200, true);
+            assert!(!updated, "must freeze noise floor tracking when in_speech");
+        }
+        assert_eq!(level_window.len(), 50);
+        let min = level_window.iter().copied().fold(f32::INFINITY, f32::min);
+        assert_eq!(min, 0.001, "noise floor must not be contaminated by speech");
+    }
+
+    #[test]
+    fn test_apply_noise_gate_preserves_linearity() {
+        let threshold = 0.01f32;
+        let mut block = Vec::with_capacity(256);
+        for i in 0..256 {
+            let s = 0.005f32 * ((i as f32) * 0.1).sin();
+            block.push(s);
+        }
+        let gated = apply_noise_gate(&block, threshold);
+        assert_eq!(gated.len(), block.len());
+        let (rms, _) = calculate_audio_metrics(&block);
+        let expected_gain = envelope_gain(rms, threshold);
+        for (i, (&orig, &g)) in block.iter().zip(gated.iter()).enumerate() {
+            let expected = orig * expected_gain;
+            assert!(
+                (g - expected).abs() < 1e-6,
+                "sample {} differs from linear envelope scale: got {}, expected {}",
+                i, g, expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_long_utterance_does_not_fragment() {
+        let config = VadConfig::default();
+        let mut level_peak_window: VecDeque<f32> = VecDeque::new();
+        for _ in 0..50 {
+            update_noise_tracking_window(&mut level_peak_window, 0.001, 200, false);
+        }
+        let pre_floor_initial = level_peak_window.iter().copied().fold(f32::INFINITY, f32::min);
+        assert_eq!(pre_floor_initial, 0.001);
+
+        let in_speech = true;
+        let speech_rms = 0.025f32;
+        let speech_peak = 0.06f32;
+
+        for chunk_idx in 0..350 {
+            let updated = update_noise_tracking_window(&mut level_peak_window, speech_rms, 200, in_speech);
+            assert!(!updated);
+
+            let pre_floor = level_peak_window.iter().copied().fold(f32::INFINITY, f32::min);
+            let snr_threshold = (pre_floor * snr_ratio_for(config.sensitivity_rms)).max(VAD_ABSOLUTE_FLOOR);
+            let is_speech = (speech_rms > snr_threshold || speech_peak > config.peak_threshold)
+                && speech_rms > pre_floor * 1.2;
+
+            assert!(
+                is_speech,
+                "speech must not be extinguished at chunk {} (>4.6s) because noise floor must remain frozen",
+                chunk_idx
+            );
+        }
     }
 }
 

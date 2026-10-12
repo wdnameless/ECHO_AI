@@ -66,6 +66,31 @@ const LIVE_BATCH_MS = 250;
 const LIVE_MAX_UTTERANCE_MS = 20 * 16000;
 
 /**
+ * Safety timeout before falling back if final stream frame is dropped.
+ * Reduced from 1200ms to 350ms per R05.
+ */
+export const FLUSH_SAFETY_TIMEOUT_MS = 350;
+
+/**
+ * Decodes speech-frame event payload from Tauri IPC.
+ * Supports binary IPC (Uint8Array, ArrayBuffer, Vec<u8> as number[])
+ * as well as legacy base64 strings.
+ */
+export function decodeSpeechFramePayload(payload: unknown): Uint8Array | null {
+  if (!payload) return null;
+  if (payload instanceof Uint8Array) return payload;
+  if (payload instanceof ArrayBuffer) return new Uint8Array(payload);
+  if (Array.isArray(payload)) return new Uint8Array(payload);
+  if (typeof payload === "string") {
+    const bin = atob(payload);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+  return null;
+}
+
+/**
  * Whether a PCM buffer holds enough energy to be worth transcribing.
  *
  * Measured against the engine with the app's own settings: 300ms of pure
@@ -662,14 +687,10 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     let frameUnlisten: (() => void) | undefined;
     let cancelled = false;
 
-    listen<string>("speech-frame", (event) => {
+    listen<unknown>("speech-frame", (event) => {
       if (!capturingRef.current) return;
-      const b64 = event.payload;
-      if (!b64) return;
-      const bin = atob(b64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-
+      const bytes = decodeSpeechFramePayload(event.payload);
+      if (!bytes) return;
       if (streamingModelRef.current) {
         if (micStreamOwnsModelRef.current) return;
         themWsRef.current.feedFrame(bytes.buffer as ArrayBuffer);
@@ -837,7 +858,7 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
           // not enough: the socket is still open and the engine keeps holding a
           // session until it is closed, which is how the pool ran out.
           themWsRef.current.finalizeAndClose();
-        }, 1200);
+        }, FLUSH_SAFETY_TIMEOUT_MS);
         themWsRef.current.finalizeUtterance();
         return;
       }
