@@ -4,13 +4,30 @@ import {
   mirrorStyle,
   resetSelfEvolutionDb,
 } from "@/lib/self-evolution-persist";
+import {
+  extractSpeechStyle,
+  getUserSpeechTranscripts,
+  recordUserSpeech,
+  USER_SPEECH_LOG_STORAGE_KEY,
+  type SpeechStyle,
+} from "@/lib/speech-style";
+
+export {
+  extractSpeechStyle,
+  getUserSpeechTranscripts,
+  recordUserSpeech,
+  USER_SPEECH_LOG_STORAGE_KEY,
+  type SpeechStyle,
+};
 
 export const USER_FACTS_STORAGE_KEY = "user_memory_facts";
 export const USER_STYLE_STORAGE_KEY = "user_memory_style";
 export const FEEDBACK_LOG_STORAGE_KEY = "user_feedback_log";
 export const USER_MARKDOWN_STORAGE_KEY = "user_markdown_profile";
 export const SELF_LEARNING_STORAGE_KEY = "self_learning_enabled";
+export const USER_RULE_SOURCES_STORAGE_KEY = "user_memory_rule_sources";
 
+export type RuleSource = "coach" | "manual" | "feedback";
 export interface UserFact {
   id: string;
   category: "background" | "stack" | "role" | "preference" | "general";
@@ -257,16 +274,19 @@ export function recordFeedback(
       const rule =
         "Начинай ответ сразу с сути — без вводных слов («Ну», «Итак», «Давайте разберёмся»)";
       if (!style.customRules.includes(rule)) style.customRules.unshift(rule);
+      saveRuleSource(rule, "feedback");
     }
     if (/не попал|не о том|мимо тем/i.test(reasonText)) {
       const rule =
         "Перечитай вопрос дважды и отвечай строго на заданную тему, не уходя в смежные области";
       if (!style.customRules.includes(rule)) style.customRules.unshift(rule);
+      saveRuleSource(rule, "feedback");
     }
     if (/шаблон|клише|стандартн/i.test(reasonText)) {
       const rule =
         "Запрещены шаблонные зачины и ИИ-конструкции; начинай каждый ответ по-разному";
       if (!style.customRules.includes(rule)) style.customRules.unshift(rule);
+      saveRuleSource(rule, "feedback");
     }
     style.customRules = style.customRules.slice(0, 15);
   }
@@ -286,6 +306,90 @@ export function recordFeedback(
   })();
 
   return entry;
+}
+
+export function getUserRuleSources(): Record<string, RuleSource> {
+  const raw = safeLocalStorage.getItem(USER_RULE_SOURCES_STORAGE_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, RuleSource>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveRuleSource(rule: string, source: RuleSource): void {
+  const current = getUserRuleSources();
+  current[rule] = source;
+  safeLocalStorage.setItem(
+    USER_RULE_SOURCES_STORAGE_KEY,
+    JSON.stringify(current)
+  );
+}
+
+export function getRuleSource(rule: string): RuleSource {
+  const trimmed = (rule || "").trim();
+  const map = getUserRuleSources();
+  if (map[trimmed]) return map[trimmed];
+
+  const logs = getFeedbackLog();
+  const match = logs.find(
+    (entry) => entry.response === trimmed || entry.question === trimmed
+  );
+  if (match?.topic === "coach") return "coach";
+  if (match?.topic === "manual") return "manual";
+  if (match) return "feedback";
+  return "manual";
+}
+
+export function addUserRule(
+  rule: string,
+  opts?: { source?: RuleSource }
+): void {
+  if (!isSelfLearningEnabled()) {
+    return;
+  }
+  const trimmed = (rule || "").trim();
+  if (!trimmed) return;
+
+  const source: RuleSource = opts?.source ?? "coach";
+  const style = getUserStylePreferences();
+  style.customRules = [
+    trimmed,
+    ...style.customRules.filter((r) => r !== trimmed),
+  ].slice(0, 20);
+  saveUserStylePreferences(style);
+  saveRuleSource(trimmed, source);
+
+  const logs = getFeedbackLog();
+  const entry: FeedbackEntry = {
+    id: `fb-${source}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    question:
+      source === "coach"
+        ? "Рекомендация собеседника"
+        : "Добавление правила",
+    response: trimmed,
+    rating: "like",
+    reason:
+      source === "coach"
+        ? "Взято как правило из реплики собеседника (source=coach)"
+        : `Добавлено правило (source=${source})`,
+    topic: source,
+    timestamp: Date.now(),
+  };
+  saveFeedbackLog([entry, ...logs]);
+
+  void (async () => {
+    try {
+      await mirrorFeedback(entry);
+      await mirrorStyle(style);
+    } catch {
+      /* mirror is best-effort */
+    }
+  })();
 }
 
 /** Compact snapshot of what the self-evolution learned — for the UI. */
@@ -381,8 +485,9 @@ export async function resetLearning(): Promise<void> {
   safeLocalStorage.removeItem(USER_STYLE_STORAGE_KEY);
   safeLocalStorage.removeItem(FEEDBACK_LOG_STORAGE_KEY);
   safeLocalStorage.removeItem(USER_MARKDOWN_STORAGE_KEY);
+  safeLocalStorage.removeItem(USER_RULE_SOURCES_STORAGE_KEY);
+  safeLocalStorage.removeItem(USER_SPEECH_LOG_STORAGE_KEY);
   setSelfEvolutionStyleOverride(null);
-
   try {
     await resetSelfEvolutionDb();
   } catch {
@@ -425,6 +530,7 @@ export function buildSelfEvolutionPromptBlock(
   oneShotStyleOverride = null; // one-shot consume: never leak across requests
   const facts = getUserFacts();
   const logs = getFeedbackLog();
+  const speechStyle = extractSpeechStyle(getUserSpeechTranscripts());
 
   const likesCount = logs.filter((l) => l.rating === "like").length;
   const dislikesCount = logs.filter((l) => l.rating === "dislike").length;
@@ -434,7 +540,8 @@ export function buildSelfEvolutionPromptBlock(
     logs.length > 0 ||
     style.favoritePatterns.length > 0 ||
     style.avoidPatterns.length > 0 ||
-    style.customRules.length > 0;
+    style.customRules.length > 0 ||
+    speechStyle.fillers.length > 0;
 
   if (!hasHistory) {
     return "";
@@ -478,7 +585,15 @@ export function buildSelfEvolutionPromptBlock(
     sections.push(`\n3. КАСТОМНЫЕ ПРАВИЛА:\n${customLines}`);
   }
 
-  sections.push(`\nПодстраивай каждый ответ под эту модель личности!\n[/SELF-EVOLUTION PROFILE]`);
+  if (speechStyle.fillers.length > 0) {
+    const fillerList = speechStyle.fillers
+      .map((f) => `«${f.word}» (${f.count})`)
+      .join(", ");
+    sections.push(
+      `\n4. РЕЧЕВЫЕ МАРКЕРЫ ПОЛЬЗОВАТЕЛЯ (Речевые маркеры пользователя):\n- Привычные разговорные связки и слова-паразиты пользователя: ${fillerList}\n- Отвечай в свободной разговорной форме, как обычно говорит пользователь, а не сухим списком достижений.\n- Кап плотности: используй не более 3 маркеров в одном ответе, вплетай их умеренно и органично.`
+    );
+  }
 
+  sections.push(`\nПодстраивай каждый ответ под эту модель личности!\n[/SELF-EVOLUTION PROFILE]`);
   return sections.join("\n").trim();
 }

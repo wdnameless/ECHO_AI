@@ -12,6 +12,8 @@ import {
   getLearningProfile,
   LANGUAGE_RULE,
   SELF_LEARNING_STORAGE_KEY,
+  addUserRule,
+  getRuleSource,
   type LearningProfile,
 } from "../user-facts";
 import {
@@ -249,6 +251,33 @@ describe("Self-Learning Core & user-facts (T1-T4)", () => {
       expect(prompt).toContain("Отвечай ТОЛЬКО на русском или английском");
       expect(prompt).toContain("TypeScript dev");
       expect(prompt).toContain("SELF-EVOLUTION ADAPTIVE PROFILE");
+    });
+  });
+
+  describe("T5: Коучинг собеседника и addUserRule (R05, R07i)", () => {
+    it("addUserRule(rule, {source:'coach'}) adds rule to customRules, logs topic='coach', and includes rule in prompt block", () => {
+      setSelfLearningEnabled(true);
+      addUserRule("отвечай прямо без общих слов", { source: "coach" });
+
+      const style = getUserStylePreferences();
+      expect(style.customRules).toContain("отвечай прямо без общих слов");
+      expect(getRuleSource("отвечай прямо без общих слов")).toBe("coach");
+
+      const logs = getFeedbackLog();
+      expect(logs.length).toBe(1);
+      expect(logs[0].topic).toBe("coach");
+      expect(logs[0].response).toBe("отвечай прямо без общих слов");
+
+      const promptBlock = buildSelfEvolutionPromptBlock();
+      expect(promptBlock).toContain("отвечай прямо без общих слов");
+    });
+
+    it("addUserRule is a no-op when self-learning is disabled", () => {
+      setSelfLearningEnabled(false);
+      addUserRule("говорить короче", { source: "coach" });
+
+      expect(getUserStylePreferences().customRules).toEqual([]);
+      expect(getFeedbackLog()).toEqual([]);
     });
   });
 });

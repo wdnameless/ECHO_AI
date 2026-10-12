@@ -11,20 +11,29 @@
  * sounds on their own are listed, so repeated real words ("ии", "вв") — rare, but
  * not filler — stay untouched.
  */
-const STRETCHED_FILLER_LETTERS = new Set(["м", "э", "а", "о", "х", "h", "m", "e", "u"]);
+const STRETCHED_FILLER_LETTERS = new Set(["м", "э", "а", "о", "х", "у", "h", "m", "e", "u", "a", "o"]);
 
 /**
- * A filler sound written out: one letter repeated ("ммм", "аааа"), or a
- * consonant hum closed by a nasal ("hmm", "hmmm", "hnn"). The recogniser emits
- * both forms, and neither is a word in either language.
+ * A filler sound written out: one letter repeated ("ммм", "эээ", "аааа"), or a
+ * consonant hum closed by a nasal ("hmm", "hmmm", "hnn", "хмм"). The recogniser emits
+ * these forms, and none is a word in either language.
  */
-const STRETCHED_WORD = /^(.)\1{1,5}$/u;
-const HUMMED_WORD = /^[hmn]{2,6}$/u;
+const STRETCHED_WORD = /^(.)\1{1,6}$/u;
+const HUMMED_WORD = /^(?:[hmn]{2,6}|[хмнэа]{2,6})$/u;
+const HYPHEN_STRETCHED = /^[\p{L}]+(?:-[\p{L}]+)+$/u;
 
-/** True for a sound that is only a hesitation, never a word. */
-function isStretchedFiller(word: string): boolean {
-  if (STRETCHED_WORD.test(word)) return STRETCHED_FILLER_LETTERS.has(word[0]);
-  return HUMMED_WORD.test(word);
+/** True for a sound that is only a hesitation, never a word. Exported for reuse by speech-style counting. */
+export function isStretchedFiller(word: string): boolean {
+  const lower = word.toLowerCase();
+  if (STRETCHED_WORD.test(lower)) return STRETCHED_FILLER_LETTERS.has(lower[0]);
+  if (HUMMED_WORD.test(lower)) return true;
+  if (HYPHEN_STRETCHED.test(lower)) {
+    const parts = lower.split("-");
+    if (parts.length >= 2 && parts.every((p) => p === parts[0] || p.length === 1)) {
+      return STRETCHED_FILLER_LETTERS.has(parts[0][0]) || parts[0] === "ну";
+    }
+  }
+  return false;
 }
 
 const FILLER_PATTERNS = new Set([

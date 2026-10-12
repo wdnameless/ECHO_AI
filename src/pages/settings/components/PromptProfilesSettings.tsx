@@ -44,6 +44,9 @@ import {
   saveFeedbackLog,
   addUserFact,
   removeUserFact,
+  addUserRule,
+  getRuleSource,
+  type RuleSource,
   UserFact,
   FeedbackEntry,
   getUserMarkdownProfile,
@@ -382,20 +385,39 @@ export const PromptProfilesSettings = () => {
     }
   }, [stylePrefs]);
 
+  const resolveRuleSource = useCallback(
+    (rule: string): RuleSource => {
+      if (typeof getRuleSource === "function") {
+        const src = getRuleSource(rule);
+        if (src) return src;
+      }
+      const match = feedbackLogs.find(
+        (entry) => entry.response === rule || entry.question === rule
+      );
+      if (match?.topic === "coach") return "coach";
+      if (match?.topic === "manual") return "manual";
+      if (match) return "feedback";
+      return "manual";
+    },
+    [feedbackLogs]
+  );
+
   const handleAddCustomRule = useCallback(() => {
     const text = newCustomRuleText.trim();
     if (!text) return;
+    if (typeof addUserRule === "function") {
+      addUserRule(text, { source: "manual" });
+    }
     const next = {
       ...stylePrefs,
-      customRules: [text, ...stylePrefs.customRules],
+      customRules: [text, ...stylePrefs.customRules.filter((r) => r !== text)],
     };
     saveUserStylePreferences(next);
     setStylePrefs(next);
     setMarkdownText(getUserMarkdownProfile());
     setNewCustomRuleText("");
     logManualEdit("Добавление правила", text, "like", "Добавлено пользователем в редакторе (source=manual)");
-  }, [newCustomRuleText, stylePrefs]);
-
+  }, [newCustomRuleText, stylePrefs, logManualEdit]);
   const handleResetLearning = useCallback(async () => {
     try {
       await resetLearning();
@@ -753,19 +775,35 @@ export const PromptProfilesSettings = () => {
                   {stylePrefs.customRules.length === 0 ? (
                     <p className="text-[11px] text-muted-foreground italic">Нет кастомных правил</p>
                   ) : (
-                    stylePrefs.customRules.map((r, i) => (
-                      <div key={i} className="flex items-center justify-between gap-1 text-xs p-1.5 rounded bg-violet-500/10 border border-violet-500/20 text-foreground/90">
-                        <span className="truncate flex-1">{r}</span>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0"
-                          onClick={() => handleRemoveCustomRule(i)}
-                        >
-                          <Trash2Icon className="size-3" />
-                        </Button>
-                      </div>
-                    ))
+                    stylePrefs.customRules.map((r, i) => {
+                      const ruleSource = resolveRuleSource(r);
+                      return (
+                        <div key={i} className="flex items-center justify-between gap-1.5 text-xs p-1.5 rounded bg-violet-500/10 border border-violet-500/20 text-foreground/90">
+                          <span
+                            data-testid="rule-source-badge"
+                            className={cn(
+                              "px-1.5 py-0.5 rounded-full text-[10px] font-medium shrink-0",
+                              ruleSource === "coach"
+                                ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                                : ruleSource === "feedback"
+                                ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                                : "bg-primary/15 text-primary"
+                            )}
+                          >
+                            {ruleSource}
+                          </span>
+                          <span className="truncate flex-1">{r}</span>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0"
+                            onClick={() => handleRemoveCustomRule(i)}
+                          >
+                            <Trash2Icon className="size-3" />
+                          </Button>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
                 <div className="flex items-center gap-2 pt-1">
@@ -803,18 +841,27 @@ export const PromptProfilesSettings = () => {
                         className="p-2 rounded-lg bg-background/80 border border-border/40 text-xs space-y-1"
                       >
                         <div className="flex items-center justify-between text-[10px]">
-                          <span
-                            className={cn(
-                              "px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-1",
-                              entry.topic === "manual"
-                                ? "bg-primary/10 text-primary"
-                                : entry.rating === "like"
-                                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                : "bg-red-500/10 text-red-600 dark:text-red-400"
-                            )}
-                          >
-                            {entry.topic === "manual" ? "✏️ manual" : entry.rating === "like" ? "👍 like" : "👎 dislike"}
-                          </span>
+                          <div className="flex items-center gap-1">
+                            <span
+                              data-testid="journal-source-badge"
+                              className={cn(
+                                "px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-1",
+                                entry.topic === "coach"
+                                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                                  : entry.topic === "manual"
+                                  ? "bg-primary/10 text-primary"
+                                  : entry.rating === "like"
+                                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                                  : "bg-red-500/10 text-red-600 dark:text-red-400"
+                              )}
+                            >
+                              {entry.topic === "coach"
+                                ? "🎯 coach"
+                                : entry.topic === "manual"
+                                ? "✏️ manual"
+                                : `${entry.rating === "like" ? "👍 like" : "👎 dislike"} · feedback`}
+                            </span>
+                          </div>
                           <span className="text-muted-foreground font-mono">
                             {new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
                           </span>

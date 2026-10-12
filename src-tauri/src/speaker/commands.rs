@@ -28,13 +28,16 @@ pub struct VadConfig {
     pub max_recording_duration_secs: u64,
 }
 
-/// How far above the room's own floor a chunk must sit to count as speech.
-/// A ratio, so the answer is the same on a loud interface and a quiet loopback.
-const VAD_SNR_RATIO: f32 = 3.0;
-
 /// Hard lower bound for the SNR gate: below this the "signal" is measurement
 /// noise, not a voice, however quiet the room is.
 const VAD_ABSOLUTE_FLOOR: f32 = 0.0008;
+
+/// Maps the UI sensitivity slider (0.001..0.020 RMS) onto the live SNR ratio.
+/// Higher slider = lower ratio = more sensitive. Default 0.012 → 3.0, so the
+/// shipped behaviour is unchanged; the slider finally does something.
+fn snr_ratio_for(sensitivity_rms: f32) -> f32 {
+    (0.036 / sensitivity_rms.clamp(0.001, 0.020)).clamp(1.8, 36.0)
+}
 
 /// Target RMS the input calibration lifts the noise floor to. Keeping the
 /// floor at a known level makes the sensitivity presets mean the same thing on
@@ -364,7 +367,7 @@ async fn run_vad_capture(
                 .copied()
                 .fold(f32::INFINITY, f32::min);
             let pre_floor = if pre_floor.is_infinite() { 0.0 } else { pre_floor };
-            let snr_threshold = (pre_floor * VAD_SNR_RATIO).max(VAD_ABSOLUTE_FLOOR);
+            let snr_threshold = (pre_floor * snr_ratio_for(config.sensitivity_rms)).max(VAD_ABSOLUTE_FLOOR);
             let is_speech = (pre_rms > snr_threshold || peak > config.peak_threshold)
                 && pre_rms > pre_floor * 1.2;
 
@@ -897,6 +900,13 @@ mod tests {
         assert_eq!(running.silence_chunks, 30);
         assert_eq!(running.noise_gate_threshold, 0.009);
         assert!(running.enabled, "enabled stays a stop/start operation");
+    }
+
+    #[test]
+    fn test_snr_ratio_for_sensitivity() {
+        assert!((snr_ratio_for(0.012) - 3.0).abs() < 1e-6, "default slider keeps shipped behaviour");
+        assert!(snr_ratio_for(0.020) < snr_ratio_for(0.012), "higher slider = more sensitive");
+        assert!(snr_ratio_for(0.001) > snr_ratio_for(0.012), "lower slider = less sensitive");
     }
 
     #[test]

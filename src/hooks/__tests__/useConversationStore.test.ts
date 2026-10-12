@@ -172,17 +172,23 @@ describe("useConversationStore", () => {
     expect(result.current.liveSegments[1].text).toBe("я готов");
   });
 
-  it("filters fillers for AI interactions and history by default", () => {
+  it("keeps user speech intact by default, filters only when opted in", () => {
     const { result } = renderHook(() => useConversationStore());
 
     act(() => {
       result.current.addInteraction("Эм ну расскажи про Redux", "Redux это библиотека", "them");
     });
 
-    expect(result.current.conversation.messages[0].content).toBe("расскажи про Redux");
+    // Default: no filtering — the model sees how the user actually talks.
+    expect(result.current.conversation.messages[0].content).toBe("Эм ну расскажи про Redux");
 
-    const history = result.current.buildHistory(result.current.conversation.messages);
-    expect(history[0].content).toBe("[Interviewer (question)] расскажи про Redux");
+    saveFillerFilterConfig({ filterAiEnabled: true });
+    act(() => {
+      result.current.addInteraction("Эм ну расскажи про Vue", "Vue это фреймворк", "them");
+    });
+    expect(result.current.conversation.messages[0].content).toBe("расскажи про Vue");
+    // The first pair kept its fillers at save time (default was off then).
+    expect(result.current.conversation.messages[2].content).toBe("Эм ну расскажи про Redux");
   });
 
   it("builds history in chronological order (oldest -> newest) from multiple interactions", () => {

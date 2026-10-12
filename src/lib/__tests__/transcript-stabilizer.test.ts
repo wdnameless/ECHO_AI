@@ -19,7 +19,7 @@ describe("transcript-stabilizer", () => {
   });
 
   it("creates a new partial utterance and keeps stable id during streaming updates", () => {
-    let list: TranscriptUtterance[] = [];
+    const list: TranscriptUtterance[] = [];
     const first = upsertUtterance(list, {
       source: "them",
       text: "Hello",
@@ -53,7 +53,7 @@ describe("transcript-stabilizer", () => {
   });
 
   it("handles multiple channels (them and me) independently without ID conflicts", () => {
-    let list: TranscriptUtterance[] = [];
+    const list: TranscriptUtterance[] = [];
     const themRes = upsertUtterance(list, {
       source: "them",
       text: "Can you explain closures?",
@@ -86,6 +86,15 @@ describe("transcript-stabilizer", () => {
     const uniqueSet = new Set(RUSSIAN_FILLERS);
     expect(uniqueSet.size).toBeGreaterThanOrEqual(200);
     expect(uniqueSet.size).toBe(RUSSIAN_FILLERS.length);
+  });
+
+  it("contains expanded unique phrases in RUSSIAN_FILLERS (>=240) and ENGLISH_FILLERS (>=50)", () => {
+    expect(RUSSIAN_FILLERS.length).toBeGreaterThanOrEqual(240);
+    expect(RUSSIAN_INTERVIEW_FILLERS.length).toBeGreaterThanOrEqual(240);
+    expect(new Set(RUSSIAN_FILLERS).size).toBe(RUSSIAN_FILLERS.length);
+
+    expect(ENGLISH_FILLERS.length).toBeGreaterThanOrEqual(50);
+    expect(new Set(ENGLISH_FILLERS).size).toBe(ENGLISH_FILLERS.length);
   });
 
   it("selects a filler in the language of the question", () => {
@@ -146,7 +155,7 @@ describe("transcript-stabilizer", () => {
   });
 
   it("finalizes nonexistent activeId gracefully without crashing", () => {
-    let list: TranscriptUtterance[] = [];
+    const list: TranscriptUtterance[] = [];
     const res = upsertUtterance(list, {
       source: "them",
       text: "Testing",

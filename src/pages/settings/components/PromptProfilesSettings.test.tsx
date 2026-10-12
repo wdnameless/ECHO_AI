@@ -79,9 +79,20 @@ vi.mock("@/lib/storage/user-facts", () => ({
     preferredLength: "concise",
     favoritePatterns: ["Объяснять ход мыслей"],
     avoidPatterns: ["Маркированные списки"],
-    customRules: ["Кратко и по сути"],
+    customRules: [
+      "Кратко и по сути",
+      "отвечай прямо без общих слов",
+      "Начинай ответ сразу с сути",
+    ],
   }),
   saveUserStylePreferences: vi.fn(),
+  addUserRule: vi.fn(),
+  getRuleSource: (rule: string) =>
+    rule === "отвечай прямо без общих слов"
+      ? "coach"
+      : rule === "Начинай ответ сразу с сути"
+      ? "feedback"
+      : "manual",
   getFeedbackLog: () => [
     {
       id: "fb-1",
@@ -90,6 +101,24 @@ vi.mock("@/lib/storage/user-facts", () => ({
       rating: "like",
       reason: "Хороший ответ",
       timestamp: 2000,
+    },
+    {
+      id: "fb-coach-1",
+      question: "Рекомендация собеседника",
+      response: "Углубись в один пример",
+      rating: "like",
+      topic: "coach",
+      reason: "Взято как правило из реплики собеседника (source=coach)",
+      timestamp: 3000,
+    },
+    {
+      id: "fb-manual-1",
+      question: "Добавление правила",
+      response: "Ручное правило",
+      rating: "like",
+      topic: "manual",
+      reason: "Добавлено пользователем в редакторе (source=manual)",
+      timestamp: 2500,
     },
   ],
   saveFeedbackLog: vi.fn(),
@@ -330,6 +359,24 @@ describe("T2 & T5: Self-Learning toggle and editors in PromptProfilesSettings", 
       expect(screen.getByText("Кратко и по сути")).toBeInTheDocument();
       expect(screen.getByText(/Журнал обучения/)).toBeInTheDocument();
       expect(screen.getByText("Как работает GC?")).toBeInTheDocument();
+    } finally {
+      mockUseAppState.profiles = [profile1, profile2];
+      mockUseAppState.activeId = "profile-interview";
+    }
+  });
+
+  it("displays source badges (coach/manual/feedback) in both the custom rules editor and journal", () => {
+    mockUseAppState.profiles = [profile1, profile2, evolutionProfile];
+    mockUseAppState.activeId = "profile-self-evolution";
+    try {
+      renderWithRouter(<PromptProfilesSettings />);
+      const ruleBadges = screen.getAllByTestId("rule-source-badge").map((el) => el.textContent?.trim());
+      expect(ruleBadges).toEqual(expect.arrayContaining(["coach", "manual", "feedback"]));
+
+      const journalBadges = screen.getAllByTestId("journal-source-badge").map((el) => el.textContent?.trim());
+      expect(journalBadges.some((t) => t?.includes("coach"))).toBe(true);
+      expect(journalBadges.some((t) => t?.includes("manual"))).toBe(true);
+      expect(journalBadges.some((t) => t?.includes("feedback"))).toBe(true);
     } finally {
       mockUseAppState.profiles = [profile1, profile2];
       mockUseAppState.activeId = "profile-interview";

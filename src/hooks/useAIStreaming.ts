@@ -160,7 +160,10 @@ export function useAIStreaming({
       setIsAIProcessing(true);
       setIsStalled(false);
       setAIStatusMessage("");
-      setLastAIResponse("");
+      // Маскировка задержки (T7): филлер виден сразу при финализации вопроса,
+      // а не с первым токеном LLM (~430мс позже). Воспринимаемая задержка → ~0.
+      const upfrontFiller = typeof getActiveFiller === "function" ? getActiveFiller() : null;
+      setLastAIResponse(upfrontFiller?.trim() ? upfrontFiller.trim() + "\n\n" : "");
       onError("");
       const initialId = overrideProvider === "pluely" ? "pluely" : overrideProvider?.id ?? selectedAIProvider.provider;
       activeProviderIdRef.current = initialId;
@@ -223,10 +226,6 @@ export function useAIStreaming({
           if (firstChunk) {
             firstChunk = false;
             recordFirstToken();
-            const filler = typeof getActiveFiller === "function" ? getActiveFiller() : null;
-            const stitched = filler?.trim() ? filler.trim() + "\n\n" : "";
-            buffer += stitched;
-            clearFiller();
           }
           storedResponse += chunk;
           buffer += chunk;

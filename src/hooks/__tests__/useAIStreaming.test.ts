@@ -89,6 +89,24 @@ describe("useAIStreaming", () => {
     expect(props.setFillerForInterviewer).not.toHaveBeenCalled();
     expect(fetchAIResponse).not.toHaveBeenCalled();
   });
+  it("показывает филлер сразу при старте запроса, до первого токена (T7)", async () => {
+    getActiveFiller.mockReturnValue("Ну, смотрите...");
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    vi.mocked(fetchAIResponse).mockReturnValue((async function* () {
+      await gate;
+      yield "ответ";
+    })());
+    const props = createHookProps();
+    const { result } = renderHook(() => useAIStreaming(props));
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.processWithAI("вопрос", "prompt", []); });
+    // Филлер уже на экране, хотя ни одного токена ещё нет.
+    expect(result.current.lastAIResponse).toBe("Ну, смотрите...\n\n");
+    await act(async () => { release(); await pending; });
+    expect(result.current.lastAIResponse).toBe("Ну, смотрите...\n\nответ");
+  });
+
 
   it("enforces post-answer cooldown for short non-question reactions", async () => {
     async function* makeChunkGenerator() {

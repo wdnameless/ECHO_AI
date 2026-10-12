@@ -25,6 +25,8 @@ import { getAnswerLengthOverride } from "@/lib/answer-length-override";
 import { getSpeechModelLang } from "@/hooks/useSpeechModelSwitch";
 import {
   recordFeedback,
+  addUserRule,
+  getRuleSource,
   getSelfEvolutionStats,
   isSelfLearningEnabled,
   type SelfEvolutionStats,
@@ -144,6 +146,7 @@ interface SubtitleFeedProps {
     provider: string;
     variables: Record<string, string>;
   }) => void;
+  onTakeAsRule?: (entryId: string, text: string) => void;
 }
 
 const DISLIKE_REASONS = [
@@ -569,8 +572,10 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
   showFillerBelow,
   activeFiller,
   copied,
+  ruleTaken,
   onCopy,
   onAskAI,
+  onTakeAsRule,
   onStartInlineEdit,
   onCancelInlineEdit,
   onSaveInlineEdit,
@@ -594,8 +599,10 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
   showFillerBelow: boolean;
   activeFiller?: string | null;
   copied: boolean;
+  ruleTaken?: boolean;
   onCopy: (id: string, text: string) => void;
   onAskAI?: (utteranceId: string, text: string, source: "me" | "them") => Promise<void>;
+  onTakeAsRule?: (entryId: string, text: string) => void;
   onStartInlineEdit: (rowId: string, text: string, sel?: string) => void;
   onCancelInlineEdit: () => void;
   onSaveInlineEdit: (originalText: string, wrongWord: string, rightWord: string) => void;
@@ -745,6 +752,27 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
               Спросить ИИ
             </button>
           )}
+          {kind === "them" && !streaming && !isEditing && onTakeAsRule && (
+            <button
+              type="button"
+              onClick={() => onTakeAsRule(id, text)}
+              className={cn(
+                "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.62em] font-medium transition-colors border",
+                ruleTaken
+                  ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/40 bg-emerald-500/10"
+                  : "text-violet-600 dark:text-violet-300 border-violet-500/30 hover:bg-violet-500/10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+              )}
+              aria-label="Взять как правило"
+              title="Взять как правило"
+            >
+              {ruleTaken ? (
+                <CheckIcon className="w-2.5 h-2.5" />
+              ) : (
+                <SparklesIcon className="w-2.5 h-2.5" />
+              )}
+              Взять как правило
+            </button>
+          )}
           {!isEditing && (
             <button
               onClick={() => onCopy(id, text)}
@@ -827,6 +855,7 @@ export const SubtitleFeed = ({
   onOpenProviders,
   activeProviderId: propActiveProviderId,
   onSetSelectedAIProvider: propOnSetSelectedAIProvider,
+  onTakeAsRule: propOnTakeAsRule,
 }: SubtitleFeedProps) => {
   const {
     promptProfiles,
@@ -878,6 +907,7 @@ export const SubtitleFeed = ({
   const [feedbackGiven, setFeedbackGiven] = useState<
     Record<string, "like" | "dislike">
   >({});
+  const [ruleTakenMap, setRuleTakenMap] = useState<Record<string, boolean>>({});
   const [dislikeMenuFor, setDislikeMenuFor] = useState<string | null>(null);
   const [customReason, setCustomReason] = useState("");
   const [evolutionNote, setEvolutionNote] = useState<string | null>(null);
@@ -1269,6 +1299,25 @@ export const SubtitleFeed = ({
     [entries, questionContextFor, showEvolutionNote]
   );
 
+  const handleTakeAsRule = useCallback(
+    (entryId: string, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      if (typeof isSelfLearningEnabled === "function" && !isSelfLearningEnabled()) {
+        showEvolutionNote("Самообучение выключено");
+        return;
+      }
+      if (typeof addUserRule === "function") {
+        addUserRule(trimmed, { source: "coach" });
+      }
+      propOnTakeAsRule?.(entryId, trimmed);
+      setRuleTakenMap((prev) => ({ ...prev, [entryId]: true }));
+      setEvoStats(getSelfEvolutionStats());
+      showEvolutionNote("Совет собеседника сохранён как правило");
+    },
+    [propOnTakeAsRule, showEvolutionNote]
+  );
+
   // Session stats: recognized words + AI answers across the conversation.
   const sessionStats = useMemo(() => {
     let words = 0;
@@ -1352,7 +1401,7 @@ export const SubtitleFeed = ({
               "h-5 px-1.5 text-[0.62em] gap-1 shrink-0",
               !webSearchOn && "text-muted-foreground hover:text-foreground"
             )}
-            title="Веб-поиск для актуальных ответов (работает параллельно, не тормозит первый токен)"
+            title="Веб-поиск для актуальных ответов (ждёт до ~1 сек перед запросом к ИИ)"
           >
             🌐
             <span>Поиск</span>
@@ -1439,11 +1488,20 @@ export const SubtitleFeed = ({
                   <div className="font-semibold text-violet-500 mb-0.5">
                     Личные правила:
                   </div>
-                  {evoStats.customRules.map((r, i) => (
-                    <div key={i} className="truncate text-foreground/80" title={r}>
-                      • {r}
-                    </div>
-                  ))}
+                  {evoStats.customRules.map((r, i) => {
+                    const src =
+                      typeof getRuleSource === "function"
+                        ? getRuleSource(r)
+                        : "manual";
+                    return (
+                      <div key={i} className="flex items-center gap-1 truncate text-foreground/80" title={r}>
+                        <span className="px-1 py-px rounded text-[0.8em] bg-violet-500/10 text-violet-500 shrink-0">
+                          {src}
+                        </span>
+                        <span className="truncate">• {r}</span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </DropdownMenuContent>
@@ -1663,8 +1721,10 @@ export const SubtitleFeed = ({
               showFillerBelow={showFillerBelow}
               activeFiller={activeFiller}
               copied={copiedId === rowId}
+              ruleTaken={Boolean(ruleTakenMap[rowId])}
               onCopy={handleCopy}
               onAskAI={onAskAI}
+              onTakeAsRule={handleTakeAsRule}
               onStartInlineEdit={startInlineEdit}
               onCancelInlineEdit={cancelInlineEdit}
               onSaveInlineEdit={saveInlineEdit}

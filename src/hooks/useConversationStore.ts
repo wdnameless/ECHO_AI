@@ -19,6 +19,7 @@ import {
   getFillerFilterConfig,
 } from "@/lib";
 import { applyCorrections, loadCorrections } from "@/lib/vocab";
+import { recordUserSpeech } from "@/lib/speech-style";
 import type { Message } from "@/types/completion";
 
 export interface LiveSegment {
@@ -440,6 +441,9 @@ export function useConversationStore() {
 
   const addInteraction = useCallback(
     (transcription: string, fullResponse: string, source?: "me" | "them") => {
+      if (source === "me" && transcription.trim()) {
+        recordUserSpeech(transcription);
+      }
       const config = getFillerFilterConfig();
       const filteredTranscription = config.filterAiEnabled
         ? filterFillers(transcription, config.customFillers)

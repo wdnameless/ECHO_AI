@@ -393,7 +393,7 @@ export const SettingsPanel = ({
                   <>
                     <div className="space-y-2">
                       <Label className="text-xs font-medium flex items-center justify-between">
-                        <span>Speech Sensitivity (Raw) — не влияет, речь решает SNR+Peak</span>
+                        <span>Speech Sensitivity (Raw)</span>
                         <span className="text-muted-foreground font-normal">
                           {(vadConfig.sensitivity_rms * 1000).toFixed(1)}
                         </span>

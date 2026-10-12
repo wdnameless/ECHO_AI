@@ -254,7 +254,7 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       {/* Режим ответа: Авто / Вручную */}
                       <div
                         className="flex items-center bg-muted rounded-md p-0.5 gap-0.5 shrink-0"
-                        title="Режим ответа: Авто (по тишине 1 сек) или Вручную (по кнопке «Ответить»)"
+                        title={`Режим ответа: Авто (по тишине ${((activeProfile.flushGapMs ?? 450) / 1000).toFixed(1).replace(".", ",")} сек, профиль «${activeProfile.name}») или Вручную (по кнопке «Ответить»)`}
                       >
                         <button
                           type="button"

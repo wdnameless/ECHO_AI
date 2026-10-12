@@ -16,7 +16,9 @@ export const FILLER_FILTER_STORAGE_KEYS = {
 } as const;
 
 export const DEFAULT_FILLER_FILTER_CONFIG: FillerFilterConfig = {
-  filterAiEnabled: true,
+  // OFF by default: the user's own speech reaches the AI untouched, so
+  // answers can mirror how the user actually talks. Opt-in via settings.
+  filterAiEnabled: false,
   filterFeedEnabled: false,
   customFillers: "",
 };

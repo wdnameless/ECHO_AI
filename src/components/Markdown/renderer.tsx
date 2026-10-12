@@ -15,6 +15,7 @@
 import React from "react";
 import { Streamdown } from "streamdown";
 import rehypeKatex from "rehype-katex";
+import remarkMath from "remark-math";
 import "katex/dist/katex.min.css";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { sanitizeSchema } from "@/lib/sanitize-schema";
@@ -37,7 +38,8 @@ interface MarkdownRendererProps {
  * `rehypePlugins` — публичный проп Streamdown, поэтому переопределение
  * не требует патча библиотеки.
  *
- * remarkPlugins не трогаем: gfm/math/cjk на безопасность не влияют.
+ * remarkPlugins добавляем явно: без remark-math rehype-katex получает
+ * нераспарсенные `$$` и выводит их текстом (баг: сырые `$$15$$` в ленте).
  */
 type RehypePluginList = NonNullable<
   React.ComponentProps<typeof Streamdown>["rehypePlugins"]
@@ -51,6 +53,13 @@ const REHYPE_PLUGINS = [
   [rehypeKatex, { errorColor: "var(--color-muted-foreground)" }],
   sanitizeSchema,
 ] as unknown as RehypePluginList;
+
+// SAFETY: streamdown declares remarkPlugins as an opaque PluggableList; the
+// assertion bridges it with the concrete remark-math plugin type, no runtime change.
+type RemarkPluginList = NonNullable<
+  React.ComponentProps<typeof Streamdown>["remarkPlugins"]
+>;
+const REMARK_PLUGINS = [remarkMath] as unknown as RemarkPluginList;
 
 // Kept as a type so a component-map typo is a compile error, not a silent
 // fallback to streamdown's default renderer.
@@ -101,6 +110,7 @@ export default function MarkdownRenderer({
       shikiTheme={["github-light", "github-dark"]}
       components={COMPONENTS}
       rehypePlugins={REHYPE_PLUGINS}
+      remarkPlugins={REMARK_PLUGINS}
       controls={{
         table: true,
         code: true,

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
 import { SubtitleFeed } from "./SubtitleFeed";
 import type { ChatConversation } from "@/hooks/useSystemAudio";
-import { isSelfLearningEnabled, recordFeedback } from "@/lib/storage/user-facts";
+import { isSelfLearningEnabled, recordFeedback, addUserRule } from "@/lib/storage/user-facts";
 const invokeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock, Channel: class {} }));
 
@@ -33,6 +33,7 @@ vi.mock("@/lib/metrics", () => ({
 
 vi.mock("@/lib/storage/user-facts", () => ({
   recordFeedback: vi.fn(),
+  addUserRule: vi.fn(),
   isSelfLearningEnabled: vi.fn(() => true),
   setSelfLearningEnabled: vi.fn(),
   getSelfEvolutionStats: () => ({
@@ -534,5 +535,52 @@ describe("T2: SubtitleFeed self-learning feedback gate and toast", () => {
 
     expect(recordFeedback).toHaveBeenCalled();
     expect(screen.getByText(/Стиль закреплён/)).toBeInTheDocument();
+  });
+
+  it("renders 'Взять как правило' button on 'them' utterance and calls addUserRule(text, { source: 'coach' })", () => {
+    vi.mocked(isSelfLearningEnabled).mockReturnValue(true);
+    const onTakeAsRule = vi.fn();
+
+    render(
+      <SubtitleFeed
+        conversation={{
+          id: "conv-coach",
+          title: "Coach Conv",
+          messages: [
+            {
+              id: "msg-them-coach",
+              role: "user",
+              content: "давай углубись в один пример, отвечай прямо без общих слов",
+              timestamp: 1000,
+              source: "them",
+            },
+          ],
+          createdAt: 1000,
+          updatedAt: 1000,
+        }}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+        onTakeAsRule={onTakeAsRule}
+      />
+    );
+
+    const takeRuleBtn = screen.getByRole("button", { name: /Взять как правило/i });
+    fireEvent.click(takeRuleBtn);
+
+    expect(addUserRule).toHaveBeenCalledWith(
+      "давай углубись в один пример, отвечай прямо без общих слов",
+      { source: "coach" }
+    );
+    expect(onTakeAsRule).toHaveBeenCalledWith(
+      "msg-them-coach",
+      "давай углубись в один пример, отвечай прямо без общих слов"
+    );
   });
 });

@@ -68,18 +68,18 @@ describe("FillerFilterService & filler removal", () => {
 
   it("persists and reads configuration via safeLocalStorage", () => {
     const initial = getFillerFilterConfig();
-    expect(initial.filterAiEnabled).toBe(true);
+    expect(initial.filterAiEnabled).toBe(false);
     expect(initial.filterFeedEnabled).toBe(false);
     expect(initial.customFillers).toBe("");
 
     saveFillerFilterConfig({
-      filterAiEnabled: false,
+      filterAiEnabled: true,
       filterFeedEnabled: true,
       customFillers: "в общем, purely",
     });
 
     const updated = getFillerFilterConfig();
-    expect(updated.filterAiEnabled).toBe(false);
+    expect(updated.filterAiEnabled).toBe(true);
     expect(updated.filterFeedEnabled).toBe(true);
     expect(updated.customFillers).toBe("в общем, purely");
   });
