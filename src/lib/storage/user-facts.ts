@@ -1,5 +1,13 @@
 import { safeLocalStorage } from "./helper";
 import {
+  getSmartRules,
+  saveSmartRule,
+  migrateLegacyRules,
+  createDefaultSmartRule,
+  SMART_RULES_STORAGE_KEY,
+  type SmartRule,
+} from "./smart-rules";
+import {
   mirrorFeedback,
   mirrorStyle,
   resetSelfEvolutionDb,
@@ -19,6 +27,13 @@ export {
   USER_SPEECH_LOG_STORAGE_KEY,
   type SpeechStyle,
 };
+export {
+  getSmartRules,
+  saveSmartRule,
+  migrateLegacyRules,
+  type SmartRule,
+};
+
 
 export const USER_FACTS_STORAGE_KEY = "user_memory_facts";
 export const USER_STYLE_STORAGE_KEY = "user_memory_style";
@@ -356,6 +371,7 @@ export function addUserRule(
   if (!trimmed) return;
 
   const source: RuleSource = opts?.source ?? "coach";
+  saveSmartRule(createDefaultSmartRule(trimmed, source));
   const style = getUserStylePreferences();
   style.customRules = [
     trimmed,
@@ -363,7 +379,6 @@ export function addUserRule(
   ].slice(0, 20);
   saveUserStylePreferences(style);
   saveRuleSource(trimmed, source);
-
   const logs = getFeedbackLog();
   const entry: FeedbackEntry = {
     id: `fb-${source}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -487,6 +502,7 @@ export async function resetLearning(): Promise<void> {
   safeLocalStorage.removeItem(USER_MARKDOWN_STORAGE_KEY);
   safeLocalStorage.removeItem(USER_RULE_SOURCES_STORAGE_KEY);
   safeLocalStorage.removeItem(USER_SPEECH_LOG_STORAGE_KEY);
+  safeLocalStorage.removeItem(SMART_RULES_STORAGE_KEY);
   setSelfEvolutionStyleOverride(null);
   try {
     await resetSelfEvolutionDb();
@@ -519,6 +535,8 @@ export function buildSelfEvolutionPromptBlock(
   if (!isSelfLearningEnabled()) {
     return "";
   }
+  migrateLegacyRules();
+
 
   const customMd = safeLocalStorage.getItem(USER_MARKDOWN_STORAGE_KEY);
   if (customMd && customMd.trim()) {
@@ -535,11 +553,15 @@ export function buildSelfEvolutionPromptBlock(
   const likesCount = logs.filter((l) => l.rating === "like").length;
   const dislikesCount = logs.filter((l) => l.rating === "dislike").length;
 
+  const smartRules = getSmartRules(false);
+  const sortedRules = [...smartRules].sort((a, b) => b.weight - a.weight);
+
   const hasHistory =
     facts.length > 0 ||
     logs.length > 0 ||
     style.favoritePatterns.length > 0 ||
     style.avoidPatterns.length > 0 ||
+    sortedRules.length > 0 ||
     style.customRules.length > 0 ||
     speechStyle.fillers.length > 0;
 
@@ -556,10 +578,11 @@ export function buildSelfEvolutionPromptBlock(
     .slice(0, 8)
     .map((p) => `- Категорически избегать: ${p}`)
     .join("\n");
-  const customLines = style.customRules
-    .slice(0, 6)
-    .map((r) => `- Личное правило: ${r}`)
-    .join("\n");
+  const customLines = (
+    sortedRules.length > 0
+      ? sortedRules.slice(0, 6).map((r) => `- Личное правило: ${r.text}`)
+      : style.customRules.slice(0, 6).map((r) => `- Личное правило: ${r}`)
+  ).join("\n");
 
   const sections: string[] = [
     `[SELF-EVOLUTION ADAPTIVE PROFILE - ПЕРСОНАЛЬНЫЙ ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ (USER.md)]`,
@@ -597,3 +620,6 @@ export function buildSelfEvolutionPromptBlock(
   sections.push(`\nПодстраивай каждый ответ под эту модель личности!\n[/SELF-EVOLUTION PROFILE]`);
   return sections.join("\n").trim();
 }
+
+// Initial migration on load
+migrateLegacyRules();
