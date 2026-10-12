@@ -7,12 +7,12 @@ export const StealthToggle = () => {
   return (
     <div className="flex flex-row items-center justify-between">
       <Header
-        title="Stealth Mode (Скрытность от скриншотов)"
-        description="Скрывает окно приложения от захвата экрана и сторонних скриншотов (SetWindowDisplayAffinity). Выключите, если хотите делать скриншоты самого окна Echo AI."
+        title="Stealth Mode (Скрытность от скриншотов и переключателя)"
+        description="Скрывает главное и вспомогательные окна от захвата экрана, демонстрации и переключателя задач (Alt-Tab/Dock). Процесс приложения остаётся под своим именем."
         isMainTitle
       />
       <Switch
-        checked={customizable?.stealth?.isEnabled ?? true}
+        checked={customizable?.stealth?.isEnabled ?? false}
         onCheckedChange={(checked) => toggleStealthMode(checked)}
       />
     </div>
