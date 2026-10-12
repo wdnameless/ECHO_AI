@@ -14,6 +14,7 @@ import {
   SparklesIcon,
   ThumbsDownIcon,
   ThumbsUpIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -25,12 +26,31 @@ import { getAnswerLengthOverride } from "@/lib/answer-length-override";
 import { getSpeechModelLang } from "@/hooks/useSpeechModelSwitch";
 import {
   recordFeedback,
-  addUserRule,
   getRuleSource,
   getSelfEvolutionStats,
   isSelfLearningEnabled,
   type SelfEvolutionStats,
 } from "@/lib/storage/user-facts";
+import {
+  createDefaultSmartRule,
+  deleteSmartRule,
+  getSmartRules,
+  saveSmartRule,
+  type SmartRule,
+} from "@/lib/storage/smart-rules";
+import {
+  extractRuleCandidate,
+  refineRuleCandidate,
+} from "@/lib/rule-extract";
+import {
+  BEHAVIOR_SUGGESTION_EVENT,
+  confirmSuggestion,
+  dismissSuggestion,
+  getActiveSuggestions,
+  observeElaborate,
+  observeShorten,
+  type BehaviorSuggestion,
+} from "@/lib/behavior-watch";
 import { SelfLearningToggle } from "@/components/SelfLearningToggle";
 import { splitCodeAnswer } from "@/lib/code-answer";
 import { HoverTranslate } from "@/lib/hover-translate";
@@ -554,6 +574,98 @@ const AiFeedRow = memo(function AiFeedRow({
   );
 });
 
+export interface RulePreviewProps {
+  candidate: string;
+  onSave: (text: string) => void;
+  onEdit?: (text: string) => void;
+  onCancel: () => void;
+}
+
+export const RulePreview = memo(function RulePreview({
+  candidate,
+  onSave,
+  onEdit,
+  onCancel,
+}: RulePreviewProps) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [draft, setDraft] = useState(candidate);
+
+  useEffect(() => {
+    if (!isEditing) {
+      setDraft(candidate);
+    }
+  }, [candidate, isEditing]);
+
+  return (
+    <div
+      className="flex flex-wrap items-center gap-1.5 py-1 px-2 rounded border border-violet-500/30 bg-violet-500/5 text-[0.72em]"
+      role="region"
+      aria-label="Превью правила"
+    >
+      <SparklesIcon className="w-3 h-3 text-violet-500 shrink-0" />
+      {isEditing ? (
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            onEdit?.(e.target.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              const finalText = draft.trim() || candidate;
+              if (finalText) onSave(finalText);
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              onCancel();
+            }
+          }}
+          className="flex-1 min-w-[140px] h-6 px-1.5 py-0.5 text-[0.95em] font-medium bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
+        />
+      ) : (
+        <span className="flex-1 min-w-0 font-medium text-foreground break-words">
+          {draft}
+        </span>
+      )}
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          type="button"
+          onClick={() => {
+            const finalText = (isEditing ? draft : candidate).trim();
+            if (finalText) onSave(finalText);
+          }}
+          className="h-5 px-1.5 inline-flex items-center gap-1 rounded text-[0.9em] font-medium bg-primary text-primary-foreground hover:bg-primary/90"
+        >
+          <CheckIcon className="w-2.5 h-2.5" />
+          Сохранить
+        </button>
+        {!isEditing && (
+          <button
+            type="button"
+            onClick={() => {
+              setIsEditing(true);
+              onEdit?.(draft);
+            }}
+            className="h-5 px-1.5 inline-flex items-center gap-1 rounded text-[0.9em] font-medium border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted/50"
+          >
+            <PencilIcon className="w-2.5 h-2.5" />
+            Править
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onCancel}
+          className="h-5 px-1.5 inline-flex items-center gap-1 rounded text-[0.9em] font-medium text-muted-foreground hover:text-foreground"
+        >
+          <XIcon className="w-2.5 h-2.5" />
+          Отмена
+        </button>
+      </div>
+    </div>
+  );
+});
+
 const SpeechFeedRow = memo(function SpeechFeedRow({
   id,
   kind,
@@ -573,9 +685,13 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
   activeFiller,
   copied,
   ruleTaken,
+  rulePreviewCandidate,
   onCopy,
   onAskAI,
   onTakeAsRule,
+  onSaveRulePreview,
+  onEditRulePreview,
+  onCancelRulePreview,
   onStartInlineEdit,
   onCancelInlineEdit,
   onSaveInlineEdit,
@@ -600,9 +716,13 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
   activeFiller?: string | null;
   copied: boolean;
   ruleTaken?: boolean;
+  rulePreviewCandidate?: string | null;
   onCopy: (id: string, text: string) => void;
   onAskAI?: (utteranceId: string, text: string, source: "me" | "them") => Promise<void>;
   onTakeAsRule?: (entryId: string, text: string) => void;
+  onSaveRulePreview?: (entryId: string, text: string) => void;
+  onEditRulePreview?: (entryId: string, text: string) => void;
+  onCancelRulePreview?: () => void;
   onStartInlineEdit: (rowId: string, text: string, sel?: string) => void;
   onCancelInlineEdit: () => void;
   onSaveInlineEdit: (originalText: string, wrongWord: string, rightWord: string) => void;
@@ -820,6 +940,14 @@ const SpeechFeedRow = memo(function SpeechFeedRow({
           <span className="truncate">{activeFiller}</span>
         </div>
       )}
+      {rulePreviewCandidate !== undefined && rulePreviewCandidate !== null && onSaveRulePreview && onCancelRulePreview && (
+        <RulePreview
+          candidate={rulePreviewCandidate}
+          onSave={(finalText) => onSaveRulePreview(id, finalText)}
+          onEdit={(editedText) => onEditRulePreview?.(id, editedText)}
+          onCancel={onCancelRulePreview}
+        />
+      )}
     </div>
   );
 });
@@ -908,6 +1036,12 @@ export const SubtitleFeed = ({
     Record<string, "like" | "dislike">
   >({});
   const [ruleTakenMap, setRuleTakenMap] = useState<Record<string, boolean>>({});
+  const [rulePreview, setRulePreview] = useState<{
+    entryId: string;
+    quote: string;
+    candidate: string;
+    edited: boolean;
+  } | null>(null);
   const [dislikeMenuFor, setDislikeMenuFor] = useState<string | null>(null);
   const [customReason, setCustomReason] = useState("");
   const [evolutionNote, setEvolutionNote] = useState<string | null>(null);
@@ -915,6 +1049,50 @@ export const SubtitleFeed = ({
   const [evoStats, setEvoStats] = useState<SelfEvolutionStats>(() =>
     getSelfEvolutionStats()
   );
+  const [smartRules, setSmartRules] = useState<SmartRule[]>(() =>
+    getSmartRules()
+  );
+  const [behaviorSuggestions, setBehaviorSuggestions] = useState<
+    BehaviorSuggestion[]
+  >(() => getActiveSuggestions());
+
+  useEffect(() => {
+    const syncSuggestions = () =>
+      setBehaviorSuggestions(getActiveSuggestions());
+    window.addEventListener(BEHAVIOR_SUGGESTION_EVENT, syncSuggestions);
+    return () =>
+      window.removeEventListener(BEHAVIOR_SUGGESTION_EVENT, syncSuggestions);
+  }, []);
+
+  const handleConfirmSuggestion = useCallback((id: string) => {
+    const rule = confirmSuggestion(id);
+    setBehaviorSuggestions(getActiveSuggestions());
+    if (rule) {
+      setSmartRules(getSmartRules());
+      setEvoStats(getSelfEvolutionStats());
+      setEvolutionNote("Правило сохранено");
+      setTimeout(() => setEvolutionNote(null), 4000);
+    }
+  }, []);
+
+  const handleDismissSuggestion = useCallback((id: string) => {
+    dismissSuggestion(id);
+    setBehaviorSuggestions(getActiveSuggestions());
+  }, []);
+
+  const handleOpenBrainChange = useCallback((open: boolean) => {
+    setShowBrain(open);
+    if (open) {
+      setEvoStats(getSelfEvolutionStats());
+      setSmartRules(getSmartRules());
+    }
+  }, []);
+
+  const handleDeleteSmartRule = useCallback((id: string) => {
+    deleteSmartRule(id);
+    setSmartRules(getSmartRules());
+    setEvoStats(getSelfEvolutionStats());
+  }, []);
 
   // Word-correction overrides keyed by a STABLE text key (first 40
   // normalized chars) so a correction survives the live-to-final id change.
@@ -1226,6 +1404,8 @@ export const SubtitleFeed = ({
       setHeldCount(0);
       onTogglePause();
     }
+    observeElaborate();
+    setBehaviorSuggestions(getActiveSuggestions());
     onDeepen?.();
   }, [paused, onTogglePause, onDeepen]);
 
@@ -1285,7 +1465,15 @@ export const SubtitleFeed = ({
       const question = questionContextFor(
         entries.findIndex((e) => e.id === entryId)
       );
-      recordFeedback(question, answer, rating, reason);
+      const fbEntry = recordFeedback(question, answer, rating, reason);
+      if (!fbEntry && rating === "dislike" && reason) {
+        if (/длин|вода|лишн|короче|сократ/i.test(reason)) {
+          observeShorten();
+        } else if (/коротк|детал|подробн/i.test(reason)) {
+          observeElaborate();
+        }
+      }
+      setBehaviorSuggestions(getActiveSuggestions());
       setFeedbackGiven((prev) => ({ ...prev, [entryId]: rating }));
       setDislikeMenuFor(null);
       setCustomReason("");
@@ -1307,16 +1495,67 @@ export const SubtitleFeed = ({
         showEvolutionNote("Самообучение выключено");
         return;
       }
-      if (typeof addUserRule === "function") {
-        addUserRule(trimmed, { source: "coach" });
-      }
-      propOnTakeAsRule?.(entryId, trimmed);
+      const initialCandidate = extractRuleCandidate(trimmed) || trimmed;
+      setRulePreview({
+        entryId,
+        quote: trimmed,
+        candidate: initialCandidate,
+        edited: false,
+      });
+      void Promise.resolve(refineRuleCandidate(initialCandidate))
+        .then((refined) => {
+          const cleanRefined = (refined || "").trim();
+          if (!cleanRefined) return;
+          setRulePreview((prev) => {
+            if (!prev || prev.entryId !== entryId || prev.edited) return prev;
+            return { ...prev, candidate: cleanRefined };
+          });
+        })
+        .catch(() => {});
+    },
+    [showEvolutionNote]
+  );
+
+  const handleSaveRulePreview = useCallback(
+    (entryId: string, finalCandidate: string) => {
+      const cleanText = finalCandidate.trim();
+      if (!cleanText) return;
+      const quote =
+        rulePreview?.entryId === entryId ? rulePreview.quote : cleanText;
+      const now = Date.now();
+      const baseRule = createDefaultSmartRule(cleanText, "coach");
+      saveSmartRule({
+        ...baseRule,
+        text: cleanText,
+        origin: {
+          source: "coach",
+          quote,
+          at: now,
+        },
+      });
+      propOnTakeAsRule?.(entryId, cleanText);
       setRuleTakenMap((prev) => ({ ...prev, [entryId]: true }));
+      setRulePreview(null);
       setEvoStats(getSelfEvolutionStats());
+      setSmartRules(getSmartRules());
       showEvolutionNote("Совет собеседника сохранён как правило");
     },
-    [propOnTakeAsRule, showEvolutionNote]
+    [propOnTakeAsRule, rulePreview, showEvolutionNote]
   );
+
+  const handleEditRulePreview = useCallback(
+    (entryId: string, editedText: string) => {
+      setRulePreview((prev) => {
+        if (!prev || prev.entryId !== entryId) return prev;
+        return { ...prev, candidate: editedText, edited: true };
+      });
+    },
+    []
+  );
+
+  const handleCancelRulePreview = useCallback(() => {
+    setRulePreview(null);
+  }, []);
 
   // Session stats: recognized words + AI answers across the conversation.
   const sessionStats = useMemo(() => {
@@ -1432,7 +1671,7 @@ export const SubtitleFeed = ({
           </Button>
           <DropdownMenu
             open={showBrain}
-            onOpenChange={setShowBrain}
+            onOpenChange={handleOpenBrainChange}
           >
             <DropdownMenuTrigger asChild>
               <Button
@@ -1483,7 +1722,50 @@ export const SubtitleFeed = ({
                   ))}
                 </div>
               )}
-              {evoStats.customRules.length > 0 && (
+              {smartRules.length > 0 ? (
+                <div>
+                  <div className="font-semibold text-violet-500 mb-0.5">
+                    Личные правила:
+                  </div>
+                  <div className="space-y-1 max-h-48 overflow-y-auto">
+                    {smartRules.map((r) => {
+                      const originLabel = r.origin.quote || r.origin.source;
+                      return (
+                        <div
+                          key={r.id}
+                          className="flex items-start justify-between gap-1 p-1 rounded bg-muted/40 text-[0.95em]"
+                          data-testid={`smart-rule-${r.id}`}
+                        >
+                          <div className="min-w-0 flex-1 space-y-0.5">
+                            <div className="font-medium text-foreground truncate" title={r.text}>
+                              • {r.text}
+                            </div>
+                            <div className="flex items-center gap-1.5 text-[0.85em] text-muted-foreground flex-wrap">
+                              <span
+                                className="px-1 py-px rounded bg-violet-500/10 text-violet-500 shrink-0"
+                                title="Источник"
+                              >
+                                источник: {originLabel}
+                              </span>
+                              <span>хиты: {r.hits}</span>
+                              <span>вес: {r.weight}</span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSmartRule(r.id)}
+                            className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive shrink-0 transition-colors"
+                            title="Удалить правило"
+                            aria-label={`Удалить правило ${r.text}`}
+                          >
+                            <Trash2Icon className="w-3 h-3" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : evoStats.customRules.length > 0 ? (
                 <div>
                   <div className="font-semibold text-violet-500 mb-0.5">
                     Личные правила:
@@ -1503,7 +1785,7 @@ export const SubtitleFeed = ({
                     );
                   })}
                 </div>
-              )}
+              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -1554,6 +1836,35 @@ export const SubtitleFeed = ({
           {evolutionNote !== "Самообучение выключено" && " — подход изменён для следующего ответа"}
         </div>
       )}
+
+      {/* Behavior watch rule suggestions (R07) */}
+      {behaviorSuggestions.map((s) => (
+        <div
+          key={s.id}
+          data-testid={`behavior-suggestion-${s.id}`}
+          className="flex items-center justify-between gap-2 px-2 py-1 border-b border-violet-500/30 bg-violet-500/10 text-[0.65em] text-violet-800 dark:text-violet-200 shrink-0 animate-in fade-in"
+        >
+          <span className="truncate">
+            Предложить правило «{s.ruleText}?» ({s.reason})
+          </span>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => handleConfirmSuggestion(s.id)}
+              className="px-1.5 py-0.5 rounded bg-violet-600 text-white hover:bg-violet-700 font-medium"
+            >
+              Да
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDismissSuggestion(s.id)}
+              className="px-1.5 py-0.5 rounded border border-violet-500/40 hover:bg-violet-500/20 font-medium"
+            >
+              Нет
+            </button>
+          </div>
+        </div>
+      ))}
 
       {/* Column headers (only when translation is on) */}
       {translationsOn && (
@@ -1722,9 +2033,15 @@ export const SubtitleFeed = ({
               activeFiller={activeFiller}
               copied={copiedId === rowId}
               ruleTaken={Boolean(ruleTakenMap[rowId])}
+              rulePreviewCandidate={
+                rulePreview?.entryId === rowId ? rulePreview.candidate : null
+              }
               onCopy={handleCopy}
               onAskAI={onAskAI}
               onTakeAsRule={handleTakeAsRule}
+              onSaveRulePreview={handleSaveRulePreview}
+              onEditRulePreview={handleEditRulePreview}
+              onCancelRulePreview={handleCancelRulePreview}
               onStartInlineEdit={startInlineEdit}
               onCancelInlineEdit={cancelInlineEdit}
               onSaveInlineEdit={saveInlineEdit}

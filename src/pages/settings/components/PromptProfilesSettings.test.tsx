@@ -6,7 +6,8 @@ import {
   PromptProfilesSettings,
   isDraftDirty,
 } from "./PromptProfilesSettings";
-import { PromptProfile } from "@/lib/storage/prompt-profiles";
+import type { PromptProfile } from "@/lib/storage/prompt-profiles";
+import { resetLearning, saveUserMarkdownProfile } from "@/lib/storage/user-facts";
 
 function renderWithRouter(ui: React.ReactElement) {
   return render(<MemoryRouter>{ui}</MemoryRouter>);
@@ -136,6 +137,75 @@ vi.mock("@/lib/storage/prompt-profiles", () => ({
   SELF_EVOLUTION_PROFILE_ID: "profile-self-evolution",
   getRemovedBuiltinProfileIds: () => [],
   restoreAllBuiltinProfiles: vi.fn(),
+  exportProfileToJson: vi.fn((p) => JSON.stringify(p)),
+  exportProfilesToJson: vi.fn((ps) => JSON.stringify(ps)),
+  importProfilesFromJson: vi.fn((json: string) => {
+    try {
+      const parsed = JSON.parse(json);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      return [];
+    }
+  }),
+}));
+
+vi.mock("@/lib/storage/smart-rules", () => ({
+  getSmartRules: () => [
+    {
+      id: "smart-1",
+      text: "отвечай прямо без общих слов",
+      weight: 1.0,
+      scope: { kind: "global" },
+      hits: 7,
+      createdAt: 1000,
+      lastHitAt: 2000,
+      ttlDays: 30,
+      archived: false,
+      origin: { source: "coach", quote: "прямо без общих слов", at: 1000 },
+    },
+    {
+      id: "smart-2",
+      text: "Начинай ответ сразу с сути",
+      weight: 0.8,
+      scope: { kind: "global" },
+      hits: 3,
+      createdAt: 1000,
+      lastHitAt: 2000,
+      ttlDays: 30,
+      archived: false,
+      origin: { source: "feedback", quote: "сразу с сути", at: 1000 },
+    },
+    {
+      id: "smart-3",
+      text: "Кратко и по сути",
+      weight: 1.0,
+      scope: { kind: "global" },
+      hits: 12,
+      createdAt: 1000,
+      lastHitAt: 2000,
+      ttlDays: 30,
+      archived: false,
+      origin: { source: "manual", quote: "Кратко", at: 1000 },
+    },
+  ],
+  deleteSmartRule: vi.fn(),
+  saveSmartRule: vi.fn(),
+  archiveSmartRule: vi.fn(),
+  findConflictingRule: (text: string) =>
+    text.toLowerCase().includes("подробно")
+      ? {
+          id: "smart-3",
+          text: "Кратко и по сути",
+          weight: 1.0,
+          scope: { kind: "global" },
+          hits: 12,
+          createdAt: 1000,
+          lastHitAt: 2000,
+          ttlDays: 30,
+          archived: false,
+          origin: { source: "manual", quote: "Кратко", at: 1000 },
+        }
+      : null,
 }));
 
 describe("R28: PromptProfilesSettings - profile switch mid-edit", () => {
@@ -377,6 +447,208 @@ describe("T2 & T5: Self-Learning toggle and editors in PromptProfilesSettings", 
       expect(journalBadges.some((t) => t?.includes("coach"))).toBe(true);
       expect(journalBadges.some((t) => t?.includes("manual"))).toBe(true);
       expect(journalBadges.some((t) => t?.includes("feedback"))).toBe(true);
+    } finally {
+      mockUseAppState.profiles = [profile1, profile2];
+      mockUseAppState.activeId = "profile-interview";
+    }
+  });
+});
+
+describe("R09: ProfileCards and 3-step ProfileWizard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("renders profile cards with name, description, and badges", () => {
+    renderWithRouter(<PromptProfilesSettings />);
+    expect(screen.getAllByText("Interview Mode").length).toBeGreaterThan(0);
+    expect(screen.getByText("General Mode")).toBeInTheDocument();
+    expect(screen.getByText("Candidate answers")).toBeInTheDocument();
+    expect(screen.getAllByText("built-in").length).toBeGreaterThan(0);
+  });
+
+  it("creates a new profile through the 3-step wizard", async () => {
+    mockCreatePromptProfile.mockReturnValue({
+      id: "profile-new-wizard",
+      name: "System Design Round",
+      description: "Architecture answers",
+      systemPrompt: "You are an architecture expert",
+      humanizerEnabled: true,
+      interviewMode: false,
+      customStyle: "",
+      ragResumeEnabled: false,
+      ragJobEnabled: false,
+      flushGapMs: 1000,
+      defaultLength: "auto",
+      visibleButtons: [],
+    });
+
+    renderWithRouter(<PromptProfilesSettings />);
+
+    // Open wizard
+    const newProfileBtn = screen.getByRole("button", { name: /New profile/i });
+    await userEvent.click(newProfileBtn);
+
+    // Step 1: Name and description
+    expect(screen.getByTestId("wizard-step-1")).toBeInTheDocument();
+    const nameInput = screen.getByPlaceholderText(/Profile name/i);
+    await userEvent.type(nameInput, "System Design Round");
+
+    const nextBtn1 = screen.getByRole("button", { name: /Далее/i });
+    await userEvent.click(nextBtn1);
+
+    // Step 2: Prompt
+    expect(screen.getByTestId("wizard-step-2")).toBeInTheDocument();
+    const nextBtn2 = screen.getByRole("button", { name: /Далее/i });
+    await userEvent.click(nextBtn2);
+
+    // Step 3: Behavior & buttons
+    expect(screen.getByTestId("wizard-step-3")).toBeInTheDocument();
+    const finishBtn = screen.getByRole("button", { name: /Создать профиль/i });
+    await userEvent.click(finishBtn);
+
+    expect(mockCreatePromptProfile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "System Design Round",
+      })
+    );
+    expect(mockSelectPromptProfile).toHaveBeenCalledWith("profile-new-wizard");
+  });
+});
+
+describe("R10: Profile prompt preview and RulesPanel with weights", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("switches to prompt preview tab and displays assembled system prompt", async () => {
+    renderWithRouter(<PromptProfilesSettings />);
+
+    const previewTabBtn = screen.getByRole("button", { name: /Превью промпта/i });
+    await userEvent.click(previewTabBtn);
+
+    expect(screen.getByTestId("profile-prompt-preview")).toBeInTheDocument();
+    expect(screen.getByText(/Итоговый системный промпт/i)).toBeInTheDocument();
+    expect(screen.getByText(/CONVERSATIONAL FILTER RULE/i)).toBeInTheDocument();
+  });
+
+  it("displays smart rules with weight badges and handles conflicting rules", async () => {
+    const evolutionProfile: PromptProfile = {
+      id: "profile-self-evolution",
+      name: "Self-Evolution ✨",
+      description: "Adaptive assistant",
+      systemPrompt: "Adaptive prompt",
+      humanizerEnabled: true,
+      interviewMode: false,
+      customStyle: "",
+      ragResumeEnabled: false,
+      ragJobEnabled: false,
+      isBuiltin: true,
+    };
+
+    mockUseAppState.profiles = [profile1, profile2, evolutionProfile];
+    mockUseAppState.activeId = "profile-self-evolution";
+
+    try {
+      renderWithRouter(<PromptProfilesSettings />);
+      expect(screen.getByTestId("rules-panel")).toBeInTheDocument();
+      const weightBadges = screen.getAllByTestId("rule-weight-badge");
+      expect(weightBadges.length).toBeGreaterThan(0);
+
+      // Add conflicting rule (e.g. contains "подробно")
+      const ruleInput = screen.getByPlaceholderText(/Add custom rule/i);
+      await userEvent.type(ruleInput, "Отвечай максимально подробно");
+      const addBtn = screen.getAllByRole("button", { name: "Add" }).find((b) =>
+        b.closest('[data-testid="rules-panel"]')
+      );
+      if (addBtn) {
+        await userEvent.click(addBtn);
+      }
+
+      // Conflict warning should appear
+      expect(screen.getByText("Обнаружено противоречие правил")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Заменить старое" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Оставить оба" })).toBeInTheDocument();
+    } finally {
+      mockUseAppState.profiles = [profile1, profile2];
+      mockUseAppState.activeId = "profile-interview";
+    }
+  });
+});
+
+describe("R11: Preserved operations (CRUD, Export/Import, Facts, USER.md, Reset)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("opens JSON import modal when clicking 'Импорт'", async () => {
+    renderWithRouter(<PromptProfilesSettings />);
+
+    const importBtn = screen.getByRole("button", { name: /Импорт/i });
+    await userEvent.click(importBtn);
+
+    expect(screen.getByText(/Импорт профилей/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Custom Profile/i)).toBeInTheDocument();
+  });
+
+  it("triggers reset learning and resets memory state", async () => {
+    const evolutionProfile: PromptProfile = {
+      id: "profile-self-evolution",
+      name: "Self-Evolution ✨",
+      description: "Adaptive assistant",
+      systemPrompt: "Adaptive prompt",
+      humanizerEnabled: true,
+      interviewMode: false,
+      customStyle: "",
+      ragResumeEnabled: false,
+      ragJobEnabled: false,
+      isBuiltin: true,
+    };
+
+    mockUseAppState.profiles = [profile1, profile2, evolutionProfile];
+    mockUseAppState.activeId = "profile-self-evolution";
+
+    try {
+      renderWithRouter(<PromptProfilesSettings />);
+
+      const resetBtn = screen.getByTitle("Reset all learned memory and feedback");
+      await userEvent.click(resetBtn);
+
+      expect(resetLearning).toHaveBeenCalled();
+    } finally {
+      mockUseAppState.profiles = [profile1, profile2];
+      mockUseAppState.activeId = "profile-interview";
+    }
+  });
+
+  it("toggles USER.md editor and saves markdown profile", async () => {
+    const evolutionProfile: PromptProfile = {
+      id: "profile-self-evolution",
+      name: "Self-Evolution ✨",
+      description: "Adaptive assistant",
+      systemPrompt: "Adaptive prompt",
+      humanizerEnabled: true,
+      interviewMode: false,
+      customStyle: "",
+      ragResumeEnabled: false,
+      ragJobEnabled: false,
+      isBuiltin: true,
+    };
+
+    mockUseAppState.profiles = [profile1, profile2, evolutionProfile];
+    mockUseAppState.activeId = "profile-self-evolution";
+
+    try {
+      renderWithRouter(<PromptProfilesSettings />);
+
+      const userMdToggleBtn = screen.getByRole("button", { name: /USER.md Editor/i });
+      await userEvent.click(userMdToggleBtn);
+
+      expect(screen.getByText(/USER.md Context Profile/i)).toBeInTheDocument();
+      const saveMdBtn = screen.getByRole("button", { name: /Save USER.md/i });
+      await userEvent.click(saveMdBtn);
+
+      expect(saveUserMarkdownProfile).toHaveBeenCalled();
     } finally {
       mockUseAppState.profiles = [profile1, profile2];
       mockUseAppState.activeId = "profile-interview";

@@ -3,6 +3,9 @@ import { render, screen, fireEvent, act } from "@testing-library/react";
 import { SubtitleFeed } from "./SubtitleFeed";
 import type { ChatConversation } from "@/hooks/useSystemAudio";
 import { isSelfLearningEnabled, recordFeedback, addUserRule } from "@/lib/storage/user-facts";
+import { saveSmartRule, getSmartRules, type SmartRule } from "@/lib/storage/smart-rules";
+import { refineRuleCandidate } from "@/lib/rule-extract";
+import { resetBehaviorWatch } from "@/lib/behavior-watch";
 const invokeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock, Channel: class {} }));
 
@@ -47,6 +50,22 @@ vi.mock("@/lib/storage/user-facts", () => ({
     customRules: [],
   }),
 }));
+
+vi.mock("@/lib/storage/smart-rules", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    saveSmartRule: vi.fn(actual.saveSmartRule as (...args: unknown[]) => unknown),
+  };
+});
+
+vi.mock("@/lib/rule-extract", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    refineRuleCandidate: vi.fn((c: string) => Promise.resolve(c)),
+  };
+});
 
 vi.mock("@/lib/web-search", () => ({
   getWebSearchSettings: () => ({ enabled: false }),
@@ -537,9 +556,13 @@ describe("T2: SubtitleFeed self-learning feedback gate and toast", () => {
     expect(screen.getByText(/Стиль закреплён/)).toBeInTheDocument();
   });
 
-  it("renders 'Взять как правило' button on 'them' utterance and calls addUserRule(text, { source: 'coach' })", () => {
+  it("R01: opens RulePreview with normalized candidate on 'Взять как правило' and saves SmartRule with origin quote on Save", async () => {
+    localStorage.clear();
     vi.mocked(isSelfLearningEnabled).mockReturnValue(true);
+    vi.mocked(saveSmartRule).mockClear();
+    vi.mocked(addUserRule).mockClear();
     const onTakeAsRule = vi.fn();
+    const rawUtterance = "Ну, кстати, давай углубись в один пример, отвечай прямо";
 
     render(
       <SubtitleFeed
@@ -550,7 +573,7 @@ describe("T2: SubtitleFeed self-learning feedback gate and toast", () => {
             {
               id: "msg-them-coach",
               role: "user",
-              content: "давай углубись в один пример, отвечай прямо без общих слов",
+              content: rawUtterance,
               timestamp: 1000,
               source: "them",
             },
@@ -574,13 +597,259 @@ describe("T2: SubtitleFeed self-learning feedback gate and toast", () => {
     const takeRuleBtn = screen.getByRole("button", { name: /Взять как правило/i });
     fireEvent.click(takeRuleBtn);
 
-    expect(addUserRule).toHaveBeenCalledWith(
-      "давай углубись в один пример, отвечай прямо без общих слов",
-      { source: "coach" }
+    // Direct addUserRule must NOT be called; preview waits for confirmation
+    expect(addUserRule).not.toHaveBeenCalled();
+    expect(saveSmartRule).not.toHaveBeenCalled();
+    expect(
+      screen.getByText("углубляться в один пример, отвечать прямо")
+    ).toBeInTheDocument();
+
+    const saveBtn = screen.getByRole("button", { name: /Сохранить/i });
+    fireEvent.click(saveBtn);
+
+    expect(saveSmartRule).toHaveBeenCalledTimes(1);
+    expect(saveSmartRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "углубляться в один пример, отвечать прямо",
+        weight: 1.0,
+        scope: { kind: "global" },
+        origin: expect.objectContaining({
+          source: "coach",
+          quote: rawUtterance,
+        }),
+      })
     );
     expect(onTakeAsRule).toHaveBeenCalledWith(
       "msg-them-coach",
-      "давай углубись в один пример, отвечай прямо без общих слов"
+      "углубляться в один пример, отвечать прямо"
     );
+  });
+
+  it("R01: Cancel in RulePreview writes nothing and closes preview", () => {
+    localStorage.clear();
+    vi.mocked(isSelfLearningEnabled).mockReturnValue(true);
+    vi.mocked(saveSmartRule).mockClear();
+    vi.mocked(addUserRule).mockClear();
+    const onTakeAsRule = vi.fn();
+
+    render(
+      <SubtitleFeed
+        conversation={{
+          id: "conv-cancel",
+          title: "Cancel Conv",
+          messages: [
+            {
+              id: "msg-them-cancel",
+              role: "user",
+              content: "Ну, кстати, давай углубись в один пример, отвечай прямо",
+              timestamp: 1000,
+              source: "them",
+            },
+          ],
+          createdAt: 1000,
+          updatedAt: 1000,
+        }}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+        onTakeAsRule={onTakeAsRule}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Взять как правило/i }));
+    expect(
+      screen.getByText("углубляться в один пример, отвечать прямо")
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Отмена/i }));
+
+    expect(saveSmartRule).not.toHaveBeenCalled();
+    expect(addUserRule).not.toHaveBeenCalled();
+    expect(onTakeAsRule).not.toHaveBeenCalled();
+    expect(getSmartRules()).toHaveLength(0);
+    expect(
+      screen.queryByText("углубляться в один пример, отвечать прямо")
+    ).not.toBeInTheDocument();
+  });
+
+  it("R01/R02: allows editing candidate in RulePreview and updates candidate from background LLM refine", async () => {
+    localStorage.clear();
+    vi.mocked(isSelfLearningEnabled).mockReturnValue(true);
+    vi.mocked(saveSmartRule).mockClear();
+    vi.mocked(refineRuleCandidate).mockResolvedValueOnce(
+      "углубляться в один пример, отвечать прямо и кратко"
+    );
+    const rawUtterance = "Ну, кстати, давай углубись в один пример, отвечай прямо";
+
+    render(
+      <SubtitleFeed
+        conversation={{
+          id: "conv-edit",
+          title: "Edit Conv",
+          messages: [
+            {
+              id: "msg-them-edit",
+              role: "user",
+              content: rawUtterance,
+              timestamp: 1000,
+              source: "them",
+            },
+          ],
+          createdAt: 1000,
+          updatedAt: 1000,
+        }}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Взять как правило/i }));
+    });
+
+    expect(
+      screen.getByText("углубляться в один пример, отвечать прямо и кратко")
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Править$/i }));
+    const input = screen.getByDisplayValue(
+      "углубляться в один пример, отвечать прямо и кратко"
+    );
+    fireEvent.change(input, {
+      target: { value: "отвечать прямо на одном примере" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Сохранить/i }));
+
+    expect(saveSmartRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "отвечать прямо на одном примере",
+        origin: expect.objectContaining({
+          source: "coach",
+          quote: rawUtterance,
+        }),
+      })
+    );
+  });
+
+  it("R08: Self-Evolution popover shows rule origin, hits, weight and allows one-click deletion", () => {
+    localStorage.clear();
+    const testRule: SmartRule = {
+      id: "sr-test-1",
+      text: "отвечай прямо на одном примере",
+      weight: 1.5,
+      scope: { kind: "global" },
+      hits: 12,
+      createdAt: 1000,
+      lastHitAt: 2000,
+      ttlDays: null,
+      archived: false,
+      origin: {
+        source: "coach",
+        quote: "реплика 14:32",
+        at: 1000,
+      },
+    };
+    saveSmartRule(testRule);
+
+    render(
+      <SubtitleFeed
+        conversation={mockConversation}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    // Open the Self-Evolution popover via the brain button
+    const brainBtn = screen.getByTitle("Что ИИ выучил из ваших оценок");
+    fireEvent.pointerDown(brainBtn, { button: 0 });
+    fireEvent.click(brainBtn);
+
+    // Verify rule text, origin quote, hits, and weight are rendered in the popover
+    expect(screen.getByText(/отвечай прямо на одном примере/i)).toBeInTheDocument();
+    expect(screen.getByText(/реплика 14:32/i)).toBeInTheDocument();
+    expect(screen.getByText(/хиты: 12/i)).toBeInTheDocument();
+    expect(screen.getByText(/вес: 1.5/i)).toBeInTheDocument();
+
+    // Verify one-click delete button is present and clickable
+    const deleteBtn = screen.getByRole("button", { name: /Удалить правило/i });
+    expect(deleteBtn).toBeInTheDocument();
+
+    fireEvent.click(deleteBtn);
+
+    // Verify rule is deleted from storage and disappears from UI
+    expect(getSmartRules()).toHaveLength(0);
+    expect(screen.queryByText(/отвечай прямо на одном примере/i)).not.toBeInTheDocument();
+  });
+
+  it("R07: wires deepen/shorten handlers to behavior-watch and surfaces suggestion in UI with confirm and dismiss", () => {
+    localStorage.clear();
+    resetBehaviorWatch();
+    const onDeepen = vi.fn();
+
+    render(
+      <SubtitleFeed
+        conversation={mockConversation}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        onDeepen={onDeepen}
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    const deepenBtn = screen.getByRole("button", { name: /Углубить тему/i });
+    fireEvent.click(deepenBtn);
+    fireEvent.click(deepenBtn);
+    expect(screen.queryByText(/отвечать подробнее/i)).not.toBeInTheDocument();
+
+    // 3rd click triggers observeElaborate and surfaces suggestion banner
+    fireEvent.click(deepenBtn);
+    expect(onDeepen).toHaveBeenCalledTimes(3);
+    expect(screen.getByText(/отвечать подробнее/i)).toBeInTheDocument();
+
+    // Confirm suggestion persists rule
+    fireEvent.click(screen.getByRole("button", { name: /^Да$/i }));
+    expect(saveSmartRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "отвечать подробнее",
+      })
+    );
+    expect(screen.queryByText(/отвечать подробнее/i)).not.toBeInTheDocument();
+
+    // Trigger again and test dismiss
+    fireEvent.click(deepenBtn);
+    fireEvent.click(deepenBtn);
+    fireEvent.click(deepenBtn);
+    expect(screen.getByText(/отвечать подробнее/i)).toBeInTheDocument();
+
+    vi.mocked(saveSmartRule).mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /^Нет$/i }));
+    expect(saveSmartRule).not.toHaveBeenCalled();
+    expect(screen.queryByText(/отвечать подробнее/i)).not.toBeInTheDocument();
   });
 });

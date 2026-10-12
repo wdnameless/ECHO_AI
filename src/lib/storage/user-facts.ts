@@ -1,5 +1,15 @@
 import { safeLocalStorage } from "./helper";
 import {
+  getSmartRules,
+  saveSmartRule,
+  migrateLegacyRules,
+  createDefaultSmartRule,
+  SMART_RULES_STORAGE_KEY,
+  SMART_RULES_MIGRATED_KEY,
+  type SmartRule,
+} from "./smart-rules";
+import { observeShorten, observeElaborate } from "@/lib/behavior-watch";
+import {
   mirrorFeedback,
   mirrorStyle,
   resetSelfEvolutionDb,
@@ -19,6 +29,13 @@ export {
   USER_SPEECH_LOG_STORAGE_KEY,
   type SpeechStyle,
 };
+export {
+  getSmartRules,
+  saveSmartRule,
+  migrateLegacyRules,
+  type SmartRule,
+};
+
 
 export const USER_FACTS_STORAGE_KEY = "user_memory_facts";
 export const USER_STYLE_STORAGE_KEY = "user_memory_style";
@@ -256,8 +273,11 @@ export function recordFeedback(
 
     // Dynamic approach change driven by the specific complaint: each type of
     // dislike mutates a DIFFERENT part of the style profile immediately.
-    if (/длин/i.test(reasonText)) {
+    if (/длин|вода|лишн|короче|сократ/i.test(reasonText)) {
       style.preferredLength = "concise";
+      observeShorten();
+    } else if (/коротк|детал|подробн/i.test(reasonText)) {
+      observeElaborate();
     }
     if (/сухо|робот|безличн/i.test(reasonText)) {
       style.tone =
@@ -266,9 +286,6 @@ export function recordFeedback(
     if (/сложн|академ|жаргон|умн/i.test(reasonText)) {
       style.tone =
         "простой и понятный: объясняй так, чтобы понял человек вне этой темы; бытовой язык вместо терминов";
-    }
-    if (/вода|лишн/i.test(reasonText)) {
-      style.preferredLength = "concise";
     }
     if (/вводн/i.test(reasonText)) {
       const rule =
@@ -356,6 +373,7 @@ export function addUserRule(
   if (!trimmed) return;
 
   const source: RuleSource = opts?.source ?? "coach";
+  saveSmartRule(createDefaultSmartRule(trimmed, source));
   const style = getUserStylePreferences();
   style.customRules = [
     trimmed,
@@ -363,7 +381,6 @@ export function addUserRule(
   ].slice(0, 20);
   saveUserStylePreferences(style);
   saveRuleSource(trimmed, source);
-
   const logs = getFeedbackLog();
   const entry: FeedbackEntry = {
     id: `fb-${source}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -487,6 +504,8 @@ export async function resetLearning(): Promise<void> {
   safeLocalStorage.removeItem(USER_MARKDOWN_STORAGE_KEY);
   safeLocalStorage.removeItem(USER_RULE_SOURCES_STORAGE_KEY);
   safeLocalStorage.removeItem(USER_SPEECH_LOG_STORAGE_KEY);
+  safeLocalStorage.removeItem(SMART_RULES_STORAGE_KEY);
+  safeLocalStorage.removeItem(SMART_RULES_MIGRATED_KEY);
   setSelfEvolutionStyleOverride(null);
   try {
     await resetSelfEvolutionDb();
@@ -525,6 +544,11 @@ export function buildSelfEvolutionPromptBlock(
     return `[SELF-EVOLUTION PROFILE (USER.md)]\n${customMd.trim()}\n[/SELF-EVOLUTION PROFILE]`;
   }
 
+  const smartRules = getSmartRules(false);
+  const sortedRules = [...smartRules].sort((a, b) => b.weight - a.weight);
+  const hasSmartStore =
+    safeLocalStorage.getItem(SMART_RULES_STORAGE_KEY) !== null;
+
   const style =
     styleOverride ?? oneShotStyleOverride ?? getUserStylePreferences();
   oneShotStyleOverride = null; // one-shot consume: never leak across requests
@@ -535,12 +559,15 @@ export function buildSelfEvolutionPromptBlock(
   const likesCount = logs.filter((l) => l.rating === "like").length;
   const dislikesCount = logs.filter((l) => l.rating === "dislike").length;
 
+  const fallbackCustomRules = hasSmartStore ? [] : style.customRules;
+
   const hasHistory =
     facts.length > 0 ||
     logs.length > 0 ||
     style.favoritePatterns.length > 0 ||
     style.avoidPatterns.length > 0 ||
-    style.customRules.length > 0 ||
+    sortedRules.length > 0 ||
+    fallbackCustomRules.length > 0 ||
     speechStyle.fillers.length > 0;
 
   if (!hasHistory) {
@@ -556,10 +583,11 @@ export function buildSelfEvolutionPromptBlock(
     .slice(0, 8)
     .map((p) => `- Категорически избегать: ${p}`)
     .join("\n");
-  const customLines = style.customRules
-    .slice(0, 6)
-    .map((r) => `- Личное правило: ${r}`)
-    .join("\n");
+  const customLines = (
+    sortedRules.length > 0
+      ? sortedRules.slice(0, 6).map((r) => `- Личное правило: ${r.text}`)
+      : fallbackCustomRules.slice(0, 6).map((r) => `- Личное правило: ${r}`)
+  ).join("\n");
 
   const sections: string[] = [
     `[SELF-EVOLUTION ADAPTIVE PROFILE - ПЕРСОНАЛЬНЫЙ ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ (USER.md)]`,
@@ -597,3 +625,6 @@ export function buildSelfEvolutionPromptBlock(
   sections.push(`\nПодстраивай каждый ответ под эту модель личности!\n[/SELF-EVOLUTION PROFILE]`);
   return sections.join("\n").trim();
 }
+
+// Initial migration on load
+migrateLegacyRules();

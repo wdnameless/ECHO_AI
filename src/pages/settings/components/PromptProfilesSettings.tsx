@@ -1,31 +1,6 @@
-import { useCallback, useState } from "react";
-import {
-  Header,
-  Button,
-  Label,
-  Textarea,
-  Switch,
-  Input,
-} from "@/components";
-import {
-  GraduationCapIcon,
-  MessageCircleIcon,
-  PlusIcon,
-  Trash2Icon,
-  CheckCircle2Icon,
-  PenLineIcon,
-  SparklesIcon,
-  BrainCircuitIcon,
-  ThumbsUpIcon,
-  ThumbsDownIcon,
-  RotateCcwIcon,
-  FileCodeIcon,
-  SaveIcon,
-  DownloadIcon,
-  UploadIcon,
-} from "lucide-react";
+import React, { useCallback, useState } from "react";
+import { Header } from "@/components";
 import { useApp } from "@/contexts";
-import { cn } from "@/lib/utils";
 import {
   PromptProfile,
   SELF_EVOLUTION_PROFILE_ID,
@@ -44,9 +19,6 @@ import {
   saveFeedbackLog,
   addUserFact,
   removeUserFact,
-  addUserRule,
-  getRuleSource,
-  type RuleSource,
   UserFact,
   FeedbackEntry,
   getUserMarkdownProfile,
@@ -54,7 +26,15 @@ import {
   resetUserMarkdownProfile,
   resetLearning,
 } from "@/lib/storage/user-facts";
-import { SelfLearningToggle } from "@/components/SelfLearningToggle";
+import {
+  ProfileCards,
+  ProfileWizard,
+  ProfileEditor,
+  MemoryPanels,
+  ImportProfilesModal,
+  DeleteProfileModal,
+  SwitchProfileModal,
+} from "./profiles";
 
 export const AVAILABLE_TOOLBAR_BUTTONS: Array<{ id: ToolbarButtonId; label: string }> = [
   { id: "length", label: "Длина ответа (Авто/Кратко/Подробно)" },
@@ -94,7 +74,7 @@ export function isDraftDirty(
   );
 }
 
-export const PromptProfilesSettings = () => {
+export const PromptProfilesSettings: React.FC = () => {
   const {
     promptProfiles,
     activeProfileId,
@@ -108,8 +88,8 @@ export const PromptProfilesSettings = () => {
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<PromptProfile | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [newName, setNewName] = useState("");
+  const [showWizard, setShowWizard] = useState(false);
+
   // Mirrors the persisted removal list; refreshed together with the profile list.
   const [hiddenBuiltinCount, setHiddenBuiltinCount] = useState(
     () => getRemovedBuiltinProfileIds().length
@@ -121,15 +101,11 @@ export const PromptProfilesSettings = () => {
 
   // Self-Evolution Memory States
   const [facts, setFacts] = useState<UserFact[]>(() => getUserFacts());
-  const [newFactText, setNewFactText] = useState("");
-  const [newCustomRuleText, setNewCustomRuleText] = useState("");
   const [stylePrefs, setStylePrefs] = useState(() => getUserStylePreferences());
   const [feedbackLogs, setFeedbackLogs] = useState(() => getFeedbackLog());
 
-  // USER.md raw editor mode
-  const [showMarkdownEditor, setShowMarkdownEditor] = useState(false);
+  // USER.md raw editor mode state
   const [markdownText, setMarkdownText] = useState<string>(() => getUserMarkdownProfile());
-  const [markdownSaved, setMarkdownSaved] = useState(false);
 
   const activeProfile =
     promptProfiles.find((p) => p.id === activeProfileId) || promptProfiles[0];
@@ -143,7 +119,7 @@ export const PromptProfilesSettings = () => {
   const startEdit = useCallback((profile: PromptProfile) => {
     setDraft({ ...profile });
     setEditing(true);
-    setCreating(false);
+    setShowWizard(false);
   }, []);
 
   const saveDraft = useCallback(() => {
@@ -201,43 +177,41 @@ export const PromptProfilesSettings = () => {
     setPendingSwitch(null);
   }, [pendingSwitch, selectPromptProfile]);
 
-  const handleCreate = useCallback(() => {
-    const name = newName.trim();
-    if (!name) return;
-    const created = createPromptProfile({
-      name,
-      description: "Custom prompt profile",
-      systemPrompt: activeProfile?.systemPrompt || "",
-      humanizerEnabled: true,
-      interviewMode: false,
-      customStyle: "",
-      ragResumeEnabled: false,
-      ragJobEnabled: false,
-      flushGapMs: 1000,
-      defaultLength: "auto",
-      visibleButtons: [
-        "length",
-        "thought",
-        "answer",
-        "screenshot",
-        "audio_settings",
-        "settings",
-        "new_chat",
-      ],
-      monologue: {
-        mode: "auto",
-        maxWindow: 12000,
-      },
-    });
-    selectPromptProfile(created.id);
-    startEdit(created);
-    setNewName("");
-    setCreating(false);
-  }, [newName, createPromptProfile, selectPromptProfile, activeProfile, startEdit]);
+  const handleCreateFromWizard = useCallback(
+    (newProfileData: Omit<PromptProfile, "id">) => {
+      const created = createPromptProfile({
+        name: newProfileData.name,
+        description: newProfileData.description,
+        systemPrompt: newProfileData.systemPrompt || activeProfile?.systemPrompt || "",
+        humanizerEnabled: newProfileData.humanizerEnabled ?? true,
+        interviewMode: newProfileData.interviewMode ?? false,
+        customStyle: newProfileData.customStyle ?? "",
+        ragResumeEnabled: newProfileData.ragResumeEnabled ?? false,
+        ragJobEnabled: newProfileData.ragJobEnabled ?? false,
+        flushGapMs: newProfileData.flushGapMs ?? 1000,
+        defaultLength: newProfileData.defaultLength ?? "auto",
+        visibleButtons: newProfileData.visibleButtons ?? [
+          "length",
+          "thought",
+          "answer",
+          "screenshot",
+          "audio_settings",
+          "settings",
+          "new_chat",
+        ],
+        monologue: newProfileData.monologue ?? {
+          mode: "auto",
+          maxWindow: 12000,
+        },
+      });
+      selectPromptProfile(created.id);
+      startEdit(created);
+      setShowWizard(false);
+    },
+    [createPromptProfile, selectPromptProfile, activeProfile, startEdit]
+  );
 
   const [showImportModal, setShowImportModal] = useState(false);
-  const [importJsonText, setImportJsonText] = useState("");
-  const [importFeedback, setImportFeedback] = useState<string | null>(null);
 
   const handleExportCurrent = useCallback(() => {
     if (!activeProfile) return;
@@ -263,12 +237,10 @@ export const PromptProfilesSettings = () => {
   }, [promptProfiles]);
 
   const handleImportJson = useCallback(
-    (jsonString: string) => {
-      setImportFeedback(null);
+    (jsonString: string): boolean => {
       const imported = importProfilesFromJson(jsonString);
       if (imported.length === 0) {
-        setImportFeedback("Не удалось импортировать профиль: неверный формат JSON.");
-        return;
+        return false;
       }
       for (const p of imported) {
         const created = createPromptProfile({
@@ -287,137 +259,87 @@ export const PromptProfilesSettings = () => {
         });
         selectPromptProfile(created.id);
       }
-      setShowImportModal(false);
-      setImportJsonText("");
       loadProfiles();
+      return true;
     },
     [createPromptProfile, selectPromptProfile, loadProfiles]
   );
 
-  const handleFileInput = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const content = event.target?.result as string;
-        if (content) handleImportJson(content);
+  const logManualEdit = useCallback(
+    (question: string, response: string, rating: "like" | "dislike", reason: string) => {
+      const entry: FeedbackEntry = {
+        id: `fb-manual-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        question,
+        response,
+        rating,
+        reason,
+        topic: "manual",
+        timestamp: Date.now(),
       };
-      reader.readAsText(file);
-      e.target.value = "";
+      saveFeedbackLog([entry, ...getFeedbackLog()]);
+      setFeedbackLogs(getFeedbackLog());
     },
-    [handleImportJson]
+    []
   );
 
-  const logManualEdit = useCallback((question: string, response: string, rating: "like" | "dislike", reason: string) => {
-    const entry: FeedbackEntry = {
-      id: `fb-manual-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      question,
-      response,
-      rating,
-      reason,
-      topic: "manual",
-      timestamp: Date.now(),
-    };
-    saveFeedbackLog([entry, ...getFeedbackLog()]);
-    setFeedbackLogs(getFeedbackLog());
-  }, []);
+  const handleAddFact = useCallback(
+    (text: string) => {
+      addUserFact(text, "general");
+      setFacts(getUserFacts());
+      setMarkdownText(getUserMarkdownProfile());
+      logManualEdit("Добавление факта в память", text, "like", "Добавлено пользователем вручную (source=manual)");
+    },
+    [logManualEdit]
+  );
 
-  const handleAddFact = useCallback(() => {
-    const text = newFactText.trim();
-    if (!text) return;
-    addUserFact(text, "general");
-    setFacts(getUserFacts());
-    setMarkdownText(getUserMarkdownProfile());
-    setNewFactText("");
-    logManualEdit("Добавление факта в память", text, "like", "Добавлено пользователем вручную (source=manual)");
-  }, [newFactText]);
-
-  const handleRemoveFact = useCallback((id: string) => {
-    const target = facts.find((f) => f.id === id);
-    removeUserFact(id);
-    setFacts(getUserFacts());
-    setMarkdownText(getUserMarkdownProfile());
-    if (target) {
-      logManualEdit("Удаление факта из памяти", target.fact, "dislike", "Удалено пользователем в редакторе (source=manual)");
-    }
-  }, [facts]);
-
-  const handleRemoveFavoritePattern = useCallback((index: number) => {
-    const removed = stylePrefs.favoritePatterns[index];
-    const next = {
-      ...stylePrefs,
-      favoritePatterns: stylePrefs.favoritePatterns.filter((_, i) => i !== index),
-    };
-    saveUserStylePreferences(next);
-    setStylePrefs(next);
-    setMarkdownText(getUserMarkdownProfile());
-    if (removed) {
-      logManualEdit("Удаление эталона стиля", removed, "dislike", "Удалено пользователем в редакторе (source=manual)");
-    }
-  }, [stylePrefs]);
-
-  const handleRemoveAvoidPattern = useCallback((index: number) => {
-    const removed = stylePrefs.avoidPatterns[index];
-    const next = {
-      ...stylePrefs,
-      avoidPatterns: stylePrefs.avoidPatterns.filter((_, i) => i !== index),
-    };
-    saveUserStylePreferences(next);
-    setStylePrefs(next);
-    setMarkdownText(getUserMarkdownProfile());
-    if (removed) {
-      logManualEdit("Удаление ограничения", removed, "like", "Снято ограничение (source=manual)");
-    }
-  }, [stylePrefs]);
-
-  const handleRemoveCustomRule = useCallback((index: number) => {
-    const removed = stylePrefs.customRules[index];
-    const next = {
-      ...stylePrefs,
-      customRules: stylePrefs.customRules.filter((_, i) => i !== index),
-    };
-    saveUserStylePreferences(next);
-    setStylePrefs(next);
-    setMarkdownText(getUserMarkdownProfile());
-    if (removed) {
-      logManualEdit("Удаление правила", removed, "dislike", "Удалено пользователем в редакторе (source=manual)");
-    }
-  }, [stylePrefs]);
-
-  const resolveRuleSource = useCallback(
-    (rule: string): RuleSource => {
-      if (typeof getRuleSource === "function") {
-        const src = getRuleSource(rule);
-        if (src) return src;
+  const handleRemoveFact = useCallback(
+    (id: string) => {
+      const target = facts.find((f) => f.id === id);
+      removeUserFact(id);
+      setFacts(getUserFacts());
+      setMarkdownText(getUserMarkdownProfile());
+      if (target) {
+        logManualEdit("Удаление факта из памяти", target.fact, "dislike", "Удалено пользователем в редакторе (source=manual)");
       }
-      const match = feedbackLogs.find(
-        (entry) => entry.response === rule || entry.question === rule
-      );
-      if (match?.topic === "coach") return "coach";
-      if (match?.topic === "manual") return "manual";
-      if (match) return "feedback";
-      return "manual";
     },
-    [feedbackLogs]
+    [facts, logManualEdit]
   );
 
-  const handleAddCustomRule = useCallback(() => {
-    const text = newCustomRuleText.trim();
-    if (!text) return;
-    if (typeof addUserRule === "function") {
-      addUserRule(text, { source: "manual" });
-    }
-    const next = {
-      ...stylePrefs,
-      customRules: [text, ...stylePrefs.customRules.filter((r) => r !== text)],
-    };
-    saveUserStylePreferences(next);
-    setStylePrefs(next);
-    setMarkdownText(getUserMarkdownProfile());
-    setNewCustomRuleText("");
-    logManualEdit("Добавление правила", text, "like", "Добавлено пользователем в редакторе (source=manual)");
-  }, [newCustomRuleText, stylePrefs, logManualEdit]);
+  const handleRemoveFavoritePattern = useCallback(
+    (index: number) => {
+      const removed = stylePrefs.favoritePatterns[index];
+      const next = {
+        ...stylePrefs,
+        favoritePatterns: stylePrefs.favoritePatterns.filter((_, i) => i !== index),
+      };
+      saveUserStylePreferences(next);
+      setStylePrefs(next);
+      setMarkdownText(getUserMarkdownProfile());
+      if (removed) {
+        logManualEdit("Удаление эталона стиля", removed, "dislike", "Удалено пользователем в редакторе (source=manual)");
+      }
+    },
+    [stylePrefs, logManualEdit]
+  );
+
+  const handleRemoveAvoidPattern = useCallback(
+    (index: number) => {
+      const removed = stylePrefs.avoidPatterns[index];
+      const next = {
+        ...stylePrefs,
+        avoidPatterns: stylePrefs.avoidPatterns.filter((_, i) => i !== index),
+      };
+      saveUserStylePreferences(next);
+      setStylePrefs(next);
+      setMarkdownText(getUserMarkdownProfile());
+      if (removed) {
+        logManualEdit("Удаление ограничения", removed, "like", "Снято ограничение (source=manual)");
+      }
+    },
+    [stylePrefs, logManualEdit]
+  );
+
+
   const handleResetLearning = useCallback(async () => {
     try {
       await resetLearning();
@@ -433,931 +355,107 @@ export const PromptProfilesSettings = () => {
     setMarkdownText(getUserMarkdownProfile());
   }, []);
 
-  const handleSaveMarkdown = useCallback(() => {
-    saveUserMarkdownProfile(markdownText);
-    setMarkdownSaved(true);
-    setTimeout(() => setMarkdownSaved(false), 2000);
-  }, [markdownText]);
+  const handleSaveMarkdown = useCallback((text: string) => {
+    saveUserMarkdownProfile(text);
+    setMarkdownText(text);
+  }, []);
 
   const handleResetMarkdown = useCallback(() => {
     resetUserMarkdownProfile();
     setMarkdownText(getUserMarkdownProfile());
   }, []);
 
-  const likesCount = feedbackLogs.filter((l) => l.rating === "like").length;
-  const dislikesCount = feedbackLogs.filter((l) => l.rating === "dislike").length;
-
   return (
-    <div id="prompt-profiles" className="space-y-3">
+    <div id="prompt-profiles" className="space-y-4">
       <Header
         title="Prompt Profiles"
         description="Switch between interview mode, general chat, adaptive self-evolution, or create your own custom prompt profiles"
       />
 
-      {/* Profile selector cards */}
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-        {promptProfiles.map((profile) => {
-          const isActive = profile.id === activeProfileId;
-          const Icon =
-            profile.id === "profile-interview"
-              ? GraduationCapIcon
-              : profile.id === SELF_EVOLUTION_PROFILE_ID
-              ? BrainCircuitIcon
-              : MessageCircleIcon;
+      {/* Profile cards list */}
+      <ProfileCards
+        profiles={promptProfiles}
+        activeProfileId={activeProfileId}
+        onSelectProfile={handleSelectProfile}
+        onResetProfile={resetPromptProfile}
+        onDeleteProfile={setPendingDelete}
+        onOpenWizard={() => setShowWizard(true)}
+        hiddenBuiltinCount={hiddenBuiltinCount}
+        onRestoreBuiltins={() => {
+          restoreAllBuiltinProfiles();
+          loadProfiles();
+        }}
+      />
 
-          return (
-            <div
-              key={profile.id}
-              onClick={() => handleSelectProfile(profile)}
-              className={cn(
-                "group relative flex items-start gap-3 rounded-xl border p-3 text-left transition-all cursor-pointer select-none",
-                isActive
-                  ? "border-primary bg-primary/5 shadow-sm"
-                  : "border-border/50 bg-muted/20 hover:border-primary/40"
-              )}
-            >
-              <div
-                className={cn(
-                  "flex size-9 shrink-0 items-center justify-center rounded-lg",
-                  isActive ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
-                )}
-              >
-                <Icon className="size-4" />
-              </div>
-              <div className="min-w-0 flex-1">
-                {/* Name shrinks, the action icons stay pinned to the right so the
-                    title truncates instead of pushing the buttons out of reach. */}
-                <div className="flex items-center gap-1.5">
-                  <span className="min-w-0 flex-1 truncate text-sm font-semibold">
-                    {profile.name}
-                  </span>
-                  {isActive && <CheckCircle2Icon className="size-4 shrink-0 text-primary" />}
-                  {profile.isBuiltin && (
-                    <span className="shrink-0 rounded bg-muted/40 px-1 text-[10px] text-muted-foreground/60">
-                      built-in
-                    </span>
-                  )}
-                  {profile.isBuiltin && (
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        resetPromptProfile(profile.id);
-                      }}
-                      className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                      title="Сбросить встроенный профиль к заводским настройкам"
-                    >
-                      <RotateCcwIcon className="size-3.5" />
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setPendingDelete(profile);
-                    }}
-                    disabled={promptProfiles.length <= 1}
-                    className={cn(
-                      "shrink-0 rounded p-1 transition-colors",
-                      "text-muted-foreground hover:text-destructive hover:bg-destructive/10",
-                      "disabled:pointer-events-none disabled:opacity-30"
-                    )}
-                    title={
-                      promptProfiles.length <= 1
-                        ? "Нельзя удалить последний профиль"
-                        : "Удалить профиль"
-                    }
-                  >
-                    <Trash2Icon className="size-3.5" />
-                  </button>
-                </div>
-                <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">
-                  {profile.description}
-                </p>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {/* 3-Step Creation Wizard */}
+      <ProfileWizard
+        open={showWizard}
+        onClose={() => setShowWizard(false)}
+        onCreate={handleCreateFromWizard}
+        initialPrompt={activeProfile?.systemPrompt || ""}
+      />
 
-      {/* Deleted built-ins can always be brought back */}
-      {hiddenBuiltinCount > 0 && (
-        <Button
-          size="sm"
-          variant="outline"
-          className="gap-1.5"
-          onClick={() => {
-            restoreAllBuiltinProfiles();
-            loadProfiles();
-          }}
-        >
-          <RotateCcwIcon className="size-3.5" />
-          Восстановить встроенные профили ({hiddenBuiltinCount})
-        </Button>
-      )}
-
-      {/* Create new profile */}
-      {creating ? (
-        <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/20 p-3">
-          <Input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="Profile name (e.g. System Design, HR Round...)"
-            className="h-9 text-sm"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreate();
-            }}
-          />
-          <Button size="sm" onClick={handleCreate} disabled={!newName.trim()}>
-            Create
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => setCreating(false)}>
-            Cancel
-          </Button>
-        </div>
-      ) : (
-        <Button
-          size="sm"
-          variant="outline"
-          className="gap-1.5"
-          onClick={() => setCreating(true)}
-        >
-          <PlusIcon className="size-3.5" />
-          New profile
-        </Button>
-      )}
-
-      {/* SELF-EVOLUTION KNOWLEDGE BASE & STYLE MEMORY PANEL */}
+      {/* Self-Evolution Memory & Learning Panels */}
       {activeProfile?.id === SELF_EVOLUTION_PROFILE_ID && (
-        <div className="rounded-xl border border-primary/30 bg-primary/5 p-4 space-y-4 animate-in fade-in duration-200">
-          <SelfLearningToggle variant="full" />
-          <div className="flex items-center justify-between border-b border-primary/20 pb-2">
-            <div className="flex items-center gap-2">
-              <SparklesIcon className="size-4 text-primary" />
-              <div>
-                <span className="text-sm font-semibold">Self-Evolution Knowledge Base & USER.md</span>
-                <p className="text-xs text-muted-foreground">
-                  AI automatically extracts your facts, stack, tone, and evolves rules from your 👍 / 👎 ratings
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full font-medium">
-                <ThumbsUpIcon className="size-3" /> {likesCount}
-              </span>
-              <span className="flex items-center gap-1 text-xs text-red-600 dark:text-red-400 bg-red-500/10 px-2 py-0.5 rounded-full font-medium">
-                <ThumbsDownIcon className="size-3" /> {dislikesCount}
-              </span>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs gap-1.5"
-                onClick={() => {
-                  setMarkdownText(getUserMarkdownProfile());
-                  setShowMarkdownEditor((prev) => !prev);
-                }}
-              >
-                <FileCodeIcon className="size-3.5 text-primary" />
-                {showMarkdownEditor ? "Visual Mode" : "USER.md Editor"}
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs text-muted-foreground hover:text-destructive gap-1"
-                onClick={handleResetLearning}
-                title="Reset all learned memory and feedback"
-              >
-                <RotateCcwIcon className="size-3" />
-                Reset
-              </Button>
-            </div>
-          </div>
-
-          {/* RAW USER.MD MARKDOWN EDITOR VIEW */}
-          {showMarkdownEditor ? (
-            <div className="space-y-2 bg-background/80 p-3 rounded-lg border border-primary/30">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs font-semibold uppercase tracking-wider text-primary flex items-center gap-1.5">
-                  <FileCodeIcon className="size-3.5" /> USER.md Context Profile
-                </Label>
-                <div className="flex items-center gap-1.5">
-                  <Button size="sm" variant="outline" className="h-7 text-xs" onClick={handleResetMarkdown}>
-                    Restore Auto-Template
-                  </Button>
-                  <Button size="sm" className="h-7 text-xs gap-1" onClick={handleSaveMarkdown}>
-                    <SaveIcon className="size-3" />
-                    Save USER.md
-                  </Button>
-                  {markdownSaved && (
-                    <span className="flex items-center gap-1 text-xs text-emerald-500 font-medium">
-                      <CheckCircle2Icon className="size-3" /> Saved
-                    </span>
-                  )}
-                </div>
-              </div>
-              <Textarea
-                value={markdownText}
-                onChange={(e) => setMarkdownText(e.target.value)}
-                placeholder="# USER.md..."
-                className="min-h-[220px] font-mono text-xs leading-relaxed"
-              />
-              <p className="text-[10px] text-muted-foreground">
-                You can edit this raw markdown memory directly. The Self-Evolution profile will use this exact profile context for all answers.
-              </p>
-            </div>
-          ) : (
-            <>
-              {/* User Known Facts List */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Known Personal Facts & Experience ({facts.length})
-                  </Label>
-                </div>
-                <div className="space-y-1 max-h-36 overflow-y-auto pr-1">
-                  {facts.map((f) => (
-                    <div
-                      key={f.id}
-                      className="flex items-center justify-between gap-2 p-2 rounded-lg bg-background/80 border border-border/40 text-xs"
-                    >
-                      <span className="flex-1 truncate">{f.fact}</span>
-                      <span className="text-[10px] text-muted-foreground uppercase px-1 rounded bg-muted">
-                        {f.category}
-                      </span>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-5 w-5 text-muted-foreground hover:text-destructive"
-                        onClick={() => handleRemoveFact(f.id)}
-                      >
-                        <Trash2Icon className="size-3" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Add Fact Manually */}
-                <div className="flex items-center gap-2 pt-1">
-                  <Input
-                    value={newFactText}
-                    onChange={(e) => setNewFactText(e.target.value)}
-                    placeholder="Add custom fact (e.g. 8 years Go/Rust backend experience, specializes in high-load)..."
-                    className="h-8 text-xs"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAddFact();
-                    }}
-                  />
-                  <Button size="sm" className="h-8 px-3 text-xs" onClick={handleAddFact} disabled={!newFactText.trim()}>
-                    Add
-                  </Button>
-                </div>
-              </div>
-
-              {/* Evolved Style Patterns */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-primary/20">
-                <div className="space-y-1">
-                  <Label className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">
-                    ⭐ Favorite Patterns (Reinforced by 👍)
-                  </Label>
-                  <div className="space-y-1">
-                    {stylePrefs.favoritePatterns.length === 0 ? (
-                      <p className="text-[11px] text-muted-foreground italic">Нет эталонов стиля</p>
-                    ) : (
-                      stylePrefs.favoritePatterns.map((p, i) => (
-                        <div key={i} className="flex items-center justify-between gap-1 text-xs p-1.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-foreground/90">
-                          <span className="truncate flex-1">{p}</span>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0"
-                            onClick={() => handleRemoveFavoritePattern(i)}
-                          >
-                            <Trash2Icon className="size-3" />
-                          </Button>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <Label className="text-xs font-semibold text-red-700 dark:text-red-400">
-                    🚫 Avoid Constraints (Learned from 👎)
-                  </Label>
-                  <div className="space-y-1">
-                    {stylePrefs.avoidPatterns.length === 0 ? (
-                      <p className="text-[11px] text-muted-foreground italic">Нет ограничений</p>
-                    ) : (
-                      stylePrefs.avoidPatterns.map((p, i) => (
-                        <div key={i} className="flex items-center justify-between gap-1 text-xs p-1.5 rounded bg-red-500/10 border border-red-500/20 text-foreground/90">
-                          <span className="truncate flex-1">{p}</span>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0"
-                            onClick={() => handleRemoveAvoidPattern(i)}
-                          >
-                            <Trash2Icon className="size-3" />
-                          </Button>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Custom Rules Editor */}
-              <div className="space-y-2 pt-2 border-t border-primary/20">
-                <Label className="text-xs font-semibold text-violet-700 dark:text-violet-400">
-                  📝 Custom Rules ({stylePrefs.customRules.length})
-                </Label>
-                <div className="space-y-1">
-                  {stylePrefs.customRules.length === 0 ? (
-                    <p className="text-[11px] text-muted-foreground italic">Нет кастомных правил</p>
-                  ) : (
-                    stylePrefs.customRules.map((r, i) => {
-                      const ruleSource = resolveRuleSource(r);
-                      return (
-                        <div key={i} className="flex items-center justify-between gap-1.5 text-xs p-1.5 rounded bg-violet-500/10 border border-violet-500/20 text-foreground/90">
-                          <span
-                            data-testid="rule-source-badge"
-                            className={cn(
-                              "px-1.5 py-0.5 rounded-full text-[10px] font-medium shrink-0",
-                              ruleSource === "coach"
-                                ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                                : ruleSource === "feedback"
-                                ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                                : "bg-primary/15 text-primary"
-                            )}
-                          >
-                            {ruleSource}
-                          </span>
-                          <span className="truncate flex-1">{r}</span>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-4 w-4 text-muted-foreground hover:text-destructive shrink-0"
-                            onClick={() => handleRemoveCustomRule(i)}
-                          >
-                            <Trash2Icon className="size-3" />
-                          </Button>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-                <div className="flex items-center gap-2 pt-1">
-                  <Input
-                    value={newCustomRuleText}
-                    onChange={(e) => setNewCustomRuleText(e.target.value)}
-                    placeholder="Add custom rule (e.g. Always explain time complexity)..."
-                    className="h-8 text-xs"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleAddCustomRule();
-                    }}
-                  />
-                  <Button size="sm" className="h-8 px-3 text-xs" onClick={handleAddCustomRule} disabled={!newCustomRuleText.trim()}>
-                    Add
-                  </Button>
-                </div>
-              </div>
-
-              {/* Feedback & Evolution Journal (Last 20) */}
-              <div className="space-y-2 pt-3 border-t border-primary/20">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                    Журнал обучения (последние {Math.min(20, feedbackLogs.length)} событий)
-                  </Label>
-                </div>
-                <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                  {feedbackLogs.length === 0 ? (
-                    <div className="p-3 text-center text-xs text-muted-foreground rounded-lg bg-background/50 border border-border/30">
-                      Журнал пуст. Здесь появятся последние 20 сигналов обучения (оценки ответов и ручные правки).
-                    </div>
-                  ) : (
-                    feedbackLogs.slice(0, 20).map((entry) => (
-                      <div
-                        key={entry.id}
-                        className="p-2 rounded-lg bg-background/80 border border-border/40 text-xs space-y-1"
-                      >
-                        <div className="flex items-center justify-between text-[10px]">
-                          <div className="flex items-center gap-1">
-                            <span
-                              data-testid="journal-source-badge"
-                              className={cn(
-                                "px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-1",
-                                entry.topic === "coach"
-                                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                                  : entry.topic === "manual"
-                                  ? "bg-primary/10 text-primary"
-                                  : entry.rating === "like"
-                                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                                  : "bg-red-500/10 text-red-600 dark:text-red-400"
-                              )}
-                            >
-                              {entry.topic === "coach"
-                                ? "🎯 coach"
-                                : entry.topic === "manual"
-                                ? "✏️ manual"
-                                : `${entry.rating === "like" ? "👍 like" : "👎 dislike"} · feedback`}
-                            </span>
-                          </div>
-                          <span className="text-muted-foreground font-mono">
-                            {new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                          </span>
-                        </div>
-                        <div className="text-[11px] font-medium text-foreground truncate">
-                          <span className="text-muted-foreground">Вопрос:</span> {entry.question}
-                        </div>
-                        <div className="text-[11px] text-muted-foreground line-clamp-2">
-                          <span className="text-foreground/70">Ответ:</span> {entry.response}
-                        </div>
-                        {entry.reason && (
-                          <div className="text-[10px] text-amber-600 dark:text-amber-400">
-                            <span>Причина:</span> {entry.reason}
-                          </div>
-                        )}
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+        <MemoryPanels
+          facts={facts}
+          onAddFact={handleAddFact}
+          onRemoveFact={handleRemoveFact}
+          stylePrefs={stylePrefs}
+          onRemoveFavoritePattern={handleRemoveFavoritePattern}
+          onRemoveAvoidPattern={handleRemoveAvoidPattern}
+          feedbackLogs={feedbackLogs}
+          markdownText={markdownText}
+          onSaveMarkdown={handleSaveMarkdown}
+          onResetMarkdown={handleResetMarkdown}
+          onResetLearning={handleResetLearning}
+        />
       )}
 
-      {/* Active profile editor */}
+      {/* Active profile editor + prompt preview */}
       {activeProfile && (
-        <div className="rounded-xl border border-border/50 bg-muted/10 p-4 space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <PenLineIcon className="size-4 text-muted-foreground" />
-              <span className="text-sm font-semibold">Editing: {activeProfile.name}</span>
-            </div>
-            {activeProfile.isBuiltin ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="gap-1.5"
-                onClick={() => resetPromptProfile(activeProfile.id)}
-                title="Вернуть встроенный промпт к заводскому тексту"
-              >
-                <RotateCcwIcon className="size-3.5" />
-                Reset to Default
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-destructive hover:bg-destructive/10 gap-1.5"
-                onClick={() => setPendingDelete(activeProfile)}
-                title="Удалить профиль"
-              >
-                <Trash2Icon className="size-3.5" />
-                Delete
-              </Button>
-            )}
-          </div>
-
-          {/* System prompt */}
-          <div className="space-y-1.5">
-            <Label className="text-xs font-medium">System Prompt</Label>
-            <Textarea
-              value={editing && draft ? draft.systemPrompt : activeProfile.systemPrompt}
-              onChange={(e) =>
-                setDraft((d) => (d ? { ...d, systemPrompt: e.target.value } : d))
-              }
-              disabled={!editing}
-              placeholder="How should the AI behave in this profile?"
-              className="min-h-[140px] text-xs leading-relaxed font-mono"
-            />
-            <p className="text-[10px] text-muted-foreground">
-              Tip: edit and save, then the floating window instantly uses this prompt.
-            </p>
-          </div>
-
-          {/* Toggles */}
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/50 p-2.5">
-              <div>
-                <Label className="text-xs font-medium">Humanizer</Label>
-                <p className="text-[10px] text-muted-foreground">Human-like answers</p>
-              </div>
-              <Switch
-                checked={editing && draft ? draft.humanizerEnabled : activeProfile.humanizerEnabled}
-                onCheckedChange={(v) => setDraft((d) => (d ? { ...d, humanizerEnabled: v } : d))}
-                disabled={!editing}
-              />
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/50 p-2.5">
-              <div>
-                <Label className="text-xs font-medium">Interview Mode</Label>
-                <p className="text-[10px] text-muted-foreground">Candidate answers style</p>
-              </div>
-              <Switch
-                checked={editing && draft ? draft.interviewMode : activeProfile.interviewMode}
-                onCheckedChange={(v) => setDraft((d) => (d ? { ...d, interviewMode: v } : d))}
-                disabled={!editing}
-              />
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/50 p-2.5">
-              <div>
-                <Label className="text-xs font-medium">Use Resume</Label>
-                <p className="text-[10px] text-muted-foreground">Ground answers in resume</p>
-              </div>
-              <Switch
-                checked={editing && draft ? draft.ragResumeEnabled : activeProfile.ragResumeEnabled}
-                onCheckedChange={(v) => setDraft((d) => (d ? { ...d, ragResumeEnabled: v } : d))}
-                disabled={!editing}
-              />
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-border/40 bg-background/50 p-2.5">
-              <div>
-                <Label className="text-xs font-medium">Use Job Description</Label>
-                <p className="text-[10px] text-muted-foreground">Ground answers in vacancy</p>
-              </div>
-              <Switch
-                checked={editing && draft ? draft.ragJobEnabled : activeProfile.ragJobEnabled}
-                onCheckedChange={(v) => setDraft((d) => (d ? { ...d, ragJobEnabled: v } : d))}
-                disabled={!editing}
-              />
-            </div>
-          </div>
-
-          {/* Custom style */}
-          <div className="space-y-1.5">
-            <Label className="text-xs font-medium">Personal Style (optional)</Label>
-            <Input
-              value={editing && draft ? draft.customStyle : activeProfile.customStyle}
-              onChange={(e) => setDraft((d) => (d ? { ...d, customStyle: e.target.value } : d))}
-              disabled={!editing}
-              placeholder="e.g. speak short, use metaphors, mention numbers..."
-              className="h-9 text-xs"
-            />
-          </div>
-
-          {/* Timing, Length & Monologue Config */}
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <div className="space-y-1.5 rounded-lg border border-border/40 bg-background/50 p-2.5">
-              <Label className="text-xs font-medium">Silence Flush Gap (мс)</Label>
-              <Input
-                type="number"
-                value={
-                  editing && draft
-                    ? draft.flushGapMs ?? 450
-                    : activeProfile.flushGapMs ?? 450
-                }
-                onChange={(e) => {
-                  const val = parseInt(e.target.value, 10);
-                  setDraft((d) => (d ? { ...d, flushGapMs: isNaN(val) ? 450 : val } : d));
-                }}
-                disabled={!editing}
-                className="h-8 text-xs font-mono"
-                placeholder="450 (быстрый) / 1500 (разговор)"
-              />
-              <p className="text-[10px] text-muted-foreground">
-                Пауза тишины перед отправкой (450 мс для собеседований, 1500 мс для бесед)
-              </p>
-            </div>
-
-            <div className="space-y-1.5 rounded-lg border border-border/40 bg-background/50 p-2.5">
-              <Label className="text-xs font-medium">Длина ответа по умолчанию</Label>
-              <div className="flex gap-1 pt-1">
-                {(["auto", "short", "long"] as const).map((len) => {
-                  const cur =
-                    editing && draft
-                      ? draft.defaultLength ?? "auto"
-                      : activeProfile.defaultLength ?? "auto";
-                  const isSelected = cur === len;
-                  return (
-                    <button
-                      key={len}
-                      type="button"
-                      disabled={!editing}
-                      onClick={() => setDraft((d) => (d ? { ...d, defaultLength: len } : d))}
-                      className={cn(
-                        "flex-1 px-2 py-1 text-xs rounded border transition-colors font-medium",
-                        isSelected
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "border-border/60 hover:bg-muted text-muted-foreground"
-                      )}
-                    >
-                      {len === "auto" ? "Авто" : len === "short" ? "Кратко" : "Подробно"}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-[10px] text-muted-foreground">
-                Краткость ответов модели в оверлее
-              </p>
-            </div>
-
-            <div className="space-y-1.5 rounded-lg border border-border/40 bg-background/50 p-2.5">
-              <Label className="text-xs font-medium">Режим монолога</Label>
-              <div className="flex gap-1 pt-1">
-                {(["auto", "semi", "manual"] as const).map((mode) => {
-                  const cur =
-                    editing && draft
-                      ? draft.monologue?.mode ?? "auto"
-                      : activeProfile.monologue?.mode ?? "auto";
-                  const isSelected = cur === mode;
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      disabled={!editing}
-                      onClick={() =>
-                        setDraft((d) =>
-                          d
-                            ? {
-                                ...d,
-                                monologue: {
-                                  mode,
-                                  maxWindow: d.monologue?.maxWindow ?? 12000,
-                                },
-                              }
-                            : d
-                        )
-                      }
-                      className={cn(
-                        "flex-1 px-2 py-1 text-xs rounded border transition-colors font-medium",
-                        isSelected
-                          ? "bg-primary text-primary-foreground border-primary"
-                          : "border-border/60 hover:bg-muted text-muted-foreground"
-                      )}
-                    >
-                      {mode === "auto" ? "Авто" : mode === "semi" ? "Полуавто" : "Вручную"}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-[10px] text-muted-foreground">
-                Авто (по тишине) / Полуавто (подтверждение) / Вручную (кнопка)
-              </p>
-            </div>
-
-            <div className="space-y-1.5 rounded-lg border border-border/40 bg-background/50 p-2.5">
-              <Label className="text-xs font-medium">Окно накопления монолога (мс)</Label>
-              <Input
-                type="number"
-                value={
-                  editing && draft
-                    ? draft.monologue?.maxWindow ?? 12000
-                    : activeProfile.monologue?.maxWindow ?? 12000
-                }
-                onChange={(e) => {
-                  const val = parseInt(e.target.value, 10);
-                  setDraft((d) =>
-                    d
-                      ? {
-                          ...d,
-                          monologue: {
-                            mode: d.monologue?.mode ?? "auto",
-                            maxWindow: isNaN(val) ? 12000 : val,
-                          },
-                        }
-                      : d
-                  );
-                }}
-                disabled={!editing}
-                className="h-8 text-xs font-mono"
-                placeholder="12000"
-              />
-              <p className="text-[10px] text-muted-foreground">
-                Максимальное окно накопления нон-стоп спича перед отправкой
-              </p>
-            </div>
-          </div>
-
-          {/* Visible Buttons in Toolbar */}
-          <div className="space-y-2 rounded-lg border border-border/40 bg-background/50 p-2.5">
-            <Label className="text-xs font-medium">Видимые кнопки в оверлее</Label>
-            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
-              {AVAILABLE_TOOLBAR_BUTTONS.map((btn) => {
-                const currentButtons =
-                  editing && draft
-                    ? draft.visibleButtons ?? []
-                    : activeProfile.visibleButtons ?? [];
-                const isVisible = currentButtons.includes(btn.id);
-
-                return (
-                  <button
-                    key={btn.id}
-                    type="button"
-                    disabled={!editing}
-                    onClick={() => {
-                      if (!editing) return;
-                      setDraft((d) => {
-                        if (!d) return d;
-                        const cur = d.visibleButtons ?? [];
-                        const next = cur.includes(btn.id)
-                          ? cur.filter((id) => id !== btn.id)
-                          : [...cur, btn.id];
-                        return { ...d, visibleButtons: next };
-                      });
-                    }}
-                    className={cn(
-                      "flex items-center justify-between p-1.5 rounded border text-left text-xs transition-colors",
-                      isVisible
-                        ? "bg-primary/10 border-primary text-foreground font-medium"
-                        : "border-border/40 bg-muted/20 text-muted-foreground hover:bg-muted/40",
-                      !editing && "cursor-default opacity-80"
-                    )}
-                  >
-                    <span className="truncate">{btn.label}</span>
-                    <span
-                      className={cn(
-                        "size-2 rounded-full shrink-0 ml-1",
-                        isVisible ? "bg-primary" : "bg-muted-foreground/30"
-                      )}
-                    />
-                  </button>
-                );
-              })}
-            </div>
-            <p className="text-[10px] text-muted-foreground">
-              Тулбар в оверлее отображает только кнопки, включённые для активного сценария
-            </p>
-          </div>
-
-          {/* Edit / Save */}
-          <div className="flex gap-2">
-            {editing ? (
-              <>
-                <Button size="sm" onClick={saveDraft}>
-                  Save profile
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setEditing(false);
-                    setDraft(null);
-                  }}
-                >
-                  Cancel
-                </Button>
-              </>
-            ) : (
-              <>
-              <Button size="sm" variant="outline" onClick={() => startEdit(activeProfile)}>
-                <PenLineIcon className="size-3.5 mr-1" />
-                Edit profile
-              </Button>
-              <Button size="sm" variant="outline" onClick={handleExportCurrent} title="Скачать текущий профиль как JSON">
-                <DownloadIcon className="size-3.5 mr-1" />
-                Экспорт
-              </Button>
-              <Button size="sm" variant="outline" onClick={handleExportAll} title="Скачать все профили как JSON">
-                <DownloadIcon className="size-3.5 mr-1" />
-                Экспорт всех
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => setShowImportModal(true)} title="Импортировать профили из JSON">
-                <UploadIcon className="size-3.5 mr-1" />
-                Импорт
-              </Button>
-              </>
-            )}
-          </div>
-        </div>
+        <ProfileEditor
+          profile={activeProfile}
+          isEditing={editing}
+          draft={draft}
+          onStartEdit={() => startEdit(activeProfile)}
+          onCancelEdit={() => {
+            setEditing(false);
+            setDraft(null);
+          }}
+          onSaveEdit={saveDraft}
+          onDraftChange={(updater) => setDraft((d) => (d ? updater(d) : d))}
+          onResetProfile={resetPromptProfile}
+          onDeleteProfile={setPendingDelete}
+          onExportCurrent={handleExportCurrent}
+          onExportAll={handleExportAll}
+          onOpenImport={() => setShowImportModal(true)}
+        />
       )}
 
-      {/* JSON Import Modal */}
-      {showImportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg space-y-4 rounded-xl border border-border bg-background p-5">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold flex items-center gap-2">
-                <UploadIcon className="size-4" /> Импорт профилей
-              </h3>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setShowImportModal(false);
-                  setImportJsonText("");
-                  setImportFeedback(null);
-                }}
-              >
-                Отмена
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Загрузите файл .json или вставьте конфигурацию профиля в текстовое поле:
-            </p>
-            <div className="flex items-center gap-2">
-              <Input
-                type="file"
-                accept=".json"
-                onChange={handleFileInput}
-                className="text-xs file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-primary-foreground"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Или вставьте JSON напрямую:</Label>
-              <Textarea
-                value={importJsonText}
-                onChange={(e) => setImportJsonText(e.target.value)}
-                placeholder='{ "name": "Custom Profile", "systemPrompt": "...", "flushGapMs": 450 }'
-                className="min-h-[120px] font-mono text-xs"
-              />
-            </div>
-            {importFeedback && (
-              <p className="text-xs text-destructive font-medium">{importFeedback}</p>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  setShowImportModal(false);
-                  setImportJsonText("");
-                  setImportFeedback(null);
-                }}
-              >
-                Отмена
-              </Button>
-              <Button
-                size="sm"
-                disabled={!importJsonText.trim()}
-                onClick={() => handleImportJson(importJsonText)}
-              >
-                Импортировать
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ImportProfilesModal
+        open={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        onImportJson={handleImportJson}
+      />
 
-      {/* Delete confirmation */}
-      {pendingDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md space-y-3 rounded-xl border border-border bg-background p-5">
-            <h3 className="text-sm font-semibold">
-              Удалить профиль «{pendingDelete.name}»?
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Его системный промпт будет потерян. Встроенные профили можно вернуть
-              кнопкой «Restore built-in profiles».
-            </p>
-            <div className="flex justify-end gap-2 pt-1">
-              <Button size="sm" variant="outline" onClick={() => setPendingDelete(null)}>
-                Отмена
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => {
-                  deletePromptProfile(pendingDelete.id);
-                  loadProfiles();
-                  setPendingDelete(null);
-                }}
-              >
-                <Trash2Icon className="size-3.5 mr-1" />
-                Удалить
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-      {/* Switch profile with unsaved changes confirmation */}
-      {pendingSwitch && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md space-y-3 rounded-xl border border-border bg-background p-5">
-            <h3 className="text-sm font-semibold">
-              Несохранённые изменения
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              В профиле «{draft?.name || activeProfile?.name}» есть несохранённые
-              изменения. Сохранить их перед переключением на «{pendingSwitch.name}»?
-            </p>
-            <div className="flex justify-end gap-2 pt-1">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setPendingSwitch(null)}
-              >
-                Отмена
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-destructive hover:bg-destructive/10"
-                onClick={handleConfirmSwitchDiscard}
-              >
-                Не сохранять
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleConfirmSwitchSave}
-              >
-                Сохранить и перейти
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DeleteProfileModal
+        profile={pendingDelete}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={(profile) => {
+          deletePromptProfile(profile.id);
+          loadProfiles();
+          setPendingDelete(null);
+        }}
+      />
+
+      <SwitchProfileModal
+        targetProfile={pendingSwitch}
+        currentProfileName={draft?.name || activeProfile?.name}
+        onCancel={() => setPendingSwitch(null)}
+        onDiscard={handleConfirmSwitchDiscard}
+        onSaveAndSwitch={handleConfirmSwitchSave}
+      />
     </div>
   );
 };
