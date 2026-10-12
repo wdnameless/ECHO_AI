@@ -39,6 +39,7 @@ import {
   buildSearchBlock,
   cacheSearchResults,
   getCachedSearchResults,
+  parallelSearchStream,
 } from "./parallel-search";
 import { getRagContext, searchMemory } from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
@@ -888,129 +889,157 @@ export async function* fetchAIResponse(params: {
     if (!signal?.aborted) params.onEvent?.(event);
   };
 
-  // Web search with a HARD budget: await it for at most ~1.1s, then start
-  // the stream either way. Single request (no abort+restart), predictable
-  // worst-case latency; late results are cached and used next turn.
-  let searchResults: SearchResultItem[] | null = null;
-  try {
-    const settings = getWebSearchSettings();
-    if (settings.enabled && userMessage.trim()) {
-      const cached = getCachedSearchResults(userMessage);
-      if (cached) {
-        searchResults = cached;
-      } else {
-        searchResults = await abortable(Promise.race([
-          performWebSearch(userMessage).catch(() => null),
-          new Promise<null>((r) => setTimeout(() => r(null), 1100)),
-        ]), signal);
-        if (!signal?.aborted && searchResults && searchResults.length > 0) {
-          cacheSearchResults(userMessage, searchResults);
-        }
-      }
+  // Web search overlap (R01): kick off search in parallel with prompt build and LLM connect.
+  // Never block the first token with a serial await race.
+  let searchPromise: Promise<SearchResultItem[] | null> = Promise.resolve(null);
+  let cachedResults: SearchResultItem[] | null = null;
+  const settings = getWebSearchSettings();
+  if (settings.enabled && userMessage.trim()) {
+    const cached = getCachedSearchResults(userMessage);
+    if (cached) {
+      cachedResults = cached;
+    } else {
+      searchPromise = performWebSearch(userMessage)
+        .then((results) => (results && results.length > 0 ? results : null))
+        .catch(() => null);
     }
-  } catch {
-    searchResults = null;
   }
 
-  // Build the base prompt (RAG, humanizer, etc.) - no search inside.
+  // Build the base prompt (RAG, humanizer, etc.) - runs concurrently with search.
   if (signal?.aborted) return;
   let baseSystemPrompt: string;
   try {
-    baseSystemPrompt = await abortable(buildEnhancedSystemPrompt(params.systemPrompt, userMessage, params.mode, params.profileId), signal);
+    baseSystemPrompt = await abortable(
+      buildEnhancedSystemPrompt(
+        params.systemPrompt,
+        userMessage,
+        params.mode,
+        params.profileId
+      ),
+      signal
+    );
   } catch (error) {
     if (signal?.aborted) return;
     throw error;
   }
 
-  const enrichedPrompt =
-    searchResults && searchResults.length > 0
-      ? `${baseSystemPrompt} ${buildSearchBlock(searchResults)}`
-      : baseSystemPrompt;
-  if (!params.provider) {
-    emit({ type: "attempt", providerId: "pluely" });
-    yield* streamAIResponse({
-      ...params,
-      systemPrompt: enrichedPrompt,
-      onEvent: emit,
-      signal,
-    });
+  async function* executeStream(
+    prompt: string,
+    attemptSignal?: AbortSignal
+  ): AsyncGenerator<string, void, unknown> {
+    if (!params.provider) {
+      emit({ type: "attempt", providerId: "pluely" });
+      yield* streamAIResponse({
+        ...params,
+        systemPrompt: prompt,
+        onEvent: emit,
+        signal: attemptSignal,
+      });
+      return;
+    }
+
+    const candidates: (TYPE_PROVIDER | undefined)[] = [];
+    const seenIds = new Set<string>();
+
+    if (params.provider) {
+      candidates.push(params.provider);
+      if (params.provider.id) {
+        seenIds.add(params.provider.id);
+      }
+    }
+
+    if (params.allProviders) {
+      for (const p of params.allProviders) {
+        if (!p.id || !seenIds.has(p.id)) {
+          if (p.id) seenIds.add(p.id);
+          candidates.push(p);
+        }
+      }
+    }
+
+    if (candidates.length === 0) {
+      candidates.push(undefined);
+    }
+
+    const triedIds: string[] = [];
+    let lastError = "";
+
+    for (let i = 0; i < candidates.length; i++) {
+      if (attemptSignal?.aborted) {
+        return;
+      }
+
+      const candidate = candidates[i];
+      const candidateId = candidate?.id ?? "unknown";
+      triedIds.push(candidateId);
+
+      const candidateSelected = {
+        provider: candidateId,
+        variables:
+          candidateId === params.selectedProvider.provider
+            ? { ...params.selectedProvider.variables }
+            : getAIProviderVariables(candidateId),
+      };
+      let yieldedRealContent = false;
+      let candidateError = "";
+      if (i > 0) emit({ type: "restart", providerId: candidateId });
+      emit({ type: "attempt", providerId: candidateId });
+      try {
+        for await (const chunk of streamAIResponse({
+          ...params,
+          provider: candidate,
+          selectedProvider: candidateSelected,
+          systemPrompt: prompt,
+          onEvent: emit,
+          signal: attemptSignal,
+        })) {
+          if (attemptSignal?.aborted) return;
+          if (chunk.length > 0) yieldedRealContent = true;
+          yield chunk;
+        }
+        if (attemptSignal?.aborted) return;
+        if (yieldedRealContent) return;
+        candidateError = "Провайдер вернул пустой ответ";
+      } catch (error) {
+        if (attemptSignal?.aborted) return;
+        candidateError = error instanceof Error ? error.message : String(error);
+      }
+
+      if (attemptSignal?.aborted) {
+        return;
+      }
+
+      lastError = candidateError;
+    }
+
+    throw new Error(
+      `Все провайдеры недоступны (пробовали: ${triedIds.join(", ")}): ${lastError}`
+    );
+  }
+
+  // Fast path: cached search results enrich prompt immediately
+  if (cachedResults && cachedResults.length > 0) {
+    const enrichedPrompt = `${baseSystemPrompt} ${buildSearchBlock(cachedResults)}`;
+    yield* executeStream(enrichedPrompt, signal);
     return;
   }
 
-  const candidates: (TYPE_PROVIDER | undefined)[] = [];
-  const seenIds = new Set<string>();
-
-  if (params.provider) {
-    candidates.push(params.provider);
-    if (params.provider.id) {
-      seenIds.add(params.provider.id);
-    }
+  // Fast path: search disabled
+  if (!settings.enabled || !userMessage.trim()) {
+    yield* executeStream(baseSystemPrompt, signal);
+    return;
   }
 
-  if (params.allProviders) {
-    for (const p of params.allProviders) {
-      if (!p.id || !seenIds.has(p.id)) {
-        if (p.id) seenIds.add(p.id);
-        candidates.push(p);
-      }
-    }
-  }
-
-  if (candidates.length === 0) {
-    candidates.push(undefined);
-  }
-
-  const triedIds: string[] = [];
-  let lastError = "";
-
-  for (let i = 0; i < candidates.length; i++) {
-    if (signal?.aborted) {
-      return;
-    }
-
-    const candidate = candidates[i];
-    const candidateId = candidate?.id ?? "unknown";
-    triedIds.push(candidateId);
-
-    const candidateSelected = {
-      provider: candidateId,
-      variables: candidateId === params.selectedProvider.provider
-        ? { ...params.selectedProvider.variables }
-        : getAIProviderVariables(candidateId),
-    };
-    let yieldedRealContent = false;
-    let candidateError = "";
-    if (i > 0) emit({ type: "restart", providerId: candidateId });
-    emit({ type: "attempt", providerId: candidateId });
-    try {
-      for await (const chunk of streamAIResponse({
-        ...params,
-        provider: candidate,
-        selectedProvider: candidateSelected,
-        systemPrompt: enrichedPrompt,
-        onEvent: emit,
-        signal,
-      })) {
-        if (signal?.aborted) return;
-        if (chunk.length > 0) yieldedRealContent = true;
-        yield chunk;
-      }
-      if (signal?.aborted) return;
-      if (yieldedRealContent) return;
-      candidateError = "Провайдер вернул пустой ответ";
-    } catch (error) {
-      if (signal?.aborted) return;
-      candidateError = error instanceof Error ? error.message : String(error);
-    }
-
-    if (signal?.aborted) {
-      return;
-    }
-
-    lastError = candidateError;
-  }
-
-  throw new Error(
-    `Все провайдеры недоступны (пробовали: ${triedIds.join(", ")}): ${lastError}`
-  );
+  // Parallel path: web search overlaps with LLM connect and prompt build
+  yield* parallelSearchStream({
+    userMessage,
+    basePrompt: baseSystemPrompt,
+    searchPromise,
+    createStream: (prompt, attemptSignal) =>
+      executeStream(prompt, attemptSignal),
+    buildPromptWithEntries: (basePrompt, results) =>
+      `${basePrompt} ${buildSearchBlock(results)}`,
+    onLate: (query, results) => cacheSearchResults(query, results),
+    signal,
+  });
 }

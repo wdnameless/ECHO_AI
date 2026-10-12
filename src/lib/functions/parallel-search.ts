@@ -112,6 +112,7 @@ export async function* parallelSearchStream(
     onLate,
     signal,
   } = opts;
+  if (signal?.aborted) return;
 
   // External abort cascades to the CURRENT active attempt, so a caller
   // abort cuts the stream short immediately (even mid-request).
@@ -119,6 +120,10 @@ export async function* parallelSearchStream(
   const onExternalAbort = () => activeController.abort();
   signal?.addEventListener("abort", onExternalAbort, { once: true });
   const externalAbort = new Promise<null>((resolve) => {
+    if (signal?.aborted) {
+      resolve(null);
+      return;
+    }
     signal?.addEventListener("abort", () => resolve(null), { once: true });
   });
 
@@ -131,6 +136,7 @@ export async function* parallelSearchStream(
     } catch (err) {
       return {
         iterator: null as AsyncGenerator<string, void, unknown> | null,
+        // SAFETY: completed stream sentinel carries empty value
         first: { done: true as const, value: undefined as unknown as string },
         controller,
         error: err,
@@ -152,41 +158,52 @@ export async function* parallelSearchStream(
     // Search finished before the first token: kill the first attempt and
     // silently restart with the enriched prompt. The user never sees the
     // aborted first attempt.
+    cacheSearchResults(userMessage, searchOrNull);
     activeController.abort();
     activeController = new AbortController();
     const enrichedPrompt = buildPromptWithEntries(basePrompt, searchOrNull);
-    yield* createStream(enrichedPrompt, activeController.signal);
+    try {
+      yield* createStream(enrichedPrompt, activeController.signal);
+    } finally {
+      signal?.removeEventListener("abort", onExternalAbort);
+    }
     return;
   }
 
-  if (signal?.aborted) {
-    return;
-  }
-
-  signal?.removeEventListener("abort", onExternalAbort);
-  const { iterator, first, error } = await firstChunkPromise;
-  if (error) {
-    throw error instanceof Error
-      ? error
-      : new Error("Unknown error in parallel search stream");
-  }
-  if (signal?.aborted) {
-    return;
-  }
-  if (iterator && !first.done) {
-    yield first.value;
-    for await (const chunk of iterator) {
-      if (signal?.aborted) {
-        return;
+  // Hook up late caching immediately when first token wins:
+  searchPromise
+    .then((results) => {
+      if (results && results.length > 0) {
+        onLate?.(userMessage, results);
       }
-      yield chunk;
-    }
+    })
+    .catch(() => {});
+
+  if (signal?.aborted) {
+    signal?.removeEventListener("abort", onExternalAbort);
+    return;
   }
 
-  // Cache results for the next turn if they arrived late.
-  searchPromise.then((results) => {
-    if (results && results.length > 0) {
-      onLate?.(userMessage, results);
+  try {
+    const { iterator, first, error } = await firstChunkPromise;
+    if (error) {
+      throw error instanceof Error
+        ? error
+        : new Error("Unknown error in parallel search stream");
     }
-  });
+    if (signal?.aborted) {
+      return;
+    }
+    if (iterator && !first.done) {
+      yield first.value;
+      for await (const chunk of iterator) {
+        if (signal?.aborted) {
+          return;
+        }
+        yield chunk;
+      }
+    }
+  } finally {
+    signal?.removeEventListener("abort", onExternalAbort);
+  }
 }
