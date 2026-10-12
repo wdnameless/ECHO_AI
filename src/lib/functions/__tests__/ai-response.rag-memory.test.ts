@@ -124,4 +124,110 @@ describe("ai-response RAG memory injection (R01, R04)", () => {
 
     expect(prompt).not.toContain("[CONTEXT: RELEVANT PAST MEETINGS]");
   });
+
+  it("queries getRagContext and searchMemory concurrently in ONE Promise.all (R03)", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(STORAGE_KEYS.RAG_RESUME_ENABLED, "true");
+    localStorage.setItem(STORAGE_KEYS.RAG_MEMORY_ENABLED, "true");
+
+    let resumeStarted = false;
+    let memoryStarted = false;
+
+    vi.spyOn(rag, "getRagContext").mockImplementation(async () => {
+      resumeStarted = true;
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      return {
+        id: "resume",
+        type: "resume",
+        content: "Senior Engineer",
+        sourceName: "resume.pdf",
+        updatedAt: 1000,
+      };
+    });
+
+    vi.spyOn(rag, "searchMemory").mockImplementation(async () => {
+      memoryStarted = true;
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      return [
+        {
+          conversationId: "meeting-1",
+          chunkId: "c1",
+          score: 0.8,
+          text: "Meeting notes",
+        },
+      ];
+    });
+
+    const promptPromise = buildEnhancedSystemPrompt("base", "user query");
+
+    // Both requests must be initiated in parallel before the 100ms timer elapses
+    await Promise.resolve();
+    expect(resumeStarted).toBe(true);
+    expect(memoryStarted).toBe(true);
+
+    // Advancing 100ms finishes both parallel queries (total time is max, not sum)
+    await vi.advanceTimersByTimeAsync(100);
+    const prompt = await promptPromise;
+    expect(prompt).toContain("Senior Engineer");
+    expect(prompt).toContain("Meeting notes");
+
+    vi.useRealTimers();
+  });
+
+  it("reads style preferences synchronously from cache without awaiting SQLite 400ms timeout (R03)", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem("pluely:self-learning-enabled", "true");
+
+    let finished = false;
+    const promptPromise = buildEnhancedSystemPrompt("base", "query").then((res) => {
+      finished = true;
+      return res;
+    });
+
+    // Must complete synchronously without waiting for 400ms DB race
+    await vi.advanceTimersByTimeAsync(10);
+    expect(finished).toBe(true);
+    const prompt = await promptPromise;
+    expect(prompt).toBeTruthy();
+
+    vi.useRealTimers();
+  });
+
+  it("enforces memory threshold boundary: excludes score < 0.45, includes score >= 0.45 (R13)", async () => {
+    vi.spyOn(rag, "searchMemory").mockResolvedValueOnce([
+      {
+        conversationId: "m-low",
+        chunkId: "c-low",
+        score: 0.44,
+        text: "Standup notes about unrelated coffee machine",
+      },
+      {
+        conversationId: "m-high",
+        chunkId: "c-high",
+        score: 0.45,
+        text: "Architecture discussion on distributed transactions",
+      },
+    ]);
+
+    const prompt = await buildEnhancedSystemPrompt("base prompt", "How do transactions work?");
+
+    expect(prompt).not.toContain("Standup notes about unrelated coffee machine");
+    expect(prompt).toContain("Architecture discussion on distributed transactions");
+  });
+
+  it("filters out irrelevant memory hits with score 0.08 (R13)", async () => {
+    vi.spyOn(rag, "searchMemory").mockResolvedValueOnce([
+      {
+        conversationId: "m-irrelevant",
+        chunkId: "c-irr",
+        score: 0.08,
+        text: "Standup comedy joke from past meeting",
+      },
+    ]);
+
+    const prompt = await buildEnhancedSystemPrompt("base prompt", "What is V8 GC?");
+
+    expect(prompt).not.toContain("Standup comedy joke");
+    expect(prompt).not.toContain("[CONTEXT: RELEVANT PAST MEETINGS]");
+  });
 });

@@ -15,11 +15,11 @@ import { getSecret, secretKey } from "@/lib/storage/secret-store";
 import { getResponseSettings, LANGUAGES } from "@/lib";
 import {
   buildSelfEvolutionPromptBlock,
+  getUserStylePreferences,
   isSelfLearningEnabled,
   setSelfEvolutionStyleOverride,
   LANGUAGE_RULE,
 } from "../storage/user-facts";
-import { getStyleFromDbOrCache } from "../self-evolution-persist";
 import {
   resolveAnswerLength,
   SHORT_LENGTH_PROMPT,
@@ -41,7 +41,12 @@ import {
   getCachedSearchResults,
   parallelSearchStream,
 } from "./parallel-search";
-import { getRagContext, searchMemory } from "@/lib/rag";
+import {
+  getRagContext,
+  searchMemory,
+  type RagContext,
+  type MemoryHit,
+} from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { detectLanguage } from "@/lib/language-detect";
 import { getAIProviderVariables } from "@/lib/storage/ai-providers";
@@ -294,14 +299,42 @@ export async function buildEnhancedSystemPrompt(
       prompts.push("Start straight into the answer with no introductory phrase.");
     }
   }
-  // RAG context: resume and job description (fetched in parallel - they are
-  // independent DB reads, no reason to serialize them).
+  // RAG context + meeting memory: fetched concurrently in ONE Promise.all
   const resumeEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_RESUME_ENABLED) === "true";
   const jobEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_JOB_ENABLED) === "true";
+  const memoryEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_MEMORY_ENABLED) !== "false";
 
-  const [resumeCtx, jobCtx] = await Promise.all([
-    resumeEnabled ? getRagContext("resume") : Promise.resolve(null),
-    jobEnabled ? getRagContext("job") : Promise.resolve(null),
+  let resumePromise: Promise<RagContext | null> = Promise.resolve(null);
+  if (resumeEnabled) {
+    try {
+      resumePromise = Promise.resolve(getRagContext("resume")).catch(() => null);
+    } catch {
+      resumePromise = Promise.resolve(null);
+    }
+  }
+
+  let jobPromise: Promise<RagContext | null> = Promise.resolve(null);
+  if (jobEnabled) {
+    try {
+      jobPromise = Promise.resolve(getRagContext("job")).catch(() => null);
+    } catch {
+      jobPromise = Promise.resolve(null);
+    }
+  }
+
+  let memoryPromise: Promise<MemoryHit[]> = Promise.resolve([]);
+  if (memoryEnabled && userMessage?.trim()) {
+    try {
+      memoryPromise = Promise.resolve(searchMemory(userMessage, 3)).catch(() => []);
+    } catch {
+      memoryPromise = Promise.resolve([]);
+    }
+  }
+
+  const [resumeCtx, jobCtx, memoryHits] = await Promise.all([
+    resumePromise,
+    jobPromise,
+    memoryPromise,
   ]);
 
   if (resumeCtx?.content?.trim()) {
@@ -315,24 +348,16 @@ export async function buildEnhancedSystemPrompt(
       `[CONTEXT: JOB DESCRIPTION]\n${jobCtx.content.trim()}\n[/CONTEXT]`
     );
   }
-  // Meeting RAG memory context: searches past meetings for relevant context
-  const memoryEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_MEMORY_ENABLED) !== "false";
-  if (memoryEnabled && userMessage?.trim()) {
-    try {
-      const memoryHits = await searchMemory(userMessage, 3);
-      if (memoryHits && memoryHits.length > 0) {
-        const relevantHits = memoryHits.filter((h) => h.score > 0.05);
-        if (relevantHits.length > 0) {
-          const memoryBlock = relevantHits
-            .map((h) => `[MEETING CONVERSATION: ${h.conversationId}]\n${h.text}`)
-            .join("\n\n");
-          prompts.push(
-            `[CONTEXT: RELEVANT PAST MEETINGS]\n${memoryBlock}\n[/CONTEXT]`
-          );
-        }
-      }
-    } catch {
-      // Memory search failure must never fail prompt assembly
+
+  if (memoryHits && memoryHits.length > 0) {
+    const relevantHits = memoryHits.filter((h) => h.score >= 0.45);
+    if (relevantHits.length > 0) {
+      const memoryBlock = relevantHits
+        .map((h) => `[MEETING CONVERSATION: ${h.conversationId}]\n${h.text}`)
+        .join("\n\n");
+      prompts.push(
+        `[CONTEXT: RELEVANT PAST MEETINGS]\n${memoryBlock}\n[/CONTEXT]`
+      );
     }
   }
 
@@ -351,11 +376,11 @@ export async function buildEnhancedSystemPrompt(
   prompts.push(LANGUAGE_RULE);
 
   // Self-Evolution Memory & Personal Facts injection (gated by toggle):
-  // loads style truth from SQLite (with 400ms timeout / cache fallback).
+  // loads style truth synchronously from write-through localStorage cache (drops 400ms SQLite await).
   if (isSelfLearningEnabled()) {
     try {
-      const dbStyle = await getStyleFromDbOrCache();
-      setSelfEvolutionStyleOverride(dbStyle);
+      const cachedStyle = getUserStylePreferences();
+      setSelfEvolutionStyleOverride(cachedStyle);
     } catch {
       // getStyleFromDbOrCache is resilient and never throws
     }
