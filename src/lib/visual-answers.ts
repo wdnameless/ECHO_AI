@@ -6,8 +6,6 @@
 export const VISUAL_PROMPT_HINT =
   "VISUAL DIAGRAM RULE: When answering system design, architecture, flow, or sequence questions, include a clear Mermaid diagram enclosed in ```mermaid ... ``` code fences to visually illustrate the solution alongside the explanation. Never output empty or placeholder diagrams.";
 
-const ELIGIBLE_PROFILES_REGEX = /^(?:profile-)?(?:interview|livecode)$/i;
-
 const EN_VISUAL_PATTERN =
   /\b(?:system\s+design|architect(?:ure)?|diagram|flowchart|data\s*flow|workflow|sequence\s+diagram|component\s+diagram|erd|uml|state\s+machine|pipeline|topology|infrastructure|lifecycle|(?:draw|visualize|illustrate)\s+(?:a|an|the|me)?|(?:design\s+(?:a|an|the)?\s*(?!pattern\b)[\w-]+))\b/i;
 
@@ -22,9 +20,7 @@ export function shouldOfferVisual(profileId: string, question: string): boolean 
   if (!profileId || typeof profileId !== "string") return false;
   const normalizedId = profileId.trim().toLowerCase();
   const isEligibleProfile =
-    ELIGIBLE_PROFILES_REGEX.test(normalizedId) ||
-    normalizedId.includes("interview") ||
-    normalizedId.includes("livecode");
+    normalizedId.includes("interview") || normalizedId.includes("livecode");
 
   if (!isEligibleProfile) return false;
 

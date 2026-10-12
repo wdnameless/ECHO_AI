@@ -80,13 +80,7 @@ pub fn apply_stealth_to_window_with_mode<R: Runtime>(
         }
     }
 
-    if enabled {
-        let _ = window.set_skip_taskbar(true);
-    } else if !is_overlay {
-        let _ = window.set_skip_taskbar(false);
-    } else {
-        let _ = window.set_skip_taskbar(true);
-    }
+    let _ = window.set_skip_taskbar(enabled || is_overlay);
     let _ = window.set_content_protected(enabled);
 
     Ok(())

@@ -27,14 +27,11 @@ export interface StreamingSTTProvider {
 }
 
 const customRegistry = new Map<string, StreamingSTTProvider>();
-let defaultDeepgramProvider: DeepgramStreamingProvider | null = null;
-
-function getBuiltInDeepgram(): DeepgramStreamingProvider {
-  if (!defaultDeepgramProvider) {
-    defaultDeepgramProvider = new DeepgramStreamingProvider();
-  }
-  return defaultDeepgramProvider;
-}
+const builtInDeepgram = new DeepgramStreamingProvider();
+const staticProviders: Record<string, StreamingSTTProvider> = {
+  deepgram: builtInDeepgram,
+  "deepgram-stt": builtInDeepgram,
+};
 
 export function registerStreamingProvider(provider: StreamingSTTProvider): void {
   customRegistry.set(provider.id.toLowerCase(), provider);
@@ -44,30 +41,12 @@ export function unregisterStreamingProvider(id: string): void {
   customRegistry.delete(id.toLowerCase());
 }
 
-export function listStreamingProviders(): StreamingSTTProvider[] {
-  const list: StreamingSTTProvider[] = [getBuiltInDeepgram()];
-  for (const provider of customRegistry.values()) {
-    if (provider.id !== "deepgram-stt" && provider.id !== "deepgram") {
-      list.push(provider);
-    }
-  }
-  return list;
-}
-
 export function getStreamingProvider(id: string): StreamingSTTProvider | null {
   if (!id) return null;
   const key = id.toLowerCase();
-  const registered = customRegistry.get(key);
-  if (registered) return registered;
-
-  if (key === "deepgram" || key === "deepgram-stt") {
-    return getBuiltInDeepgram();
-  }
-
-  return null;
+  return customRegistry.get(key) ?? staticProviders[key] ?? null;
 }
 
 export function resetStreamingProvidersForTests(): void {
   customRegistry.clear();
-  defaultDeepgramProvider = null;
 }

@@ -1,15 +1,15 @@
 import { getAllConversations } from "./chat-history.action";
 import type { ChatConversation } from "@/types";
 
-function formatConversationMarkdown(conversation: ChatConversation): string {
+export function generateConversationMarkdown(conversation: ChatConversation): string {
   let md = `# ${conversation.title}\n\n`;
-  md += `**Created:** ${new Date(conversation.createdAt).toISOString()}\n`;
-  md += `**Updated:** ${new Date(conversation.updatedAt).toISOString()}\n`;
+  md += `**Created:** ${new Date(conversation.createdAt).toLocaleString()}\n`;
+  md += `**Updated:** ${new Date(conversation.updatedAt).toLocaleString()}\n`;
   md += `**Messages:** ${conversation.messages?.length ?? 0}\n\n---\n\n`;
 
   conversation.messages?.forEach((message) => {
     const role = (message.role || "unknown").toUpperCase();
-    md += `## ${role}\n\n${message.content}\n\n`;
+    md += `## ${role}: ${message.content}\n\n`;
   });
 
   return md.trim();
@@ -34,7 +34,7 @@ export async function exportHistory(
     });
   }
 
-  const markdown = target.map(formatConversationMarkdown).join("\n\n---\n\n");
+  const markdown = target.map(generateConversationMarkdown).join("\n\n---\n\n");
   return new Blob([markdown], {
     type: "text/markdown",
   });

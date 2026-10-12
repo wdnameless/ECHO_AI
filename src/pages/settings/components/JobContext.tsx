@@ -7,8 +7,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { STORAGE_KEYS } from "@/config/constants";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { getRagContext, setRagContext, deleteRagContext } from "@/lib/rag";
-import { extractPdfText } from "@/lib/pdf";
-import { extractDocxText } from "@/lib/docx";
+import { extractDocumentText } from "@/lib/document-text";
 
 export function JobContext() {
   const [enabled, setEnabled] = useState(false);
@@ -39,17 +38,7 @@ export function JobContext() {
     setFileError(null);
     setSaving(true);
     try {
-      const isPdf =
-        file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-      const isDocx =
-        file.type ===
-          "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-        file.name.toLowerCase().endsWith(".docx");
-      const text = isPdf
-        ? await extractPdfText(file)
-        : isDocx
-        ? await extractDocxText(file)
-        : await file.text();
+      const text = await extractDocumentText(file);
       if (!text.trim()) {
         setFileError("No text could be extracted from this file.");
         return;
