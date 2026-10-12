@@ -387,6 +387,43 @@ try {
     assert(resTruncated.status !== 0, 'validate-archive fails on truncated zip file');
   }
 
+  // Test 7: R17 Windows portable release workflow and documentation contract
+  console.log('\n[Case 7] Workflow release.yml integrity and distribution contract (R17)');
+  {
+    const workflowPath = join(process.cwd(), '.github/workflows/release.yml');
+    assert(existsSync(workflowPath), 'release.yml exists in repository');
+    const workflowContent = readFileSync(workflowPath, 'utf8');
+
+    // Validate YAML syntax via Python pyyaml
+    const yamlCheck = spawnSync('python', ['-c', 'import yaml; yaml.safe_load(open(".github/workflows/release.yml", encoding="utf-8"))'], { stdio: 'pipe' });
+    assert(yamlCheck.status === 0, 'release.yml is valid YAML');
+
+    // Verify workflow contract: portable steps, profile isolation, reuse of build outputs, MSI/NSIS untouched
+    assert(workflowContent.includes('Build portable archive'), 'Workflow includes portable archive build step');
+    assert(workflowContent.includes('Set-Content -Path (Join-Path $stage ".portable")'), 'Workflow creates .portable marker for profile isolation');
+    assert(workflowContent.includes('src-tauri/target/release'), 'Workflow reuses existing build outputs without recompiling');
+    assert(workflowContent.includes('tauri-apps/tauri-action@v0'), 'Workflow retains standard tauri-action for MSI/NSIS');
+    assert(workflowContent.includes('windows-x86_64-portable'), 'Workflow registers windows-x86_64-portable updater target');
+
+    // Dry-run simulation of packaging and validation from build output
+    const dryRunStage = join(tmpDir, 'dryrun-stage');
+    const dryRunZip = join(tmpDir, 'Echo.AI_1.2.34_portable_x64.zip');
+    const dryRunSig = join(tmpDir, 'Echo.AI_1.2.34_portable_x64.zip.sig');
+    writeFileSync(dryRunZip, createZip([
+      { name: 'Echo AI.exe', content: validExeContent },
+      { name: '.portable', content: 'portable' },
+    ]));
+    writeFileSync(dryRunSig, base64MinisignEnvelope);
+    const dryRunValidation = runCli(['validate-archive', dryRunZip, dryRunSig, 'Echo AI.exe']);
+    assert(dryRunValidation.status === 0, 'Dry-run portable archive and signature validation succeeds');
+
+    // Verify README documentation note for portable distribution
+    const readmePath = join(process.cwd(), 'README.md');
+    assert(existsSync(readmePath), 'README.md exists');
+    const readmeContent = readFileSync(readmePath, 'utf8');
+    assert(readmeContent.includes('### Windows Portable (без установки)'), 'README contains Windows Portable documentation section');
+  }
+
   console.log(`\nAll tests passed: ${passed}/${total}`);
 } finally {
   try {
