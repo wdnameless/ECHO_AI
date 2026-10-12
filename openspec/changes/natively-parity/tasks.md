@@ -41,9 +41,9 @@
 
 ## S6 — Дистрибуция
 Ветка: `feat/s6-distro` · Worktree: `../Pluely-s6-distro` · Тикеты: `s6-distro/tasks.md`
-- [ ] T6.1 Portable-артефакт Windows в release.yml (fixer)
-- [ ] T6.2 Проверка артефакта + дока (fixer)
-- [ ] T6.3 oracle слайса (артефакт собирается)
+- [x] T6.1 Portable-артефакт Windows в release.yml (fixer)
+- [x] T6.2 Проверка артефакта + дока (fixer)
+- [x] T6.3 oracle слайса (артефакт собирается)
 
 ## S7 — Интеграция
 На integration-ветке, после мержа всех слайсов.
