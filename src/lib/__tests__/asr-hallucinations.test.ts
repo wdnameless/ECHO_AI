@@ -62,6 +62,23 @@ describe("ASR boilerplate scrub", () => {
       expect(scrubAsrHallucinations(said)).toBe(said);
     }
   });
+  it("keeps legitimate speech mentioning color / 'фиолетово' intact", () => {
+    const said = "Мне фиолетово на этот фреймворк, главное архитектура";
+    expect(scrubAsrHallucinations(said)).toBe(said);
+  });
+
+  it("scrubs Russian YouTube boilerplate hallucinations", () => {
+    expect(scrubAsrHallucinations("Спасибо за просмотр")).toBe("");
+    expect(scrubAsrHallucinations("Подписывайтесь на канал")).toBe("");
+    expect(scrubAsrHallucinations("Ставьте лайки и подписывайтесь на канал")).toBe("");
+    expect(scrubAsrHallucinations("Не забудьте подписаться на канал")).toBe("");
+    expect(scrubAsrHallucinations("Жмите на колокольчик")).toBe("");
+    expect(scrubAsrHallucinations("Ссылка в описании")).toBe("");
+    expect(
+      scrubAsrHallucinations("Привет всем. Спасибо за просмотр! Продолжаем разговор.")
+    ).toBe("Привет всем. Продолжаем разговор.");
+  });
+
 
   it("scrubs purple-prose narration spliced into speech", () => {
     // Live case: EN audio "Shooting him" came back with a Russian narration

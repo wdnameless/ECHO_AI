@@ -161,6 +161,16 @@ const QUESTION_STARTERS_RU = [
   "правда ли",
   "в чем",
   "в чём",
+  "спроектируй",
+  "спроектируйте",
+  "разработай",
+  "разработайте",
+  "построй",
+  "постройте",
+  "реализуй",
+  "реализуйте",
+  "архитектура",
+  "дизайн",
 ];
 
 const QUESTION_STARTERS_EN = [
@@ -194,8 +204,12 @@ const QUESTION_STARTERS_EN = [
   "how do",
   "what is",
   "what are",
+  "design",
+  "architect",
+  "build",
+  "implement",
+  "create",
 ];
-
 /**
  * Normalizes text for filler checking by stripping punctuation and lowercasing.
  */
