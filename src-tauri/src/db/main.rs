@@ -23,6 +23,7 @@ struct NormalizedSqlStrings {
     m6: String,
     m7: String,
     m8: String,
+    m9: String,
 }
 
 static NORMALIZED_SQL: LazyLock<NormalizedSqlStrings> = LazyLock::new(|| NormalizedSqlStrings {
@@ -34,6 +35,7 @@ static NORMALIZED_SQL: LazyLock<NormalizedSqlStrings> = LazyLock::new(|| Normali
     m6: normalize_eol(include_str!("migrations/retention.sql")),
     m7: normalize_eol(include_str!("migrations/message-source.sql")),
     m8: normalize_eol(include_str!("migrations/monotonic-conversation-timestamp.sql")),
+    m9: normalize_eol(include_str!("migrations/rag-memory.sql")),
 });
 
 /// Returns all database migrations with guaranteed LF-normalized SQL content.
@@ -49,6 +51,7 @@ pub fn migrations() -> Vec<Migration> {
     let s6: &'static str = unsafe { &*(sql_store.m6.as_str() as *const str) };
     let s7: &'static str = unsafe { &*(sql_store.m7.as_str() as *const str) };
     let s8: &'static str = unsafe { &*(sql_store.m8.as_str() as *const str) };
+    let s9: &'static str = unsafe { &*(sql_store.m9.as_str() as *const str) };
     vec![
         // Migration 1: Create system_prompts table with indexes and triggers
         Migration {
@@ -104,6 +107,13 @@ pub fn migrations() -> Vec<Migration> {
             version: 8,
             description: "monotonic_conversation_timestamp",
             sql: s8,
+            kind: MigrationKind::Up,
+        },
+        // Migration 9: Meeting RAG memory chunks and vector search
+        Migration {
+            version: 9,
+            description: "create_rag_memory_tables",
+            sql: s9,
             kind: MigrationKind::Up,
         },
     ]
@@ -354,5 +364,19 @@ mod tests {
         // Inserting a newer message MUST advance updated_at
         add_msg("m-new", 9000);
         assert_eq!(get_updated(), 9000, "migration 8 advanced updated_at on newer message");
+    }
+
+    #[test]
+    fn test_migration_9_rag_memory() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let all = migrations();
+        // Execute migration 9
+        conn.execute_batch(all[8].sql).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='memory_chunks'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
     }
 }

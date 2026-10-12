@@ -23,6 +23,11 @@ export const STORAGE_KEYS = {
 
   RAG_RESUME_ENABLED: "rag_resume_enabled",
   RAG_JOB_ENABLED: "rag_job_enabled",
+  RAG_MEMORY_ENABLED: "rag_memory_enabled",
+  EMBEDDINGS_BACKEND: "embeddings_backend",
+  EMBEDDINGS_CLOUD_ENDPOINT: "embeddings_cloud_endpoint",
+  EMBEDDINGS_CLOUD_MODEL: "embeddings_cloud_model",
+  EMBEDDINGS_CLOUD_KEY: "embeddings_cloud_key",
   JOB_PROFILES: "job_profiles",
   ACTIVE_JOB_PROFILE_ID: "active_job_profile_id",
   TRUSTED_HOSTS: "trusted_hosts",

@@ -56,6 +56,8 @@ sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runti
 tauri-plugin-posthog = "0.2.4"
 tauri-plugin-machine-uid = "0.1.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
+sqlite-vec = "0.1.6"
+bytemuck = "1.23.2"
 sha2 = "0.10"
 log = "0.4"
 dirs = "6"

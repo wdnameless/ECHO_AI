@@ -40,7 +40,7 @@ import {
   cacheSearchResults,
   getCachedSearchResults,
 } from "./parallel-search";
-import { getRagContext } from "@/lib/rag";
+import { getRagContext, searchMemory } from "@/lib/rag";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { detectLanguage } from "@/lib/language-detect";
 import { getAIProviderVariables } from "@/lib/storage/ai-providers";
@@ -313,6 +313,26 @@ export async function buildEnhancedSystemPrompt(
     prompts.push(
       `[CONTEXT: JOB DESCRIPTION]\n${jobCtx.content.trim()}\n[/CONTEXT]`
     );
+  }
+  // Meeting RAG memory context: searches past meetings for relevant context
+  const memoryEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_MEMORY_ENABLED) !== "false";
+  if (memoryEnabled && userMessage?.trim()) {
+    try {
+      const memoryHits = await searchMemory(userMessage, 3);
+      if (memoryHits && memoryHits.length > 0) {
+        const relevantHits = memoryHits.filter((h) => h.score > 0.05);
+        if (relevantHits.length > 0) {
+          const memoryBlock = relevantHits
+            .map((h) => `[MEETING CONVERSATION: ${h.conversationId}]\n${h.text}`)
+            .join("\n\n");
+          prompts.push(
+            `[CONTEXT: RELEVANT PAST MEETINGS]\n${memoryBlock}\n[/CONTEXT]`
+          );
+        }
+      }
+    } catch {
+      // Memory search failure must never fail prompt assembly
+    }
   }
 
   const detected = detectLanguage(userMessage || "");
