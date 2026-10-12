@@ -21,6 +21,13 @@ let lastLengthSwitch: "concise" | "detailed" | null = null;
 let lengthSwitchCount = 0;
 
 let activeSuggestions: Map<string, BehaviorSuggestion> = new Map();
+export const BEHAVIOR_SUGGESTION_EVENT = "behavior-suggestion-changed";
+
+function notifySuggestionsChanged(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(BEHAVIOR_SUGGESTION_EVENT));
+  }
+}
 
 /**
  * Observes a manual user action to shorten an answer.
@@ -38,6 +45,7 @@ export function observeShorten(): BehaviorSuggestion | null {
       at: Date.now(),
     };
     activeSuggestions.set(suggestion.id, suggestion);
+    notifySuggestionsChanged();
     return suggestion;
   }
   return null;
@@ -69,6 +77,7 @@ export function observeLengthSwitch(
       at: Date.now(),
     };
     activeSuggestions.set(suggestion.id, suggestion);
+    notifySuggestionsChanged();
     return suggestion;
   }
   return null;
@@ -90,6 +99,7 @@ export function observeElaborate(): BehaviorSuggestion | null {
       at: Date.now(),
     };
     activeSuggestions.set(suggestion.id, suggestion);
+    notifySuggestionsChanged();
     return suggestion;
   }
   return null;
@@ -100,6 +110,7 @@ export function observeElaborate(): BehaviorSuggestion | null {
  */
 export function dismissSuggestion(id: string): void {
   activeSuggestions.delete(id);
+  notifySuggestionsChanged();
 }
 
 /**
@@ -122,6 +133,7 @@ export function confirmSuggestion(id: string): SmartRule | null {
   saveSmartRule(rule);
 
   activeSuggestions.delete(id);
+  notifySuggestionsChanged();
   return rule;
 }
 
@@ -134,4 +146,5 @@ export function resetBehaviorWatch(): void {
   lastLengthSwitch = null;
   lengthSwitchCount = 0;
   activeSuggestions.clear();
+  notifySuggestionsChanged();
 }

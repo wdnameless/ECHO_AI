@@ -42,6 +42,15 @@ import {
   extractRuleCandidate,
   refineRuleCandidate,
 } from "@/lib/rule-extract";
+import {
+  BEHAVIOR_SUGGESTION_EVENT,
+  confirmSuggestion,
+  dismissSuggestion,
+  getActiveSuggestions,
+  observeElaborate,
+  observeShorten,
+  type BehaviorSuggestion,
+} from "@/lib/behavior-watch";
 import { SelfLearningToggle } from "@/components/SelfLearningToggle";
 import { splitCodeAnswer } from "@/lib/code-answer";
 import { HoverTranslate } from "@/lib/hover-translate";
@@ -1043,6 +1052,33 @@ export const SubtitleFeed = ({
   const [smartRules, setSmartRules] = useState<SmartRule[]>(() =>
     getSmartRules()
   );
+  const [behaviorSuggestions, setBehaviorSuggestions] = useState<
+    BehaviorSuggestion[]
+  >(() => getActiveSuggestions());
+
+  useEffect(() => {
+    const syncSuggestions = () =>
+      setBehaviorSuggestions(getActiveSuggestions());
+    window.addEventListener(BEHAVIOR_SUGGESTION_EVENT, syncSuggestions);
+    return () =>
+      window.removeEventListener(BEHAVIOR_SUGGESTION_EVENT, syncSuggestions);
+  }, []);
+
+  const handleConfirmSuggestion = useCallback((id: string) => {
+    const rule = confirmSuggestion(id);
+    setBehaviorSuggestions(getActiveSuggestions());
+    if (rule) {
+      setSmartRules(getSmartRules());
+      setEvoStats(getSelfEvolutionStats());
+      setEvolutionNote("Правило сохранено");
+      setTimeout(() => setEvolutionNote(null), 4000);
+    }
+  }, []);
+
+  const handleDismissSuggestion = useCallback((id: string) => {
+    dismissSuggestion(id);
+    setBehaviorSuggestions(getActiveSuggestions());
+  }, []);
 
   const handleOpenBrainChange = useCallback((open: boolean) => {
     setShowBrain(open);
@@ -1368,6 +1404,8 @@ export const SubtitleFeed = ({
       setHeldCount(0);
       onTogglePause();
     }
+    observeElaborate();
+    setBehaviorSuggestions(getActiveSuggestions());
     onDeepen?.();
   }, [paused, onTogglePause, onDeepen]);
 
@@ -1427,7 +1465,15 @@ export const SubtitleFeed = ({
       const question = questionContextFor(
         entries.findIndex((e) => e.id === entryId)
       );
-      recordFeedback(question, answer, rating, reason);
+      const fbEntry = recordFeedback(question, answer, rating, reason);
+      if (!fbEntry && rating === "dislike" && reason) {
+        if (/длин|вода|лишн|короче|сократ/i.test(reason)) {
+          observeShorten();
+        } else if (/коротк|детал|подробн/i.test(reason)) {
+          observeElaborate();
+        }
+      }
+      setBehaviorSuggestions(getActiveSuggestions());
       setFeedbackGiven((prev) => ({ ...prev, [entryId]: rating }));
       setDislikeMenuFor(null);
       setCustomReason("");
@@ -1790,6 +1836,35 @@ export const SubtitleFeed = ({
           {evolutionNote !== "Самообучение выключено" && " — подход изменён для следующего ответа"}
         </div>
       )}
+
+      {/* Behavior watch rule suggestions (R07) */}
+      {behaviorSuggestions.map((s) => (
+        <div
+          key={s.id}
+          data-testid={`behavior-suggestion-${s.id}`}
+          className="flex items-center justify-between gap-2 px-2 py-1 border-b border-violet-500/30 bg-violet-500/10 text-[0.65em] text-violet-800 dark:text-violet-200 shrink-0 animate-in fade-in"
+        >
+          <span className="truncate">
+            Предложить правило «{s.ruleText}?» ({s.reason})
+          </span>
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onClick={() => handleConfirmSuggestion(s.id)}
+              className="px-1.5 py-0.5 rounded bg-violet-600 text-white hover:bg-violet-700 font-medium"
+            >
+              Да
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDismissSuggestion(s.id)}
+              className="px-1.5 py-0.5 rounded border border-violet-500/40 hover:bg-violet-500/20 font-medium"
+            >
+              Нет
+            </button>
+          </div>
+        </div>
+      ))}
 
       {/* Column headers (only when translation is on) */}
       {translationsOn && (

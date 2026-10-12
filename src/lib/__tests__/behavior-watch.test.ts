@@ -9,6 +9,8 @@ import {
   resetBehaviorWatch,
 } from "../behavior-watch";
 import { getSmartRules } from "../storage/smart-rules";
+import { setAnswerLengthOverride } from "../answer-length-override";
+import { recordFeedback, setSelfLearningEnabled } from "../storage/user-facts";
 
 describe("F3 T3 (R07): Behavior Watch", () => {
   beforeEach(() => {
@@ -115,6 +117,44 @@ describe("F3 T3 (R07): Behavior Watch", () => {
       expect(suggestion).not.toBeNull();
       expect(suggestion?.ruleText).toMatch(/подробн/i);
       expect(getSmartRules()).toHaveLength(0);
+    });
+  });
+
+  describe("Real handler wiring (P1-2)", () => {
+    it("wires setAnswerLengthOverride('short' / 'long') to observeLengthSwitch", () => {
+      setAnswerLengthOverride("short");
+      setAnswerLengthOverride("short");
+      expect(getActiveSuggestions()).toHaveLength(0);
+
+      setAnswerLengthOverride("short");
+      const suggestions = getActiveSuggestions();
+      expect(suggestions).toHaveLength(1);
+      expect(suggestions[0].ruleText).toBe("отвечать кратко");
+
+      resetBehaviorWatch();
+      setAnswerLengthOverride("long");
+      setAnswerLengthOverride("long");
+      setAnswerLengthOverride("long");
+      expect(getActiveSuggestions()).toHaveLength(1);
+      expect(getActiveSuggestions()[0].ruleText).toBe("отвечать подробно");
+    });
+
+    it("wires recordFeedback shorten and elaborate dislikes to observeShorten / observeElaborate", () => {
+      setSelfLearningEnabled(true);
+      recordFeedback("Q1", "A1", "dislike", "Слишком длинно / много воды");
+      recordFeedback("Q2", "A2", "dislike", "Слишком длинно / много воды");
+      expect(getActiveSuggestions()).toHaveLength(0);
+
+      recordFeedback("Q3", "A3", "dislike", "Слишком длинно / много воды");
+      expect(getActiveSuggestions()).toHaveLength(1);
+      expect(getActiveSuggestions()[0].ruleText).toBe("отвечать короче");
+
+      resetBehaviorWatch();
+      recordFeedback("Q1", "A1", "dislike", "Слишком коротко, не хватает деталей");
+      recordFeedback("Q2", "A2", "dislike", "Слишком коротко, не хватает деталей");
+      recordFeedback("Q3", "A3", "dislike", "Слишком коротко, не хватает деталей");
+      expect(getActiveSuggestions()).toHaveLength(1);
+      expect(getActiveSuggestions()[0].ruleText).toBe("отвечать подробнее");
     });
   });
 });

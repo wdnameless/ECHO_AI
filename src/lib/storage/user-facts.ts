@@ -5,8 +5,10 @@ import {
   migrateLegacyRules,
   createDefaultSmartRule,
   SMART_RULES_STORAGE_KEY,
+  SMART_RULES_MIGRATED_KEY,
   type SmartRule,
 } from "./smart-rules";
+import { observeShorten, observeElaborate } from "@/lib/behavior-watch";
 import {
   mirrorFeedback,
   mirrorStyle,
@@ -271,8 +273,11 @@ export function recordFeedback(
 
     // Dynamic approach change driven by the specific complaint: each type of
     // dislike mutates a DIFFERENT part of the style profile immediately.
-    if (/длин/i.test(reasonText)) {
+    if (/длин|вода|лишн|короче|сократ/i.test(reasonText)) {
       style.preferredLength = "concise";
+      observeShorten();
+    } else if (/коротк|детал|подробн/i.test(reasonText)) {
+      observeElaborate();
     }
     if (/сухо|робот|безличн/i.test(reasonText)) {
       style.tone =
@@ -281,9 +286,6 @@ export function recordFeedback(
     if (/сложн|академ|жаргон|умн/i.test(reasonText)) {
       style.tone =
         "простой и понятный: объясняй так, чтобы понял человек вне этой темы; бытовой язык вместо терминов";
-    }
-    if (/вода|лишн/i.test(reasonText)) {
-      style.preferredLength = "concise";
     }
     if (/вводн/i.test(reasonText)) {
       const rule =
@@ -503,6 +505,7 @@ export async function resetLearning(): Promise<void> {
   safeLocalStorage.removeItem(USER_RULE_SOURCES_STORAGE_KEY);
   safeLocalStorage.removeItem(USER_SPEECH_LOG_STORAGE_KEY);
   safeLocalStorage.removeItem(SMART_RULES_STORAGE_KEY);
+  safeLocalStorage.removeItem(SMART_RULES_MIGRATED_KEY);
   setSelfEvolutionStyleOverride(null);
   try {
     await resetSelfEvolutionDb();
@@ -535,13 +538,16 @@ export function buildSelfEvolutionPromptBlock(
   if (!isSelfLearningEnabled()) {
     return "";
   }
-  migrateLegacyRules();
-
 
   const customMd = safeLocalStorage.getItem(USER_MARKDOWN_STORAGE_KEY);
   if (customMd && customMd.trim()) {
     return `[SELF-EVOLUTION PROFILE (USER.md)]\n${customMd.trim()}\n[/SELF-EVOLUTION PROFILE]`;
   }
+
+  const smartRules = getSmartRules(false);
+  const sortedRules = [...smartRules].sort((a, b) => b.weight - a.weight);
+  const hasSmartStore =
+    safeLocalStorage.getItem(SMART_RULES_STORAGE_KEY) !== null;
 
   const style =
     styleOverride ?? oneShotStyleOverride ?? getUserStylePreferences();
@@ -553,8 +559,7 @@ export function buildSelfEvolutionPromptBlock(
   const likesCount = logs.filter((l) => l.rating === "like").length;
   const dislikesCount = logs.filter((l) => l.rating === "dislike").length;
 
-  const smartRules = getSmartRules(false);
-  const sortedRules = [...smartRules].sort((a, b) => b.weight - a.weight);
+  const fallbackCustomRules = hasSmartStore ? [] : style.customRules;
 
   const hasHistory =
     facts.length > 0 ||
@@ -562,7 +567,7 @@ export function buildSelfEvolutionPromptBlock(
     style.favoritePatterns.length > 0 ||
     style.avoidPatterns.length > 0 ||
     sortedRules.length > 0 ||
-    style.customRules.length > 0 ||
+    fallbackCustomRules.length > 0 ||
     speechStyle.fillers.length > 0;
 
   if (!hasHistory) {
@@ -581,7 +586,7 @@ export function buildSelfEvolutionPromptBlock(
   const customLines = (
     sortedRules.length > 0
       ? sortedRules.slice(0, 6).map((r) => `- Личное правило: ${r.text}`)
-      : style.customRules.slice(0, 6).map((r) => `- Личное правило: ${r}`)
+      : fallbackCustomRules.slice(0, 6).map((r) => `- Личное правило: ${r}`)
   ).join("\n");
 
   const sections: string[] = [

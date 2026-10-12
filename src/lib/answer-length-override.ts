@@ -1,5 +1,6 @@
 import { safeLocalStorage } from "./storage/helper";
 import type { AnswerLengthOverride } from "./answer-length";
+import { observeLengthSwitch } from "./behavior-watch";
 
 const KEY = "answer_length_override";
 
@@ -11,4 +12,9 @@ export function getAnswerLengthOverride(): AnswerLengthOverride {
 
 export function setAnswerLengthOverride(v: AnswerLengthOverride): void {
   safeLocalStorage.setItem(KEY, v);
+  if (v === "short") {
+    observeLengthSwitch("concise");
+  } else if (v === "long") {
+    observeLengthSwitch("detailed");
+  }
 }

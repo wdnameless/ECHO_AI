@@ -224,52 +224,9 @@ const IMPERATIVE_TO_INFINITIVE: Record<string, string> = {
   опирайтесь: "опираться",
 };
 
-const NON_VERB_AI_NOUNS: Record<string, true> = {
-  случай: true,
-  край: true,
-  май: true,
-  чай: true,
-  рай: true,
-  урожай: true,
-  обычай: true,
-  трамвай: true,
-  попугай: true,
-  сарай: true,
-};
-
 function normalizeVerbToken(word: string): string {
   const lower = word.toLowerCase().replace(/ё/g, "е");
-  const mapped = IMPERATIVE_TO_INFINITIVE[lower];
-  if (mapped) return mapped;
-
-  if (lower.length >= 6) {
-    if (/(?:уйся|уйтесь)$/u.test(lower)) {
-      return lower.replace(/(?:уйся|уйтесь)$/u, "оваться");
-    }
-    if (/(?:юйся|юйтесь)$/u.test(lower)) {
-      return lower.replace(/(?:юйся|юйтесь)$/u, "еваться");
-    }
-    if (/(?:айся|айтесь)$/u.test(lower)) {
-      return lower.replace(/(?:айся|айтесь)$/u, "аться");
-    }
-    if (/(?:яйся|яйтесь)$/u.test(lower)) {
-      return lower.replace(/(?:яйся|яйтесь)$/u, "яться");
-    }
-  }
-
-  if (lower.length >= 5 && !NON_VERB_AI_NOUNS[lower]) {
-    if (/(?:уй|уйте)$/u.test(lower)) {
-      return lower.replace(/(?:уй|уйте)$/u, "овать");
-    }
-    if (/(?:ай|айте)$/u.test(lower)) {
-      return lower.replace(/(?:ай|айте)$/u, "ать");
-    }
-    if (/(?:яй|яйте)$/u.test(lower)) {
-      return lower.replace(/(?:яй|яйте)$/u, "ять");
-    }
-  }
-
-  return word;
+  return IMPERATIVE_TO_INFINITIVE[lower] ?? word;
 }
 
 const TRAILING_DANGLING_WORDS: Record<string, true> = {

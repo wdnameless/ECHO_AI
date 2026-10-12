@@ -48,6 +48,12 @@ describe("rule-extract (F1 T1 / R01-R02)", () => {
       expect(extractRuleCandidate("   ")).toBe("");
       expect(extractRuleCandidate("Ну, эээ, короче, слушай, типа...")).toBe("");
     });
+
+    it("keeps non-verb -ай words (китай, дубай, вайфай) intact without suffix corruption", () => {
+      const input = "Ну, расскажи про китай, дубай и вайфай";
+      const result = extractRuleCandidate(input);
+      expect(result).toBe("рассказать про китай, дубай и вайфай");
+    });
   });
 
   describe("refineRuleCandidate (async LLM background refine, R02)", () => {

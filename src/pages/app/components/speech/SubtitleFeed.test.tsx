@@ -5,6 +5,7 @@ import type { ChatConversation } from "@/hooks/useSystemAudio";
 import { isSelfLearningEnabled, recordFeedback, addUserRule } from "@/lib/storage/user-facts";
 import { saveSmartRule, getSmartRules, type SmartRule } from "@/lib/storage/smart-rules";
 import { refineRuleCandidate } from "@/lib/rule-extract";
+import { resetBehaviorWatch } from "@/lib/behavior-watch";
 const invokeMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock, Channel: class {} }));
 
@@ -798,5 +799,57 @@ describe("T2: SubtitleFeed self-learning feedback gate and toast", () => {
     // Verify rule is deleted from storage and disappears from UI
     expect(getSmartRules()).toHaveLength(0);
     expect(screen.queryByText(/отвечай прямо на одном примере/i)).not.toBeInTheDocument();
+  });
+
+  it("R07: wires deepen/shorten handlers to behavior-watch and surfaces suggestion in UI with confirm and dismiss", () => {
+    localStorage.clear();
+    resetBehaviorWatch();
+    const onDeepen = vi.fn();
+
+    render(
+      <SubtitleFeed
+        conversation={mockConversation}
+        liveSegments={[]}
+        lastAIResponse=""
+        isAIProcessing={false}
+        theirLastTranscription=""
+        micSpeaking={false}
+        handyOnline={true}
+        handyModel="base"
+        onDeepen={onDeepen}
+        feedPaused={false}
+        onTogglePause={vi.fn()}
+      />
+    );
+
+    const deepenBtn = screen.getByRole("button", { name: /Углубить тему/i });
+    fireEvent.click(deepenBtn);
+    fireEvent.click(deepenBtn);
+    expect(screen.queryByText(/отвечать подробнее/i)).not.toBeInTheDocument();
+
+    // 3rd click triggers observeElaborate and surfaces suggestion banner
+    fireEvent.click(deepenBtn);
+    expect(onDeepen).toHaveBeenCalledTimes(3);
+    expect(screen.getByText(/отвечать подробнее/i)).toBeInTheDocument();
+
+    // Confirm suggestion persists rule
+    fireEvent.click(screen.getByRole("button", { name: /^Да$/i }));
+    expect(saveSmartRule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "отвечать подробнее",
+      })
+    );
+    expect(screen.queryByText(/отвечать подробнее/i)).not.toBeInTheDocument();
+
+    // Trigger again and test dismiss
+    fireEvent.click(deepenBtn);
+    fireEvent.click(deepenBtn);
+    fireEvent.click(deepenBtn);
+    expect(screen.getByText(/отвечать подробнее/i)).toBeInTheDocument();
+
+    vi.mocked(saveSmartRule).mockClear();
+    fireEvent.click(screen.getByRole("button", { name: /^Нет$/i }));
+    expect(saveSmartRule).not.toHaveBeenCalled();
+    expect(screen.queryByText(/отвечать подробнее/i)).not.toBeInTheDocument();
   });
 });

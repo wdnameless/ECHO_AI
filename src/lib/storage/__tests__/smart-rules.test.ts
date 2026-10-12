@@ -378,4 +378,36 @@ describe("SmartRule storage & lifecycle (F2 T2 / R03-R06)", () => {
       expect(getUserStylePreferences().customRules).toContain("отвечай кратко и емко");
     });
   });
+
+    it("zombie-kill: deleting a migrated or added rule keeps it deleted after buildSelfEvolutionPromptBlock rebuild", () => {
+      setSelfLearningEnabled(true);
+      const style = getUserStylePreferences();
+      style.customRules = ["зомби правило из легаси", "второе правило"];
+      saveUserStylePreferences(style);
+
+      // Initial migration brings both rules in
+      const initial = getSmartRules();
+      expect(initial).toHaveLength(2);
+      const zombie = initial.find((r) => r.text === "зомби правило из легаси")!;
+      expect(zombie).toBeDefined();
+
+      // Delete the rule
+      deleteSmartRule(zombie.id);
+      expect(getSmartRules().map((r) => r.text)).toEqual(["второе правило"]);
+      expect(getUserStylePreferences().customRules).not.toContain(
+        "зомби правило из легаси"
+      );
+
+      // Rebuild prompt block — must NOT resurrect deleted rule
+      const promptBlock = buildSelfEvolutionPromptBlock();
+      expect(promptBlock).toContain("второе правило");
+      expect(promptBlock).not.toContain("зомби правило из легаси");
+      expect(getSmartRules().map((r) => r.text)).toEqual(["второе правило"]);
+
+      // Delete the remaining rule as well — prompt block must not fall back to stale customRules
+      const second = getSmartRules()[0];
+      deleteSmartRule(second.id);
+      expect(getSmartRules()).toHaveLength(0);
+      expect(buildSelfEvolutionPromptBlock()).not.toContain("второе правило");
+    });
 });

@@ -25,6 +25,7 @@ export interface SmartRule {
 }
 
 export const SMART_RULES_STORAGE_KEY = "user_memory_smart_rules";
+export const SMART_RULES_MIGRATED_KEY = "user_memory_smart_rules_migrated";
 const LEGACY_STYLE_KEY = "user_memory_style";
 const LEGACY_RULE_SOURCES_KEY = "user_memory_rule_sources";
 
@@ -68,7 +69,7 @@ function saveSmartRulesRaw(rules: SmartRule[]): void {
 }
 
 export function getSmartRules(includeArchived = false): SmartRule[] {
-  if (safeLocalStorage.getItem(SMART_RULES_STORAGE_KEY) === null) {
+  if (safeLocalStorage.getItem(SMART_RULES_MIGRATED_KEY) !== "1") {
     migrateLegacyRules();
   }
   const rules = getSmartRulesRaw();
@@ -110,8 +111,31 @@ export function archiveSmartRule(id: string): void {
 }
 
 export function deleteSmartRule(id: string): void {
-  const rules = getSmartRulesRaw().filter((r) => r.id !== id);
+  const allRules = getSmartRulesRaw();
+  const deleted = allRules.filter((r) => r.id === id);
+  const rules = allRules.filter((r) => r.id !== id);
   saveSmartRulesRaw(rules);
+
+  if (deleted.length > 0) {
+    const legacyStyleRaw = safeLocalStorage.getItem(LEGACY_STYLE_KEY);
+    if (legacyStyleRaw) {
+      try {
+        const parsed = JSON.parse(legacyStyleRaw);
+        if (Array.isArray(parsed?.customRules)) {
+          parsed.customRules = parsed.customRules.filter(
+            (r: unknown) =>
+              typeof r !== "string" ||
+              !deleted.some(
+                (d) => d.text.trim().toLowerCase() === r.trim().toLowerCase()
+              )
+          );
+          safeLocalStorage.setItem(LEGACY_STYLE_KEY, JSON.stringify(parsed));
+        }
+      } catch {
+        /* ignore malformed legacy style */
+      }
+    }
+  }
 }
 
 export function recordRuleHit(id: string): void {
@@ -301,6 +325,10 @@ export function runRuleMaintenance(now: number = Date.now()): string[] {
 }
 
 export function migrateLegacyRules(): number {
+  if (safeLocalStorage.getItem(SMART_RULES_MIGRATED_KEY) === "1") {
+    return 0;
+  }
+
   const legacyStyleRaw = safeLocalStorage.getItem(LEGACY_STYLE_KEY);
   if (!legacyStyleRaw) {
     if (safeLocalStorage.getItem(SMART_RULES_STORAGE_KEY) === null) {
@@ -353,9 +381,8 @@ export function migrateLegacyRules(): number {
     migrated++;
   }
 
-  if (migrated > 0 || safeLocalStorage.getItem(SMART_RULES_STORAGE_KEY) === null) {
-    saveSmartRulesRaw(currentRules);
-  }
+  saveSmartRulesRaw(currentRules);
+  safeLocalStorage.setItem(SMART_RULES_MIGRATED_KEY, "1");
 
   return migrated;
 }
