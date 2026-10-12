@@ -11,6 +11,7 @@
  * - Pre-flight trusted-host check before sending key or audio (R08).
  */
 
+import { invoke, Channel } from "@tauri-apps/api/core";
 import type {
   StreamingSTTProvider,
   StreamingSTTSession,
@@ -75,6 +76,8 @@ export class DeepgramStreamingSession implements StreamingSTTSession {
   private reconnectTimer: NodeJS.Timeout | number | null = null;
   private reconnectAttempts = 0;
   private isClosed = false;
+  private streamId = `deepgram-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  private isTauriBridge = false;
 
   constructor(private readonly opts: StreamingSTTOptions) {
     const targetUrl = this.opts.endpoint || DEFAULT_DEEPGRAM_ENDPOINT;
@@ -107,9 +110,56 @@ export class DeepgramStreamingSession implements StreamingSTTSession {
     if (this.isClosed) return;
 
     const fullUrl = this.buildSocketUrl(endpoint);
+    const isTauri =
+      typeof window !== "undefined" &&
+      ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+
+    if (isTauri) {
+      this.isTauriBridge = true;
+      const channel = new Channel<string>();
+      channel.onmessage = (msg: string) => {
+        if (this.isClosed) return;
+        const parsed = parseDeepgramTranscript(msg);
+        if (parsed) {
+          this.opts.onTranscript(parsed.transcript, parsed.isFinal);
+        }
+      };
+
+      invoke("stt_stream_connect", {
+        streamId: this.streamId,
+        url: fullUrl,
+        onEvent: channel,
+      }).then(() => {
+        if (this.isClosed) {
+          void invoke("stt_stream_close", { streamId: this.streamId });
+          return;
+        }
+        this.reconnectAttempts = 0;
+        while (this.buffer.length > 0) {
+          const frame = this.buffer.shift();
+          if (frame) {
+            void invoke("stt_stream_send", {
+              streamId: this.streamId,
+              pcmBytes: Array.from(new Uint8Array(frame)),
+            });
+          }
+        }
+      }).catch((err: unknown) => {
+        if (this.isClosed) return;
+        if (err instanceof Error) {
+          this.opts.onError?.(err);
+        } else if (typeof err === "string") {
+          this.opts.onError?.(new Error(err));
+        }
+        this.scheduleReconnect(endpoint);
+      });
+      return;
+    }
+
     let socket: WebSocket;
     try {
-      socket = new WebSocket(fullUrl, ["token", this.opts.apiKey]);
+      // P2: Drop apiKey from WS subprotocols (query token only)
+      socket = new WebSocket(fullUrl);
     } catch (err) {
       if (err instanceof Error) {
         this.opts.onError?.(err);
@@ -192,6 +242,14 @@ export class DeepgramStreamingSession implements StreamingSTTSession {
       pcm16.byteOffset + pcm16.byteLength
     );
 
+    if (this.isTauriBridge) {
+      void invoke("stt_stream_send", {
+        streamId: this.streamId,
+        pcmBytes: Array.from(new Uint8Array(buffer)),
+      });
+      return;
+    }
+
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         this.ws.send(buffer);
@@ -213,6 +271,9 @@ export class DeepgramStreamingSession implements StreamingSTTSession {
       this.reconnectTimer = null;
     }
     this.buffer.length = 0;
+    if (this.isTauriBridge) {
+      void invoke("stt_stream_close", { streamId: this.streamId });
+    }
     if (this.ws) {
       const active = this.ws;
       this.ws = null;

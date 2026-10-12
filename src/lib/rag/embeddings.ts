@@ -87,9 +87,9 @@ export class CloudEmbeddingProvider implements EmbeddingProvider {
   constructor(
     private endpoint: string = "https://api.openai.com/v1/embeddings",
     private apiKey?: string,
-    private model: string = "text-embedding-3-small"
+    private model: string = "text-embedding-3-small",
+    private fetchImpl?: typeof fetch
   ) {}
-
   async embed(texts: string[]): Promise<Float32Array[]> {
     if (!this.apiKey) {
       throw new Error("Cloud embeddings require an API key");
@@ -101,7 +101,24 @@ export class CloudEmbeddingProvider implements EmbeddingProvider {
       throw new Error(`Untrusted host for embeddings: ${this.endpoint}`);
     }
 
-    const response = await fetch(this.endpoint, {
+    let doFetch = this.fetchImpl;
+    if (!doFetch) {
+      if (
+        typeof window !== "undefined" &&
+        ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
+      ) {
+        try {
+          const { fetch: tauriFetch } = await import("@tauri-apps/plugin-http");
+          doFetch = tauriFetch;
+        } catch {
+          doFetch = globalThis.fetch;
+        }
+      } else {
+        doFetch = globalThis.fetch;
+      }
+    }
+
+    const response = await doFetch(this.endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

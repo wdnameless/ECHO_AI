@@ -1,3 +1,4 @@
+import { indexTranscript } from "../rag/memory-index";
 import { getDatabase } from "./config";
 import { ChatConversation } from "@/types";
 import { safeLocalStorage } from "@/lib";
@@ -414,11 +415,25 @@ export async function saveConversation(
   try {
     const existing = await getConversationById(conversation.id);
 
-    if (existing) {
-      return await updateConversation(conversation);
-    } else {
-      return await createConversation(conversation);
+    const result = existing
+      ? await updateConversation(conversation)
+      : await createConversation(conversation);
+
+    try {
+      const segments = (conversation.messages || [])
+        .filter((m) => m && typeof m.content === "string" && m.content.trim().length > 0)
+        .map((m) => ({
+          text: m.content,
+          ts: m.timestamp || conversation.updatedAt || Date.now(),
+        }));
+      if (segments.length > 0) {
+        await indexTranscript(conversation.id, segments);
+      }
+    } catch (indexErr) {
+      console.warn("Failed to index transcript for RAG memory:", indexErr);
     }
+
+    return result;
   } catch (error) {
     console.error("Failed to save conversation:", error);
     throw error;
