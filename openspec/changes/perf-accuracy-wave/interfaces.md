@@ -3,7 +3,7 @@
 Границы и зоны владения. Сигнатуры существующих функций НЕ меняются (внутренние
 оптимизации); новые экспорты только там, где нужны тестам.
 
-## F1 — поиск-параллель (P01)
+## F1 — поиск-параллель (R01)
 
 ```ts
 // src/lib/functions/parallel-search.ts — уже есть, подключить:
@@ -16,7 +16,7 @@
 | `src/lib/functions/ai-response.function.ts` (блок ~887) | F1, затем F3 (другой участок ~328) |
 | `src/lib/functions/parallel-search.ts` | F1 |
 
-## F2 — ассемблер (P02, P09)
+## F2 — ассемблер (R02, R09)
 
 ```ts
 // src/lib/question-assembler.ts — внутренняя логика:
@@ -29,7 +29,7 @@
 | `src/lib/question-assembler.ts` | F2 |
 | `src/hooks/useQuestionPipeline.ts` (только если нужны константы) | F2 read-mostly |
 
-## F3 — промпт (P03, P13)
+## F3 — промпт (R03, R13)
 
 ```ts
 // src/lib/functions/ai-response.function.ts:328 — единый Promise.all
@@ -41,7 +41,7 @@
 | `src/lib/functions/ai-response.function.ts` (блок ~328) | F3, после F1 |
 | `src/lib/self-evolution-persist.ts` (синхронное чтение кэша) | F3 |
 
-## F4 — ASR-слоты (P04, P06)
+## F4 — ASR-слоты (R04, R06)
 
 ```ts
 // src/lib/asr-discovery.ts — позитивный кэш base URL:
@@ -56,7 +56,7 @@
 | `src/hooks/useThemWsStreaming.ts` | F4 |
 | `src/hooks/useMicWsStreaming.ts` | F4 |
 
-## F5 — Rust/VAD (P05, P07, P10)
+## F5 — Rust/VAD (R05, R07, R10)
 
 ```rust
 // src-tauri/src/speaker/commands.rs:
@@ -69,7 +69,7 @@
 | `src-tauri/src/speaker/commands.rs` | F5 |
 | `src/hooks/useSystemAudioCapture.ts` (только safety-таймер) | F5 |
 
-## F6 — фильтры (P08, P11, P12, P14)
+## F6 — фильтры (R08, R11, R12, R14)
 
 | Файл | Владелец |
 |---|---|
