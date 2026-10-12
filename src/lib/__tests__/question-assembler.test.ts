@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import {
   QuestionAssembler,
   similarity,
+  tailDiff,
   ASR_TIMING_PRESETS,
   ACTIVE_ASR_MODE,
 } from "../question-assembler";
@@ -23,6 +24,91 @@ describe("similarity", () => {
 
   it("is high for overlapping word sets", () => {
     expect(similarity("tell me about rust", "tell me about rust please")).toBeGreaterThan(0.5);
+  });
+});
+
+describe("tailDiff", () => {
+  it("extracts trailing words after overlapping prefix with continuation ellipsis", () => {
+    const res = tailDiff(
+      "How do you handle distributed transactions",
+      "… transactions in Postgres"
+    );
+    expect(res.hasOverlap).toBe(true);
+    expect(res.overlapCount).toBe(1);
+    expect(res.tail).toBe("in Postgres");
+  });
+
+  it("returns empty tail for duplicate fragment matching suffix", () => {
+    const res = tailDiff(
+      "How do you handle distributed transactions",
+      "… transactions"
+    );
+    expect(res.hasOverlap).toBe(true);
+    expect(res.tail).toBe("");
+  });
+
+  it("returns empty tail for identical fragment", () => {
+    const res = tailDiff("Расскажите про ваш опыт", "расскажите про ваш опыт");
+    expect(res.hasOverlap).toBe(true);
+    expect(res.tail).toBe("");
+  });
+
+  it("returns original text as tail when there is no overlap", () => {
+    const res = tailDiff("Первый кусок", "Второй кусок");
+    expect(res.hasOverlap).toBe(false);
+    expect(res.tail).toBe("Второй кусок");
+  });
+});
+
+describe("QuestionAssembler.looksUnfinished", () => {
+  it("returns false for multi-word utterances without terminal punctuation", () => {
+    expect(
+      QuestionAssembler.looksUnfinished("Какие хуки вы используете чаще всего")
+    ).toBe(false);
+    expect(
+      QuestionAssembler.looksUnfinished("Распределенные транзакции в базах данных")
+    ).toBe(false);
+  });
+
+  it("returns true when ending with continuation punctuation", () => {
+    expect(
+      QuestionAssembler.looksUnfinished("Мы используем эвент сорсинг в основном модуле,")
+    ).toBe(true);
+    expect(
+      QuestionAssembler.looksUnfinished("Мы используем эвент сорсинг...")
+    ).toBe(true);
+    expect(
+      QuestionAssembler.looksUnfinished("Мы используем эвент сорсинг…")
+    ).toBe(true);
+  });
+
+  it("returns true when ending with a trailing conjunction or preposition", () => {
+    expect(
+      QuestionAssembler.looksUnfinished("Мы используем эвент сорсинг и")
+    ).toBe(true);
+    expect(
+      QuestionAssembler.looksUnfinished("Мы используем эвент сорсинг в")
+    ).toBe(true);
+    expect(
+      QuestionAssembler.looksUnfinished("Tell me about distributed systems and")
+    ).toBe(true);
+    expect(
+      QuestionAssembler.looksUnfinished("Tell me about distributed systems in")
+    ).toBe(true);
+  });
+
+  it("returns false when ending with terminal punctuation", () => {
+    expect(
+      QuestionAssembler.looksUnfinished("Какие хуки вы используете чаще всего?")
+    ).toBe(false);
+    expect(
+      QuestionAssembler.looksUnfinished("Мы используем эвент сорсинг.")
+    ).toBe(false);
+  });
+
+  it("returns false for bare answers (да / нет)", () => {
+    expect(QuestionAssembler.looksUnfinished("Да")).toBe(false);
+    expect(QuestionAssembler.looksUnfinished("Нет")).toBe(false);
   });
 });
 
@@ -200,10 +286,10 @@ describe("QuestionAssembler", () => {
     });
   });
 
-    it("holds flush for a mid-sentence fragment without terminal punctuation", () => {
+    it("continuation with comma extends", () => {
       const a = new QuestionAssembler({ flushGapMs: 450 });
-      a.push(seg("Мы используем эвент сорсинг в основном модуле", T));
-      // No .!? and not question-like → treated as unfinished; flush must wait.
+      a.push(seg("Мы используем эвент сорсинг в основном модуле,", T));
+      // Trailing continuation comma → treated as unfinished; flush must wait.
       const r1 = a.flush();
       expect(r1?.kind).toBe("pending");
       // A proper ending immediately unlocks flush on the next call.
@@ -212,6 +298,30 @@ describe("QuestionAssembler", () => {
       expect(r2?.kind).toBe("emitted");
     });
 
+    it("unpunctuated 3+ word question emits at base gap", () => {
+      const a = new QuestionAssembler({ flushGapMs: 450 });
+      // Non-interrogative-opening 3+ word utterance without terminal punctuation
+      a.push(seg("Распределенные транзакции в базах данных", T));
+      const r = a.flush();
+      expect(r?.kind).toBe("emitted");
+      if (r?.kind === "emitted") {
+        expect(r.question).toBe("Распределенные транзакции в базах данных");
+      }
+    });
+
+    it("cumulative tail preserved", () => {
+      const a = new QuestionAssembler({ flushGapMs: 450 });
+      a.push(seg("How do you handle distributed transactions", T));
+      const r1 = a.push(seg("… transactions in Postgres", T + 200));
+      expect(r1.kind).toBe("pending");
+      expect(a.current?.text).toBe("How do you handle distributed transactions in Postgres");
+
+      const r2 = a.push(seg("… in Postgres under high load", T + 400));
+      expect(r2.kind).toBe("pending");
+      expect(a.current?.text).toBe(
+        "How do you handle distributed transactions in Postgres under high load"
+      );
+    });
     it("flushes immediately for question-like fragments without '?'", () => {
       const a = new QuestionAssembler({ flushGapMs: 450 });
       a.push(seg("Какие хуки вы используете чаще всего", T));

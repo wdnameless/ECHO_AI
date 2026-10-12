@@ -202,20 +202,11 @@ export async function getStyleFromDb(): Promise<UserStylePreference | null> {
 }
 
 /**
- * Prompt-path style loader: SQLite TRUTH first with a 400ms timeout guard so
- * prompt building stays fire-fast; DB failure OR timeout falls back to the
- * synchronous localStorage cache. Never throws.
+ * Prompt-path style loader: synchronous write-through cache read to avoid
+ * 400ms SQLite await on hot path (R03). Never throws.
  */
 export async function getStyleFromDbOrCache(): Promise<UserStylePreference> {
-  try {
-    const dbStyle = await Promise.race([
-      getStyleFromDb(),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 400)),
-    ]);
-    return dbStyle ?? getUserStylePreferences();
-  } catch {
-    return getUserStylePreferences();
-  }
+  return getUserStylePreferences();
 }
 
 /**

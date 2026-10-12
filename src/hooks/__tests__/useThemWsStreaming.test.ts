@@ -291,4 +291,73 @@ describe("useThemWsStreaming session usage", () => {
     expect(MockWebSocket.instances).toEqual([]);
     expect(asrGate.tryAcquireStream("them")).toBe(false);
   });
+
+  it("R04 skips base-URL health probe on the second utterance after a served connection", async () => {
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useThemWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    await act(async () => { result.current.start(); });
+    const first = MockWebSocket.instances[0];
+    act(() => first.triggerOpen());
+    expect(getAsrBaseUrl).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      result.current.finalizeUtterance();
+      first.serverClose();
+    });
+
+    await act(async () => {
+      result.current.beginUtterance();
+      result.current.start();
+    });
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(getAsrBaseUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("R06 closes the socket immediately on a final frame and uses 150ms fallback otherwise", async () => {
+    const onFinalTranscript = vi.fn();
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useThemWsStreaming({
+        capturingRef,
+        onPartialTranscript: vi.fn(),
+        onFinalTranscript,
+      })
+    );
+
+    await act(async () => { result.current.start(); });
+    const first = MockWebSocket.instances[0];
+    act(() => first.triggerOpen());
+
+    act(() => {
+      result.current.finalizeAndClose();
+    });
+    expect(first.readyState).toBe(MockWebSocket.OPEN);
+
+    act(() => {
+      first.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "final", text: "Готовый вопрос" }),
+        })
+      );
+    });
+    expect(onFinalTranscript).toHaveBeenCalledWith("Готовый вопрос");
+    expect(first.readyState).toBe(MockWebSocket.CLOSED);
+    expect(asrGate.tryAcquireStream("me")).toBe(true);
+    asrGate.releaseStream("me");
+
+    // Fallback path when final frame does not arrive: closes at 150ms
+    await act(async () => {
+      result.current.beginUtterance();
+      result.current.start();
+    });
+    const second = MockWebSocket.instances[1];
+    act(() => second.triggerOpen());
+    act(() => result.current.finalizeAndClose());
+    expect(second.readyState).toBe(MockWebSocket.OPEN);
+    act(() => { vi.advanceTimersByTime(150); });
+    expect(second.readyState).toBe(MockWebSocket.CLOSED);
+  });
 });

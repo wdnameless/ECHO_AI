@@ -96,13 +96,16 @@ export function applyCorrections(text: string, corrections?: AsrCorrection[]): s
     if (!wrong) continue;
 
     const escaped = escapeRegex(wrong);
-    const pattern = `(?<=^|[^\\p{L}\\p{N}_])${escaped}(?=[^\\p{L}\\p{N}_]|$)`;
+    const suffixPattern = /[бвгджзйклмнпрстфхцчшщ]$/iu.test(wrong)
+      ? "(?:ами|ями|ом|ем|ём|ов|ев|ей|ам|ям|ах|ях|[аяуюеыи])?"
+      : "";
+    const pattern = `(?<=^|[^\\p{L}\\p{N}_])${escaped}${suffixPattern}(?=[^\\p{L}\\p{N}_]|$)`;
 
     try {
       const regex = new RegExp(pattern, "gui");
       result = result.replace(regex, item.right);
     } catch {
-      const fallbackRegex = new RegExp(`\\b${escaped}\\b`, "gi");
+      const fallbackRegex = new RegExp(`\\b${escaped}${suffixPattern}\\b`, "gi");
       result = result.replace(fallbackRegex, item.right);
     }
   }

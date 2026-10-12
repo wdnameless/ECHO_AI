@@ -20,16 +20,25 @@ describe("owned ASR discovery", () => {
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it("revokes a previously verified endpoint when ownership disappears", async () => {
+  it("caches the verified base URL across utterances so the second utterance skips the health probe", async () => {
+    invokeMock.mockResolvedValue(9879);
+    expect(await getAsrBaseUrl()).toBe("http://127.0.0.1:9879");
+    expect(await getAsrBaseUrl()).toBe("http://127.0.0.1:9879");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("revokes a previously verified endpoint when ownership disappears after cache reset", async () => {
     invokeMock.mockResolvedValueOnce(9879).mockResolvedValueOnce(null);
     expect(await getAsrBaseUrl()).toBe("http://127.0.0.1:9879");
+    resetAsrBaseUrlCache();
     expect(await getAsrBaseUrl()).toBe("");
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it("follows an owned sidecar restart even if the old listener still answers", async () => {
+  it("follows an owned sidecar restart after cache reset even if the old listener still answers", async () => {
     invokeMock.mockResolvedValueOnce(9879).mockResolvedValueOnce(9880);
     expect(await getAsrBaseUrl()).toBe("http://127.0.0.1:9879");
+    resetAsrBaseUrlCache();
     expect(await getAsrBaseUrl()).toBe("http://127.0.0.1:9880");
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });

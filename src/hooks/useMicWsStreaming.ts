@@ -24,7 +24,9 @@ import {
   looksLikeStreamRefusal,
   type ReconnectBackoff,
 } from "@/lib/asr-ws-shared";
+import { micStateStore } from "@/stores/mic-state";
 const MIC_WS_BACKOFF: ReconnectBackoff = { baseMs: 400, maxMs: 3000 };
+const MIC_FINALIZE_CLOSE_FALLBACK_MS = 150;
 /**
  * Maximum number of PCM frames buffered while WebSocket is connecting or waiting
  * for stream lock. At 250ms per frame, 24 frames = ~6 seconds of speech preserved.
@@ -57,9 +59,10 @@ export function useMicWsStreaming({
     producedText: boolean;
   } | null>(null);
   const micUtteranceActiveRef = useRef(false);
+  const micCachedBaseUrlRef = useRef("");
+  const micVerifiedStreamingRef = useRef(false);
   const micConnectEpochRef = useRef(0);
   const micOwnerEpochRef = useRef<number | null>(null);
-
   const releaseMicOwner = useCallback((epoch = micOwnerEpochRef.current) => {
     // Always drop queued requests: a channel that never owned the slot can
     // still have a pending handoff entry waiting for it.
@@ -151,7 +154,14 @@ export function useMicWsStreaming({
   const micWsConnect = useCallback(() => {
     micWsConnectRef.current = () => {
       void (async () => {
-        if (!capturingRef.current || !micWsWantRef.current || !micUtteranceActiveRef.current) return;
+        if (
+          !capturingRef.current ||
+          micStateStore.isIdle() ||
+          !micWsWantRef.current ||
+          !micUtteranceActiveRef.current
+        ) {
+          return;
+        }
         if (micOwnerEpochRef.current !== null) return;
         // Take the model BEFORE tearing down the previous socket. This used to
         // run in the opposite order with a call that releases ownership, so the
@@ -160,7 +170,12 @@ export function useMicWsStreaming({
         // interviewer's audio stopped being transcribed at all.
         if (!tryAcquireStream("me")) {
           enqueueStreamSlot("me", () => {
-            if (capturingRef.current && micWsWantRef.current && micUtteranceActiveRef.current) {
+            if (
+              capturingRef.current &&
+              !micStateStore.isIdle() &&
+              micWsWantRef.current &&
+              micUtteranceActiveRef.current
+            ) {
               micWsConnectRef.current();
               return true;
             }
@@ -171,19 +186,25 @@ export function useMicWsStreaming({
         }
         const epoch = ++micConnectEpochRef.current;
         micOwnerEpochRef.current = epoch;
-        const canConnect = () => epoch === micConnectEpochRef.current && capturingRef.current &&
-          micWsWantRef.current && micUtteranceActiveRef.current;
         micWsCloseSocketOnly();
-        let base: string;
-        try {
-          base = await getAsrBaseUrl();
-        } catch (err) {
-          console.warn("[mic-ws]", err);
-          base = "";
-        }
-        if (!canConnect()) {
-          releaseMicOwner(epoch);
-          return;
+        let base = micCachedBaseUrlRef.current;
+        if (!base) {
+          try {
+            base = await getAsrBaseUrl();
+          } catch (err) {
+            console.warn("[mic-ws]", err);
+            base = "";
+          }
+          if (
+            epoch !== micConnectEpochRef.current ||
+            !capturingRef.current ||
+            micStateStore.isIdle() ||
+            !micWsWantRef.current ||
+            !micUtteranceActiveRef.current
+          ) {
+            releaseMicOwner(epoch);
+            return;
+          }
         }
         // A model that does not implement `/v1/asr/stream` accepts the socket
         // and then kills it on the first audio frame ("Connection reset without
@@ -194,16 +215,24 @@ export function useMicWsStreaming({
         // not responding" while the batch endpoint answered the same audio in
         // ~76ms. The interviewer channel has consulted this flag all along; the
         // microphone never did.
-        const caps = await getAsrCapabilities();
-        if (!canConnect()) {
-          releaseMicOwner(epoch);
-          return;
-        }
-        if (!caps.streaming) {
-          // Nothing to stream to: hand the slot back and let the caller use the
-          // batch path, which is the fast one for these models anyway.
-          releaseMicOwner(epoch);
-          return;
+        if (!micVerifiedStreamingRef.current) {
+          const caps = await getAsrCapabilities();
+          if (
+            epoch !== micConnectEpochRef.current ||
+            !capturingRef.current ||
+            micStateStore.isIdle() ||
+            !micWsWantRef.current ||
+            !micUtteranceActiveRef.current
+          ) {
+            releaseMicOwner(epoch);
+            return;
+          }
+          if (!caps.streaming) {
+            // Nothing to stream to: hand the slot back and let the caller use the
+            // batch path, which is the fast one for these models anyway.
+            releaseMicOwner(epoch);
+            return;
+          }
         }
         if (!base) {
           // Release what was just taken. Ownership is a single slot shared with
@@ -238,7 +267,14 @@ export function useMicWsStreaming({
         const state = { stoppedByUs: false, framesSent: 0, producedText: false };
         micSocketStateRef.current = state;
         ws.onopen = () => {
-          if (micWsRef.current !== ws || !canConnect()) {
+          if (
+            micWsRef.current !== ws ||
+            epoch !== micConnectEpochRef.current ||
+            !capturingRef.current ||
+            micStateStore.isIdle() ||
+            !micWsWantRef.current ||
+            !micUtteranceActiveRef.current
+          ) {
             if (micWsRef.current === ws) micWsClose();
             else closeSocketDetached(ws);
             return;
@@ -251,8 +287,9 @@ export function useMicWsStreaming({
           );
           // A served connection means the retries were worth it; start the next
           // backoff from the base delay again.
+          micCachedBaseUrlRef.current = base;
+          micVerifiedStreamingRef.current = true;
           micWsReconnectAttemptsRef.current = 0;
-
           // Flush buffered frames queued while socket was connecting or model was locked
           while (micFrameBufferRef.current.length > 0) {
             const buffered = micFrameBufferRef.current.shift();
@@ -276,6 +313,15 @@ export function useMicWsStreaming({
             state.producedText = true;
           }
           handleAsrStreamFrame(ev.data, { onPartialTranscript, onFinalTranscript });
+          if (typeof ev.data === "string" && /"type"\s*:\s*"final"/.test(ev.data)) {
+            state.stoppedByUs = true;
+            stopMicUtterance();
+            if (micWsRef.current === ws) {
+              micWsCloseSocketOnly();
+            } else {
+              closeSocketDetached(ws);
+            }
+          }
         };
         ws.onclose = () => {
           const isCurrent = micWsRef.current === ws;
@@ -316,6 +362,8 @@ export function useMicWsStreaming({
               producedText: state.producedText,
             })
           ) {
+            micCachedBaseUrlRef.current = "";
+            micVerifiedStreamingRef.current = false;
             noteStreamingUnsupported();
           }
           scheduleMicWsReconnect();
@@ -323,6 +371,8 @@ export function useMicWsStreaming({
         ws.onerror = () => {
           if (micWsRef.current !== ws) return;
           // A refused connection means the cached base URL is stale.
+          micCachedBaseUrlRef.current = "";
+          micVerifiedStreamingRef.current = false;
           resetAsrBaseUrlCache();
           try {
             ws.close();
@@ -333,12 +383,12 @@ export function useMicWsStreaming({
         };
       })();
     };
+    if (micStateStore.isIdle()) return;
     micWsWantRef.current = true;
     micUtteranceActiveRef.current = true;
     micWsConnectRef.current();
   }, [capturingRef, micWsClose, micWsCloseSocketOnly, releaseMicOwner,
       scheduleMicWsReconnect, onPartialTranscript, onFinalTranscript]);
-
   const micWsFinalizeAndClose = useCallback(() => {
     stopMicUtterance();
     const ws = micWsRef.current;
@@ -349,13 +399,11 @@ export function useMicWsStreaming({
         console.warn("[mic-ws]", err);
         // connection already dying - fall through to close
       }
-      if (micWsFinalizeTimerRef.current !== null) {
-        clearTimeout(micWsFinalizeTimerRef.current);
-      }
+      clearTimeout(micWsFinalizeTimerRef.current ?? undefined);
       micWsFinalizeTimerRef.current = setTimeout(() => {
         micWsFinalizeTimerRef.current = null;
         if (micWsRef.current === ws) micWsCloseSocketOnly();
-      }, 400);
+      }, MIC_FINALIZE_CLOSE_FALLBACK_MS);
     } else {
       micWsClose();
     }
@@ -363,12 +411,24 @@ export function useMicWsStreaming({
 
   /** Called at the start of an utterance by the caller's VAD. */
   const micBeginUtterance = useCallback(() => {
-    micWsClose();
+    if (micStateStore.isIdle()) {
+      micWsClose();
+      return;
+    }
+    if (
+      micSocketStateRef.current?.stoppedByUs ||
+      micWsFinalizeTimerRef.current !== null ||
+      (micWsRef.current && micWsRef.current.readyState > WebSocket.OPEN)
+    ) {
+      micWsClose();
+    } else if (micSocketStateRef.current) {
+      micSocketStateRef.current.framesSent = 0;
+      micSocketStateRef.current.producedText = false;
+    }
     micProducedTextRef.current = false;
     micUtteranceActiveRef.current = true;
     micWsWantRef.current = true;
   }, [micWsClose]);
-
   /** True when the open mic stream already answered this utterance. */
   const micHasProducedText = useCallback(
     () => micProducedTextRef.current,

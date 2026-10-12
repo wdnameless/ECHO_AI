@@ -41,6 +41,21 @@ describe("applyCorrections", () => {
     expect(applyCorrections("киберспорт")).toBe("киберспорт");
   });
 
+  it("replaces inflected Russian wordforms by stem + case suffixes (R14)", () => {
+    const corrections: AsrCorrection[] = [
+      { id: 10, wrong: "Кликхаус", right: "ClickHouse" },
+    ];
+    expect(applyCorrections("разворачиваем в кликхаусе", corrections)).toBe(
+      "разворачиваем в ClickHouse"
+    );
+    expect(applyCorrections("запросы к кликхаусу", corrections)).toBe(
+      "запросы к ClickHouse"
+    );
+    expect(applyCorrections("работаем с кликхаусом", corrections)).toBe(
+      "работаем с ClickHouse"
+    );
+  });
+
   it("preserves empty or untracked text", () => {
     expect(applyCorrections("")).toBe("");
     expect(applyCorrections("Привет мир")).toBe("Привет мир");

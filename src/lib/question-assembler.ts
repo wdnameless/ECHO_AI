@@ -141,6 +141,91 @@ const FOLLOWUP_MERGE_MS = 20_000;
 const INTERROGATIVE_OPENING =
   /^(почему|зачем|как|что|кто|где|куда|когда|сколько|какой|какая|какие|какое|каким|какими|какого|каких|каком|чем|расскажите|расскажи|объясните|объясни|опишите|опиши|назовите|назови|приведите|приведи|what|how|why|where|when|who|whom|whose|which|can|could|would|should|shall|will|do|does|did|have|has|are|is|were|was|tell|describe|explain|name|list|give)(?=$|[^\p{L}\p{N}])/iu;
 
+/** Trailing conjunctions and prepositions indicating unfinished speech. */
+const TRAILING_CONNECTORS: Record<string, true> = {
+  // Russian conjunctions
+  и: true, а: true, но: true, или: true, либо: true, что: true, чтобы: true, как: true, когда: true, если: true,
+  хотя: true, будто: true, словно: true, причем: true, причём: true, притом: true, зато: true, однако: true, ведь: true,
+  // Russian relative pronouns (который forms)
+  который: true, которая: true, которое: true, которые: true, которого: true, которой: true,
+  которых: true, которому: true, которым: true, которыми: true, котором: true,
+  // Russian prepositions
+  в: true, во: true, на: true, с: true, со: true, к: true, ко: true, у: true, о: true, об: true, обо: true, по: true,
+  из: true, изо: true, от: true, ото: true, до: true, для: true, без: true, безо: true, через: true, сквозь: true,
+  про: true, при: true, под: true, подо: true, над: true, надо: true, перед: true, передо: true, за: true,
+  меж: true, между: true, среди: true, возле: true, около: true, вокруг: true, кроме: true,
+  насчет: true, насчёт: true, ради: true, вместо: true, вроде: true, путем: true, путём: true, против: true,
+  // English conjunctions
+  and: true, but: true, or: true, nor: true, for: true, yet: true, so: true, that: true, which: true, who: true,
+  whom: true, whose: true, because: true, although: true, though: true, while: true, whereas: true,
+  if: true, unless: true, whether: true, as: true, since: true, until: true, till: true,
+  // English prepositions
+  in: true, on: true, at: true, to: true, with: true, by: true, from: true, of: true, about: true, into: true,
+  through: true, during: true, before: true, after: true, above: true, below: true, between: true,
+  under: true, behind: true, without: true, within: true, toward: true, towards: true, upon: true,
+  across: true, off: true, against: true, around: true, via: true, per: true,
+};
+
+export interface TailDiffResult {
+  hasOverlap: boolean;
+  overlapCount: number;
+  tail: string;
+}
+
+/** Computes overlap between suffix of lastSegment and prefix of incoming, returning the tail. */
+export function tailDiff(lastSegment: string, incoming: string): TailDiffResult {
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+
+  const lastWords = norm(lastSegment);
+  const incomingWords = norm(incoming);
+
+  if (incomingWords.length === 0) {
+    return { hasOverlap: false, overlapCount: 0, tail: "" };
+  }
+
+  const maxK = Math.min(lastWords.length, incomingWords.length);
+  let bestK = 0;
+  for (let k = maxK; k >= 1; k--) {
+    let match = true;
+    for (let i = 0; i < k; i++) {
+      if (lastWords[lastWords.length - k + i] !== incomingWords[i]) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      bestK = k;
+      break;
+    }
+  }
+
+  if (bestK > 0) {
+    if (bestK === incomingWords.length) {
+      return { hasOverlap: true, overlapCount: bestK, tail: "" };
+    }
+    let wordIdx = 0;
+    let charIdx = 0;
+    const regex = /[\p{L}\p{N}]+/gu;
+    while (regex.exec(incoming) !== null) {
+      wordIdx++;
+      if (wordIdx === bestK) {
+        charIdx = regex.lastIndex;
+        break;
+      }
+    }
+    const rawTail = incoming.slice(charIdx).trim();
+    return { hasOverlap: true, overlapCount: bestK, tail: rawTail };
+  }
+
+  return { hasOverlap: false, overlapCount: 0, tail: incoming.trim() };
+}
+
 export class QuestionAssembler {
   private pending: PendingState | null = null;
   private lastEmitted: { text: string; ts: number } | null = null;
@@ -252,11 +337,16 @@ export class QuestionAssembler {
    * behaviour cannot drift apart.
    */
   private rotateOrEmit(segment: QuestionFragment, seedText?: string): PushResult {
-    const rotated = this.rotate(segment, seedText);
-    if (rotated.endsWithQuestionMark) {
+    this.rotate(segment, seedText);
+    return this.pendingOrEmit();
+  }
+
+  private pendingOrEmit(): PushResult {
+    const question = this.pending!.segments.join(" ");
+    if (this.immediateOnQuestionMark && question.endsWith("?")) {
       return this.emit();
     }
-    return { kind: "pending", question: rotated.question };
+    return { kind: "pending", question };
   }
 
   /** Feeds a new (final) segment and decides what to do with it. */
@@ -311,38 +401,49 @@ export class QuestionAssembler {
       // then the speaker is still on the same thought and the fragment
       // continues it instead of wiping the accumulation.
       if (gap <= this.gapMs * 1.4 && QuestionAssembler.looksUnfinished(p.segments.join(" "))) {
-        p.segments.push(text);
+        const lastSeg = p.segments[p.segments.length - 1];
+        const diff = tailDiff(lastSeg, text);
+        p.segments.push(diff.hasOverlap && diff.tail ? diff.tail : text);
         p.lastTs = segment.timestamp;
-        const question = p.segments.join(" ");
-        if (this.immediateOnQuestionMark && question.endsWith("?")) {
-          return this.emit();
-        }
-        return { kind: "pending", question };
+        return this.pendingOrEmit();
       }
+
       const seed = this.isFollowUpTail(text) ? this.lastEmitted!.text : undefined;
       return this.rotateOrEmit(segment, seed);
     }
 
-    // Check for STT duplicates (same fragment recognized twice).
-    const currentText = p.segments.join(" ");
-    if (similarity(currentText, text) >= this.similarityThreshold) {
-      return { kind: "discarded", reason: "duplicate" };
+    // Check for STT duplicates (comparing against the last segment with tail-diff).
+    const lastSegment = p.segments[p.segments.length - 1];
+    let diff = tailDiff(lastSegment, text);
+    if (!diff.hasOverlap && p.segments.length > 1) {
+      const currentText = p.segments.join(" ");
+      const fullDiff = tailDiff(currentText, text);
+      if (fullDiff.hasOverlap) {
+        diff = fullDiff;
+      }
     }
 
-    p.segments.push(text);
+    if (diff.hasOverlap) {
+      if (!diff.tail) {
+        return { kind: "discarded", reason: "duplicate" };
+      }
+      p.segments.push(diff.tail);
+    } else {
+      if (similarity(lastSegment, text) >= this.similarityThreshold) {
+        return { kind: "discarded", reason: "duplicate" };
+      }
+      p.segments.push(text);
+    }
+
     p.lastTs = segment.timestamp;
+
 
     // Window too long already - emit what we have.
     if (segment.timestamp - p.firstTs >= this.maxWindowMs) {
       return this.emit();
     }
 
-    const question = p.segments.join(" ");
-    if (this.immediateOnQuestionMark && question.endsWith("?")) {
-      return this.emit();
-    }
-
-    return { kind: "pending", question };
+    return this.pendingOrEmit();
   }
 
   /**
@@ -374,25 +475,23 @@ export class QuestionAssembler {
 
   /**
    * True when the accumulated text clearly reads as an unfinished utterance:
-   * ASR normalizers strip mid-sentence punctuation, so continuation commas
-   * are often missing. A fragment ending in a coordinating/subordinating
-   * connector ("и", "но", "что", "который", "because", "and", ...) or having
-   * no terminal .!? mark at all is treated as mid-sentence. Question marks
-   * and terminal periods end the utterance immediately.
+   * text ends with continuation punctuation (comma, semicolon, dash, ellipsis)
+   * or a trailing conjunction / preposition ("и", "но", "что", "and", "because", "in", ...).
+   * It MUST NOT treat complete utterances without terminal punctuation as unfinished.
    */
   static looksUnfinished(text: string): boolean {
     const trimmed = text.trim();
     if (!trimmed) return false;
-    if (/[.!?…]$/.test(trimmed)) return false;
     if (QuestionAssembler.hasContinuationPunctuation(trimmed)) return true;
-    if (QuestionAssembler.startsNewQuestion(trimmed)) return false;
-    // No terminal punctuation at all → sentence never properly closed.
-    // Only applies to multi-word fragments: a bare "да"/"нет" answer IS a
-    // complete utterance and must not be delayed.
-    const words = trimmed.split(/\s+/);
-    if (words.length < 3) return false;
-    return true;
+    if (/[.!?]$/.test(trimmed)) return false;
+    if (/(?:^|\s)то есть$/iu.test(trimmed)) return true;
+    const match = trimmed.match(/[\p{L}\p{N}]+$/u);
+    if (match && TRAILING_CONNECTORS[match[0].toLowerCase()]) {
+      return true;
+    }
+    return false;
   }
+
 
   /**
    * Force-emit whatever is pending (caller's gap timer fired).

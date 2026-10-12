@@ -46,13 +46,17 @@ const CREDIT_PATTERNS: readonly RegExp[] = [
   /\b(?:subtitles|subtitled|transcription)\s+by(?:\s+(?:the|a|an))?(?!\p{L})/giu,
   /\bthanks?\s+(?:you\s+)?for\s+watching\b/giu,
   /\bplease\s+subscribe\b/giu,
+  // Russian YouTube / video hallucination boilerplate
+  /спасибо\s+за\s+просмотр(?!\p{L})/giu,
+  /(?:ставьте\s+лайк\S*\s*(?:,|и)?\s*)?(?:не\s+забудьте\s+)?подпис(?:ывайтесь|итесь|ись|аться|ывайся)(?:\s+на\s+(?:мой\s+)?канал)?(?!\p{L})/giu,
+  /ставьте\s+лайк\S*(?!\p{L})/giu,
+  /(?:жмите|нажмите)\s+(?:на\s+)?колокольчик(?!\p{L})/giu,
+  /ссылка\s+в\s+описании(?!\p{L})/giu,
   // Purple-prose hallucinations: the engine narrates instead of transcribing.
   // Seen live: "Фиолетовая тряпочка говорит о том, что он покончил с собой"
-  // for EN audio ("Shooting him"), and "Фиолетовый" as a standalone opener.
-  // The narration runs to the sentence end, so consume the whole clause, not
-  // a fixed word window (a {0,3} window left "том, что он покончил с собой").
-  // NOTE: \w is ASCII-only, so Cyrillic word tails need \S* (non-space run).
-  /фиолетов\S*[^.!?…]*[.!?…]?/giu,
+  // for EN audio ("Shooting him"). Narrowed to the known narration signature
+  // so ordinary speech like "Мне фиолетово..." is not scrubbed.
+  /фиолетов\S*\s+тряпочк\S*[^.!?…]*[.!?…]?/giu,
 ];
 
 /**
@@ -64,6 +68,8 @@ const CREDIT_PATTERNS: readonly RegExp[] = [
 const WHOLE_LINE_BOILERPLATE: readonly RegExp[] = [
   /^продолжение\s+следует[.!?…]*$/iu,
   /^to\s+be\s+continued[.!?…]*$/iu,
+  // Standalone purple-prose openers ("Фиолетовый" alone on silence)
+  /^фиолетов\S*[.!?…]*$/iu,
 ];
 
 /**
