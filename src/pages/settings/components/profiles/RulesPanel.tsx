@@ -5,61 +5,133 @@ import { cn } from "@/lib/utils";
 import {
   SmartRule,
   RuleSource,
+  getSmartRules,
+  deleteSmartRule,
+  archiveSmartRule,
   findConflictingRule,
 } from "@/lib/storage/smart-rules";
+import {
+  addUserRule,
+  getUserStylePreferences,
+  saveUserStylePreferences,
+  getRuleSource,
+} from "@/lib/storage/user-facts";
 
 export interface RulesPanelProps {
-  rules: SmartRule[];
-  onAddRule: (text: string, source?: RuleSource) => void;
-  onDeleteRule: (id: string) => void;
-  onArchiveRule?: (id: string) => void;
-  legacyRules?: string[];
-  onRemoveLegacyRule?: (index: number) => void;
-  resolveRuleSource?: (rule: string) => RuleSource;
+  onChange?: () => void;
 }
 
-export const RulesPanel: React.FC<RulesPanelProps> = ({
-  rules,
-  onAddRule,
-  onDeleteRule,
-  onArchiveRule,
-  legacyRules = [],
-  onRemoveLegacyRule,
-  resolveRuleSource = () => "manual",
-}) => {
+export const RulesPanel: React.FC<RulesPanelProps> = ({ onChange }) => {
+  const [, setTick] = useState(0);
   const [newRuleText, setNewRuleText] = useState("");
   const [conflict, setConflict] = useState<{
     newText: string;
     existing: SmartRule;
   } | null>(null);
 
+  let rules: SmartRule[] = [];
+  try {
+    rules = getSmartRules();
+  } catch {
+    rules = [];
+  }
+
+  let legacyRules: string[] = [];
+  try {
+    legacyRules = getUserStylePreferences()?.customRules ?? [];
+  } catch {
+    legacyRules = [];
+  }
+
+  const refresh = () => {
+    setTick((t) => t + 1);
+    onChange?.();
+  };
+
+  const resolveRuleSource = (rule: string): RuleSource => {
+    if (typeof getRuleSource === "function") {
+      const src = getRuleSource(rule);
+      if (src) return src;
+    }
+    return "manual";
+  };
+
+  const handleAddRule = (text: string, source: RuleSource = "manual") => {
+    if (typeof addUserRule === "function") {
+      addUserRule(text, { source });
+    }
+    try {
+      const style = getUserStylePreferences();
+      if (style) {
+        saveUserStylePreferences({
+          ...style,
+          customRules: [text, ...(style.customRules ?? []).filter((r) => r !== text)],
+        });
+      }
+    } catch {
+      // Fallback
+    }
+    refresh();
+  };
+
+  const handleDeleteRule = (id: string) => {
+    try {
+      deleteSmartRule(id);
+    } catch {
+      // Fallback
+    }
+    refresh();
+  };
+
+  const handleArchiveRule = (id: string) => {
+    try {
+      archiveSmartRule(id);
+    } catch {
+      // Fallback
+    }
+    refresh();
+  };
+
+  const handleRemoveLegacyRule = (index: number) => {
+    try {
+      const style = getUserStylePreferences();
+      if (style) {
+        saveUserStylePreferences({
+          ...style,
+          customRules: (style.customRules ?? []).filter((_, i) => i !== index),
+        });
+      }
+    } catch {
+      // Fallback
+    }
+    refresh();
+  };
+
   const handleAttemptAdd = () => {
     const text = newRuleText.trim();
     if (!text) return;
 
-    // Check for conflicting smart rules
     const conflicting = findConflictingRule(text);
     if (conflicting) {
       setConflict({ newText: text, existing: conflicting });
       return;
     }
 
-    onAddRule(text, "manual");
+    handleAddRule(text, "manual");
     setNewRuleText("");
   };
 
   const handleResolveConflictReplace = () => {
     if (!conflict) return;
-    // Delete/archive conflicting rule and add new
-    onDeleteRule(conflict.existing.id);
-    onAddRule(conflict.newText, "manual");
+    handleDeleteRule(conflict.existing.id);
+    handleAddRule(conflict.newText, "manual");
     setConflict(null);
     setNewRuleText("");
   };
 
   const handleResolveConflictKeepBoth = () => {
     if (!conflict) return;
-    onAddRule(conflict.newText, "manual");
+    handleAddRule(conflict.newText, "manual");
     setConflict(null);
     setNewRuleText("");
   };
@@ -175,22 +247,20 @@ export const RulesPanel: React.FC<RulesPanelProps> = ({
                   <span className="truncate flex-1 font-medium">{rule.text}</span>
 
                   <div className="flex items-center gap-1 shrink-0">
-                    {onArchiveRule && (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-6 w-6 text-muted-foreground hover:text-foreground"
-                        onClick={() => onArchiveRule(rule.id)}
-                        title={rule.archived ? "Разархивировать правило" : "Архивировать правило"}
-                      >
-                        <ShieldAlertIcon className="size-3" />
-                      </Button>
-                    )}
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                      onClick={() => handleArchiveRule(rule.id)}
+                      title={rule.archived ? "Разархивировать правило" : "Архивировать правило"}
+                    >
+                      <ShieldAlertIcon className="size-3" />
+                    </Button>
                     <Button
                       size="icon"
                       variant="ghost"
                       className="h-6 w-6 text-muted-foreground hover:text-destructive"
-                      onClick={() => onDeleteRule(rule.id)}
+                      onClick={() => handleDeleteRule(rule.id)}
                       title="Удалить правило"
                     >
                       <Trash2Icon className="size-3" />
@@ -222,17 +292,15 @@ export const RulesPanel: React.FC<RulesPanelProps> = ({
                     {ruleSource}
                   </span>
                   <span className="truncate flex-1">{r}</span>
-                  {onRemoveLegacyRule && (
-                    <Button
-                      size="icon"
-                      variant="ghost"
-                      className="h-5 w-5 text-muted-foreground hover:text-destructive shrink-0"
-                      onClick={() => onRemoveLegacyRule(i)}
-                      title="Удалить правило"
-                    >
-                      <Trash2Icon className="size-3" />
-                    </Button>
-                  )}
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    className="h-5 w-5 text-muted-foreground hover:text-destructive shrink-0"
+                    onClick={() => handleRemoveLegacyRule(i)}
+                    title="Удалить правило"
+                  >
+                    <Trash2Icon className="size-3" />
+                  </Button>
                 </div>
               );
             })}

@@ -1,6 +1,5 @@
 import React, { useCallback, useState } from "react";
-import { Header, Button, Input, Textarea, Label } from "@/components";
-import { UploadIcon, Trash2Icon } from "lucide-react";
+import { Header } from "@/components";
 import { useApp } from "@/contexts";
 import {
   PromptProfile,
@@ -20,9 +19,6 @@ import {
   saveFeedbackLog,
   addUserFact,
   removeUserFact,
-  addUserRule,
-  getRuleSource,
-  type RuleSource,
   UserFact,
   FeedbackEntry,
   getUserMarkdownProfile,
@@ -31,16 +27,13 @@ import {
   resetLearning,
 } from "@/lib/storage/user-facts";
 import {
-  SmartRule,
-  getSmartRules,
-  deleteSmartRule,
-  archiveSmartRule,
-} from "@/lib/storage/smart-rules";
-import {
   ProfileCards,
   ProfileWizard,
   ProfileEditor,
   MemoryPanels,
+  ImportProfilesModal,
+  DeleteProfileModal,
+  SwitchProfileModal,
 } from "./profiles";
 
 export const AVAILABLE_TOOLBAR_BUTTONS: Array<{ id: ToolbarButtonId; label: string }> = [
@@ -110,13 +103,6 @@ export const PromptProfilesSettings: React.FC = () => {
   const [facts, setFacts] = useState<UserFact[]>(() => getUserFacts());
   const [stylePrefs, setStylePrefs] = useState(() => getUserStylePreferences());
   const [feedbackLogs, setFeedbackLogs] = useState(() => getFeedbackLog());
-  const [smartRules, setSmartRules] = useState<SmartRule[]>(() => {
-    try {
-      return getSmartRules();
-    } catch {
-      return [];
-    }
-  });
 
   // USER.md raw editor mode state
   const [markdownText, setMarkdownText] = useState<string>(() => getUserMarkdownProfile());
@@ -226,8 +212,6 @@ export const PromptProfilesSettings: React.FC = () => {
   );
 
   const [showImportModal, setShowImportModal] = useState(false);
-  const [importJsonText, setImportJsonText] = useState("");
-  const [importFeedback, setImportFeedback] = useState<string | null>(null);
 
   const handleExportCurrent = useCallback(() => {
     if (!activeProfile) return;
@@ -253,12 +237,10 @@ export const PromptProfilesSettings: React.FC = () => {
   }, [promptProfiles]);
 
   const handleImportJson = useCallback(
-    (jsonString: string) => {
-      setImportFeedback(null);
+    (jsonString: string): boolean => {
       const imported = importProfilesFromJson(jsonString);
       if (imported.length === 0) {
-        setImportFeedback("Не удалось импортировать профиль: неверный формат JSON.");
-        return;
+        return false;
       }
       for (const p of imported) {
         const created = createPromptProfile({
@@ -277,26 +259,10 @@ export const PromptProfilesSettings: React.FC = () => {
         });
         selectPromptProfile(created.id);
       }
-      setShowImportModal(false);
-      setImportJsonText("");
       loadProfiles();
+      return true;
     },
     [createPromptProfile, selectPromptProfile, loadProfiles]
-  );
-
-  const handleFileInput = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const content = event.target?.result as string;
-        if (content) handleImportJson(content);
-      };
-      reader.readAsText(file);
-      e.target.value = "";
-    },
-    [handleImportJson]
   );
 
   const logManualEdit = useCallback(
@@ -373,85 +339,6 @@ export const PromptProfilesSettings: React.FC = () => {
     [stylePrefs, logManualEdit]
   );
 
-  const resolveRuleSource = useCallback(
-    (rule: string): RuleSource => {
-      if (typeof getRuleSource === "function") {
-        const src = getRuleSource(rule);
-        if (src) return src;
-      }
-      const match = feedbackLogs.find(
-        (entry) => entry.response === rule || entry.question === rule
-      );
-      if (match?.topic === "coach") return "coach";
-      if (match?.topic === "manual") return "manual";
-      if (match) return "feedback";
-      return "manual";
-    },
-    [feedbackLogs]
-  );
-
-  const handleAddSmartRule = useCallback(
-    (text: string, source: RuleSource = "manual") => {
-      if (typeof addUserRule === "function") {
-        addUserRule(text, { source });
-      }
-      const nextStyle = {
-        ...stylePrefs,
-        customRules: [text, ...stylePrefs.customRules.filter((r) => r !== text)],
-      };
-      saveUserStylePreferences(nextStyle);
-      setStylePrefs(nextStyle);
-      try {
-        setSmartRules(getSmartRules());
-      } catch {
-        // Fallback
-      }
-      setMarkdownText(getUserMarkdownProfile());
-      logManualEdit("Добавление правила", text, "like", `Добавлено пользователем в редакторе (source=${source})`);
-    },
-    [stylePrefs, logManualEdit]
-  );
-
-  const handleDeleteSmartRule = useCallback(
-    (id: string) => {
-      try {
-        deleteSmartRule(id);
-        setSmartRules(getSmartRules());
-      } catch {
-        // Fallback
-      }
-    },
-    []
-  );
-
-  const handleArchiveSmartRule = useCallback(
-    (id: string) => {
-      try {
-        archiveSmartRule(id);
-        setSmartRules(getSmartRules());
-      } catch {
-        // Fallback
-      }
-    },
-    []
-  );
-
-  const handleRemoveLegacyRule = useCallback(
-    (index: number) => {
-      const removed = stylePrefs.customRules[index];
-      const next = {
-        ...stylePrefs,
-        customRules: stylePrefs.customRules.filter((_, i) => i !== index),
-      };
-      saveUserStylePreferences(next);
-      setStylePrefs(next);
-      setMarkdownText(getUserMarkdownProfile());
-      if (removed) {
-        logManualEdit("Удаление правила", removed, "dislike", "Удалено пользователем в редакторе (source=manual)");
-      }
-    },
-    [stylePrefs, logManualEdit]
-  );
 
   const handleResetLearning = useCallback(async () => {
     try {
@@ -465,11 +352,6 @@ export const PromptProfilesSettings: React.FC = () => {
     setFacts(getUserFacts());
     setStylePrefs(getUserStylePreferences());
     setFeedbackLogs([]);
-    try {
-      setSmartRules(getSmartRules());
-    } catch {
-      setSmartRules([]);
-    }
     setMarkdownText(getUserMarkdownProfile());
   }, []);
 
@@ -527,13 +409,6 @@ export const PromptProfilesSettings: React.FC = () => {
           onSaveMarkdown={handleSaveMarkdown}
           onResetMarkdown={handleResetMarkdown}
           onResetLearning={handleResetLearning}
-          rules={smartRules}
-          onAddRule={handleAddSmartRule}
-          onDeleteRule={handleDeleteSmartRule}
-          onArchiveRule={handleArchiveSmartRule}
-          legacyRules={stylePrefs.customRules}
-          onRemoveLegacyRule={handleRemoveLegacyRule}
-          resolveRuleSource={resolveRuleSource}
         />
       )}
 
@@ -558,142 +433,29 @@ export const PromptProfilesSettings: React.FC = () => {
         />
       )}
 
-      {/* JSON Import Modal */}
-      {showImportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-lg space-y-4 rounded-xl border border-border bg-background p-5">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold flex items-center gap-2">
-                <UploadIcon className="size-4" /> Импорт профилей
-              </h3>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setShowImportModal(false);
-                  setImportJsonText("");
-                  setImportFeedback(null);
-                }}
-              >
-                Отмена
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Загрузите файл .json или вставьте конфигурацию профиля в текстовое поле:
-            </p>
-            <div className="flex items-center gap-2">
-              <Input
-                type="file"
-                accept=".json"
-                onChange={handleFileInput}
-                className="text-xs file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-primary-foreground"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Или вставьте JSON напрямую:</Label>
-              <Textarea
-                value={importJsonText}
-                onChange={(e) => setImportJsonText(e.target.value)}
-                placeholder='{ "name": "Custom Profile", "systemPrompt": "...", "flushGapMs": 450 }'
-                className="min-h-[120px] font-mono text-xs"
-              />
-            </div>
-            {importFeedback && (
-              <p className="text-xs text-destructive font-medium">{importFeedback}</p>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => {
-                  setShowImportModal(false);
-                  setImportJsonText("");
-                  setImportFeedback(null);
-                }}
-              >
-                Отмена
-              </Button>
-              <Button
-                size="sm"
-                disabled={!importJsonText.trim()}
-                onClick={() => handleImportJson(importJsonText)}
-              >
-                Импортировать
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ImportProfilesModal
+        open={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        onImportJson={handleImportJson}
+      />
 
-      {/* Delete confirmation modal */}
-      {pendingDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md space-y-3 rounded-xl border border-border bg-background p-5">
-            <h3 className="text-sm font-semibold">
-              Удалить профиль «{pendingDelete.name}»?
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              Его системный промпт будет потерян. Встроенные профили можно вернуть
-              кнопкой «Restore built-in profiles».
-            </p>
-            <div className="flex justify-end gap-2 pt-1">
-              <Button size="sm" variant="outline" onClick={() => setPendingDelete(null)}>
-                Отмена
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                onClick={() => {
-                  deletePromptProfile(pendingDelete.id);
-                  loadProfiles();
-                  setPendingDelete(null);
-                }}
-              >
-                <Trash2Icon className="size-3.5 mr-1" />
-                Удалить
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DeleteProfileModal
+        profile={pendingDelete}
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={(profile) => {
+          deletePromptProfile(profile.id);
+          loadProfiles();
+          setPendingDelete(null);
+        }}
+      />
 
-      {/* Switch profile with unsaved changes confirmation modal */}
-      {pendingSwitch && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="w-full max-w-md space-y-3 rounded-xl border border-border bg-background p-5">
-            <h3 className="text-sm font-semibold">
-              Несохранённые изменения
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              В профиле «{draft?.name || activeProfile?.name}» есть несохранённые
-              изменения. Сохранить их перед переключением на «{pendingSwitch.name}»?
-            </p>
-            <div className="flex justify-end gap-2 pt-1">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setPendingSwitch(null)}
-              >
-                Отмена
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-destructive hover:bg-destructive/10"
-                onClick={handleConfirmSwitchDiscard}
-              >
-                Не сохранять
-              </Button>
-              <Button
-                size="sm"
-                onClick={handleConfirmSwitchSave}
-              >
-                Сохранить и перейти
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      <SwitchProfileModal
+        targetProfile={pendingSwitch}
+        currentProfileName={draft?.name || activeProfile?.name}
+        onCancel={() => setPendingSwitch(null)}
+        onDiscard={handleConfirmSwitchDiscard}
+        onSaveAndSwitch={handleConfirmSwitchSave}
+      />
     </div>
   );
 };

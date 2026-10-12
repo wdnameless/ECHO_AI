@@ -19,6 +19,23 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { PromptProfile } from "@/lib/storage/prompt-profiles";
+import { MARKDOWN_FORMATTING_INSTRUCTIONS } from "@/config/constants";
+import {
+  resolveAnswerLength,
+  SHORT_LENGTH_PROMPT,
+  LONG_LENGTH_PROMPT,
+} from "@/lib/answer-length";
+import {
+  HUMANIZER_INSTRUCTIONS,
+  INTERVIEW_MODE_INSTRUCTIONS,
+} from "@/config/humanizer.rules";
+import {
+  LANGUAGE_RULE,
+  buildSelfEvolutionPromptBlock,
+  isSelfLearningEnabled,
+  getUserStylePreferences,
+  setSelfEvolutionStyleOverride,
+} from "@/lib/storage/user-facts";
 import { AVAILABLE_TOOLBAR_BUTTONS } from "../PromptProfilesSettings";
 
 export interface ProfileEditorProps {
@@ -46,26 +63,26 @@ export function buildPreviewPrompt(profile: PromptProfile): string {
 
   // 2. Conversational filter rule
   parts.push(
-    "CONVERSATIONAL FILTER RULE: If the user input is merely a conversational acknowledgment, reaction, or filler sound without a substantive question, DO NOT replicate the filler. Only answer when an actual question or request is made."
+    "CONVERSATIONAL FILTER RULE: If the user input is merely a conversational acknowledgment, reaction, or filler sound (e.g. 'угу', 'мгм', 'ага', 'да', 'ну', 'хм', 'ок', 'yeah', 'uh-huh', 'mhm', 'got it') without a substantive question or topic, DO NOT replicate the filler or generate a lengthy answer. Only answer when an actual question, technical query, or request is made."
   );
 
   // 3. Formatting rule
-  parts.push("MARKDOWN FORMATTING: Use clear structure, concise code snippets and bold keywords where appropriate.");
+  parts.push(MARKDOWN_FORMATTING_INSTRUCTIONS);
 
   // 4. Length rule
-  if (profile.defaultLength === "short") {
-    parts.push("ANSWER LENGTH RULE: strictly 1-3 spoken sentences (35-55 words maximum). Get straight to the point.");
-  } else if (profile.defaultLength === "long") {
-    parts.push("ANSWER LENGTH RULE: provide a comprehensive, structured explanation with trade-offs and edge cases.");
-  } else {
-    parts.push("ANSWER LENGTH RULE: adapt length to the question (concise for short queries, comprehensive for complex topics).");
-  }
+  const answerLength = resolveAnswerLength("", profile.defaultLength ?? "auto");
+  parts.push(answerLength === "long" ? LONG_LENGTH_PROMPT : SHORT_LENGTH_PROMPT);
 
   // 5. Humanizer & Interview Mode
   if (profile.humanizerEnabled) {
-    parts.push("HUMANIZER: Speak naturally as a human engineer, avoid corporate buzzwords and artificial robotic phrasing.");
+    parts.push(HUMANIZER_INSTRUCTIONS);
     if (profile.interviewMode) {
-      parts.push("INTERVIEW MODE: Answer as an engineering candidate in an interview: structured, first-person, highlighting real experience.");
+      parts.push(
+        INTERVIEW_MODE_INSTRUCTIONS.replace(
+          /KEEP ANSWERS CONCISE: strictly 1-3 spoken sentences \(35-55 words maximum\)\. Get straight to the point\./,
+          "LENGTH: the ANSWER-LENGTH rule above decides (short = tight, long = full detail)."
+        )
+      );
     }
     if (profile.customStyle?.trim()) {
       parts.push(`Match this personal speaking style: ${profile.customStyle.trim()}`);
@@ -80,9 +97,38 @@ export function buildPreviewPrompt(profile: PromptProfile): string {
     parts.push("[CONTEXT: JOB DESCRIPTION]\n<Vacancy requirements & job context injected here>\n[/CONTEXT]");
   }
 
-  // 7. Language rule
-  parts.push("[LANGUAGE RULE]: Always answer in the language the question was asked (Russian or English).");
+  // 7. Language rule (globally and unconditionally applied)
+  try {
+    if (LANGUAGE_RULE) {
+      parts.push(LANGUAGE_RULE);
+    }
+  } catch {
+    // partial mock fallback
+  }
 
+  // 8. Self-Evolution adaptive block (when learning is enabled)
+  try {
+    const learningEnabled =
+      typeof isSelfLearningEnabled === "function" ? isSelfLearningEnabled() : true;
+    if (learningEnabled && typeof buildSelfEvolutionPromptBlock === "function") {
+      try {
+        if (
+          typeof getUserStylePreferences === "function" &&
+          typeof setSelfEvolutionStyleOverride === "function"
+        ) {
+          setSelfEvolutionStyleOverride(getUserStylePreferences());
+        }
+      } catch {
+        // partial mock fallback
+      }
+      const evolutionBlock = buildSelfEvolutionPromptBlock();
+      if (evolutionBlock) {
+        parts.push(evolutionBlock);
+      }
+    }
+  } catch {
+    // partial mock fallback
+  }
   return parts.join("\n\n");
 }
 

@@ -20,9 +20,7 @@ import {
   UserFact,
   FeedbackEntry,
   UserStylePreference,
-  RuleSource,
 } from "@/lib/storage/user-facts";
-import { SmartRule } from "@/lib/storage/smart-rules";
 import { SelfLearningToggle } from "@/components/SelfLearningToggle";
 import { RulesPanel } from "./RulesPanel";
 
@@ -38,14 +36,6 @@ export interface MemoryPanelsProps {
   onSaveMarkdown: (text: string) => void;
   onResetMarkdown: () => void;
   onResetLearning: () => void;
-  // Rules props
-  rules: SmartRule[];
-  onAddRule: (text: string, source?: RuleSource) => void;
-  onDeleteRule: (id: string) => void;
-  onArchiveRule?: (id: string) => void;
-  legacyRules?: string[];
-  onRemoveLegacyRule?: (index: number) => void;
-  resolveRuleSource?: (rule: string) => RuleSource;
 }
 
 export const MemoryPanels: React.FC<MemoryPanelsProps> = ({
@@ -60,13 +50,6 @@ export const MemoryPanels: React.FC<MemoryPanelsProps> = ({
   onSaveMarkdown,
   onResetMarkdown,
   onResetLearning,
-  rules,
-  onAddRule,
-  onDeleteRule,
-  onArchiveRule,
-  legacyRules = [],
-  onRemoveLegacyRule,
-  resolveRuleSource,
 }) => {
   const [showMarkdownEditor, setShowMarkdownEditor] = useState(false);
   const [localMarkdown, setLocalMarkdown] = useState(markdownText);
@@ -276,15 +259,7 @@ export const MemoryPanels: React.FC<MemoryPanelsProps> = ({
           </div>
 
           {/* Rules Panel */}
-          <RulesPanel
-            rules={rules}
-            onAddRule={onAddRule}
-            onDeleteRule={onDeleteRule}
-            onArchiveRule={onArchiveRule}
-            legacyRules={legacyRules}
-            onRemoveLegacyRule={onRemoveLegacyRule}
-            resolveRuleSource={resolveRuleSource}
-          />
+          <RulesPanel />
 
           {/* Feedback & Evolution Journal (Last 20) */}
           <div className="space-y-2 pt-3 border-t border-primary/20">
@@ -299,50 +274,53 @@ export const MemoryPanels: React.FC<MemoryPanelsProps> = ({
                   Журнал пуст. Здесь появятся последние 20 сигналов обучения (оценки ответов и ручные правки).
                 </div>
               ) : (
-                feedbackLogs.slice(0, 20).map((entry) => (
-                  <div
-                    key={entry.id}
-                    className="p-2 rounded-lg bg-background/80 border border-border/40 text-xs space-y-1"
-                  >
-                    <div className="flex items-center justify-between text-[10px]">
-                      <div className="flex items-center gap-1">
-                        <span
-                          data-testid="journal-source-badge"
-                          className={cn(
-                            "px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-1",
-                            entry.topic === "coach"
-                              ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                              : entry.topic === "manual"
-                              ? "bg-primary/10 text-primary"
-                              : entry.rating === "like"
-                              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                              : "bg-red-500/10 text-red-600 dark:text-red-400"
-                          )}
-                        >
-                          {entry.topic === "coach"
-                            ? "🎯 coach"
-                            : entry.topic === "manual"
-                            ? "✏️ manual"
-                            : `${entry.rating === "like" ? "👍 like" : "👎 dislike"} · feedback`}
+                feedbackLogs.slice(0, 20).map((entry) => {
+                  let badgeClass = "bg-red-500/10 text-red-600 dark:text-red-400";
+                  let badgeLabel = `${entry.rating === "like" ? "👍 like" : "👎 dislike"} · feedback`;
+                  if (entry.topic === "coach") {
+                    badgeClass = "bg-amber-500/15 text-amber-700 dark:text-amber-300";
+                    badgeLabel = "🎯 coach";
+                  } else if (entry.topic === "manual") {
+                    badgeClass = "bg-primary/10 text-primary";
+                    badgeLabel = "✏️ manual";
+                  } else if (entry.rating === "like") {
+                    badgeClass = "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400";
+                  }
+                  return (
+                    <div
+                      key={entry.id}
+                      className="p-2 rounded-lg bg-background/80 border border-border/40 text-xs space-y-1"
+                    >
+                      <div className="flex items-center justify-between text-[10px]">
+                        <div className="flex items-center gap-1">
+                          <span
+                            data-testid="journal-source-badge"
+                            className={cn(
+                              "px-1.5 py-0.5 rounded-full font-medium inline-flex items-center gap-1",
+                              badgeClass
+                            )}
+                          >
+                            {badgeLabel}
+                          </span>
+                        </div>
+                        <span className="text-muted-foreground font-mono">
+                          {new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
                         </span>
                       </div>
-                      <span className="text-muted-foreground font-mono">
-                        {new Date(entry.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                      </span>
-                    </div>
-                    <div className="text-[11px] font-medium text-foreground truncate">
-                      <span className="text-muted-foreground">Вопрос:</span> {entry.question}
-                    </div>
-                    <div className="text-[11px] text-muted-foreground line-clamp-2">
-                      <span className="text-foreground/70">Ответ:</span> {entry.response}
-                    </div>
-                    {entry.reason && (
-                      <div className="text-[10px] text-amber-600 dark:text-amber-400">
-                        <span>Причина:</span> {entry.reason}
+                      <div className="text-[11px] font-medium text-foreground truncate">
+                        <span className="text-muted-foreground">Вопрос:</span> {entry.question}
                       </div>
-                    )}
-                  </div>
-                ))
+                      <div className="text-[11px] text-muted-foreground line-clamp-2">
+                        <span className="text-foreground/70">Ответ:</span> {entry.response}
+                      </div>
+                      {entry.reason && (
+                        <div className="text-[10px] text-amber-600 dark:text-amber-400">
+                          <span>Причина:</span> {entry.reason}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
