@@ -1,7 +1,8 @@
-import { Badge, Input, Card, Empty } from "@/components";
+import { Badge, Input, Card, Empty, Button } from "@/components";
 import { useHistory } from "@/hooks";
 import { PageLayout } from "@/layouts";
-import { MessageCircleIcon, Search } from "lucide-react";
+import { MessageCircleIcon, Search, Download } from "lucide-react";
+import { exportHistory, downloadBlob } from "@/lib";
 import moment from "moment";
 import { useNavigate } from "react-router-dom";
 
@@ -40,6 +41,36 @@ const Dashboard = () => {
     <PageLayout
       title="All conversations"
       description="View all your conversations"
+      rightSlot={
+        conversations.conversations.length > 0 ? (
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs h-8 gap-1.5"
+              onClick={async () => {
+                const blob = await exportHistory("json");
+                downloadBlob(blob, `pluely-history-${Date.now()}.json`);
+              }}
+            >
+              <Download className="size-3.5" />
+              Export JSON
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-xs h-8 gap-1.5"
+              onClick={async () => {
+                const blob = await exportHistory("md");
+                downloadBlob(blob, `pluely-history-${Date.now()}.md`);
+              }}
+            >
+              <Download className="size-3.5" />
+              Export Markdown
+            </Button>
+          </div>
+        ) : undefined
+      }
     >
       <>
         {conversations.conversations.length === 0 ? (

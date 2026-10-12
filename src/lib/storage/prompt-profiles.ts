@@ -50,6 +50,10 @@ export const GENERAL_PROFILE_ID = "profile-general";
 export const CONVERSATION_PROFILE_ID = "profile-general";
 export const LIVECODE_PROFILE_ID = "profile-livecode";
 export const SELF_EVOLUTION_PROFILE_ID = "profile-self-evolution";
+export const SALES_PROFILE_ID = "profile-sales";
+export const RECRUITING_PROFILE_ID = "profile-recruiting";
+export const LECTURE_PROFILE_ID = "profile-lecture";
+export const CALL_CENTER_PROFILE_ID = "profile-call-center";
 export const BUILTIN_PROFILES: PromptProfile[] = [
   {
     id: INTERVIEW_PROFILE_ID,
@@ -173,6 +177,136 @@ export const BUILTIN_PROFILES: PromptProfile[] = [
     monologue: {
       mode: "auto",
       maxWindow: 12000,
+    },
+  },
+  {
+    id: SALES_PROFILE_ID,
+    name: "Sales",
+    description: "Deal negotiation & sales call copilot: objection handling, value framing, deal closing",
+    systemPrompt: `You are an expert sales negotiation copilot assisting in real-time customer and prospect calls.
+CORE PRINCIPLES:
+1. Active listening: Identify prospect pain points, budget signals, and unspoken objections.
+2. Value-based framing: Reframe objections into value outcomes and ROI metrics.
+3. Tactical responses: Suggest concise, persuasive talking points, clarifying questions, and next-step closes.
+4. Keep spoken responses succinct, confident, and natural for live conversation.`,
+    humanizerEnabled: true,
+    interviewMode: false,
+    customStyle: "",
+    ragResumeEnabled: false,
+    ragJobEnabled: false,
+    isBuiltin: true,
+    flushGapMs: 600,
+    defaultLength: "short",
+    visibleButtons: [
+      "length",
+      "thought",
+      "answer",
+      "monologue_send",
+      "screenshot",
+      "audio_settings",
+      "settings",
+      "new_chat",
+    ],
+    monologue: {
+      mode: "auto",
+      maxWindow: 6000,
+    },
+  },
+  {
+    id: RECRUITING_PROFILE_ID,
+    name: "Recruiting",
+    description: "Recruiter & talent acquisition copilot: candidate probing, competency assessment, scorecard criteria",
+    systemPrompt: `You are an expert recruitment and talent assessment assistant assisting the interviewer in evaluating candidates.
+CORE PRINCIPLES:
+1. Candidate evaluation: Assess responses against core competencies, seniority indicators, and culture fit.
+2. Follow-up probing: Suggest precise behavioral follow-up questions using STAR method when answers lack depth.
+3. Scorecard alignment: Note key strengths, potential red flags, and alignment with job requirements.
+4. Keep suggestions direct, structured, and immediately actionable during the live interview.`,
+    humanizerEnabled: true,
+    interviewMode: true,
+    customStyle: "",
+    ragResumeEnabled: true,
+    ragJobEnabled: true,
+    isBuiltin: true,
+    flushGapMs: 500,
+    defaultLength: "auto",
+    visibleButtons: [
+      "length",
+      "thought",
+      "answer",
+      "screenshot",
+      "audio_settings",
+      "settings",
+      "new_chat",
+    ],
+    monologue: {
+      mode: "auto",
+      maxWindow: 5000,
+    },
+  },
+  {
+    id: LECTURE_PROFILE_ID,
+    name: "Lecture",
+    description: "Lecture & seminar listener: long-speech capture, core concept extraction, structured study notes",
+    systemPrompt: `You are an academic lecture assistant capturing and explaining complex course material and seminars.
+CORE PRINCIPLES:
+1. Concept synthesis: Extract core definitions, theorems, formulas, and arguments from extended speech.
+2. Structured synthesis: Organize key takeaways into clear, hierarchical summaries with context.
+3. Clarity over jargon: Explain difficult concepts intuitively and highlight practical examples.
+4. Address questions thoroughly with academic depth and conceptual clarity.`,
+    humanizerEnabled: false,
+    interviewMode: false,
+    customStyle: "",
+    ragResumeEnabled: false,
+    ragJobEnabled: false,
+    isBuiltin: true,
+    flushGapMs: 2000,
+    defaultLength: "long",
+    visibleButtons: [
+      "length",
+      "thought",
+      "answer",
+      "monologue_send",
+      "screenshot",
+      "audio_settings",
+      "settings",
+      "new_chat",
+    ],
+    monologue: {
+      mode: "auto",
+      maxWindow: 20000,
+    },
+  },
+  {
+    id: CALL_CENTER_PROFILE_ID,
+    name: "Call Center",
+    description: "Customer service & support copilot: de-escalation, rapid troubleshooting, polite concise solutions",
+    systemPrompt: `You are a real-time customer support and call center copilot assisting frontline service agents.
+CORE PRINCIPLES:
+1. Empathy & de-escalation: Maintain a calm, empathetic, and professional tone in tense customer interactions.
+2. Rapid resolution: Provide concise, step-by-step troubleshooting instructions and policy-compliant answers.
+3. Clarity and brevity: Provide answers that the agent can read or paraphrase instantly without hesitation.
+4. Proactive guidance: Anticipate common follow-up customer inquiries and suggest preventive actions.`,
+    humanizerEnabled: true,
+    interviewMode: false,
+    customStyle: "",
+    ragResumeEnabled: false,
+    ragJobEnabled: false,
+    isBuiltin: true,
+    flushGapMs: 450,
+    defaultLength: "short",
+    visibleButtons: [
+      "length",
+      "thought",
+      "answer",
+      "screenshot",
+      "audio_settings",
+      "settings",
+      "new_chat",
+    ],
+    monologue: {
+      mode: "auto",
+      maxWindow: 4000,
     },
   },
 ];
