@@ -116,11 +116,6 @@ pub fn apply_stealth_to_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<
     apply_stealth_to_window_with_mode(window, is_stealth_enabled(), true)
 }
 
-pub fn set_window_stealth<R: Runtime>(window: &WebviewWindow<R>, enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
-    let is_overlay = window.label() == "main" || window.label() == "pluely";
-    apply_stealth_to_window_with_mode(window, enabled, is_overlay)
-}
-
 #[tauri::command]
 pub fn set_stealth_mode<R: Runtime>(app: AppHandle<R>, enabled: bool) -> Result<(), String> {
     STEALTH_MODE_ENABLED.store(enabled, Ordering::SeqCst);
