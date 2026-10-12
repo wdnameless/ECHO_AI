@@ -46,6 +46,7 @@ import {
 } from "@/lib/asr-ws-shared";
 
 const WS_BACKOFF: ReconnectBackoff = { baseMs: 400, maxMs: 3000 };
+const FINALIZE_CLOSE_FALLBACK_MS = 150;
 export interface UseThemWsStreamingProps {
   capturingRef: React.MutableRefObject<boolean>;
   onPartialTranscript: (text: string) => void;
@@ -75,9 +76,10 @@ export function useThemWsStreaming({
     producedText: boolean;
   } | null>(null);
   const wantRef = useRef(false);
+  const cachedBaseUrlRef = useRef("");
+  const finalReceivedRef = useRef(false);
   const connectEpochRef = useRef(0);
   const ownerEpochRef = useRef<number | null>(null);
-
   const releaseOwner = useCallback((epoch = ownerEpochRef.current) => {
     // Always drop queued requests: a channel that never owned the slot can
     // still have a pending handoff entry waiting for it.
@@ -103,6 +105,7 @@ export function useThemWsStreaming({
   const close = useCallback(() => {
     cancelConnect();
     wantRef.current = false;
+    finalReceivedRef.current = false;
     frameBufferRef.current = [];
     if (closeTimerRef.current !== null) {
       clearTimeout(closeTimerRef.current);
@@ -203,16 +206,18 @@ export function useThemWsStreaming({
     const epoch = ++connectEpochRef.current;
     ownerEpochRef.current = epoch;
 
-    let base: string;
-    try {
-      base = await getAsrBaseUrl();
-    } catch {
-      base = "";
-    }
-    if (epoch !== connectEpochRef.current) return;
-    if (!capturingRef.current || !wantRef.current) {
-      releaseOwner(epoch);
-      return;
+    let base = cachedBaseUrlRef.current;
+    if (!base) {
+      try {
+        base = await getAsrBaseUrl();
+      } catch {
+        base = "";
+      }
+      if (epoch !== connectEpochRef.current) return;
+      if (!capturingRef.current || !wantRef.current) {
+        releaseOwner(epoch);
+        return;
+      }
     }
     if (!base) {
       releaseOwner(epoch);
@@ -255,8 +260,8 @@ export function useThemWsStreaming({
       );
       // A served connection means the retries were worth it: start the next
       // backoff from the base delay again.
+      cachedBaseUrlRef.current = base;
       reconnectAttemptsRef.current = 0;
-
       while (frameBufferRef.current.length > 0) {
         const buffered = frameBufferRef.current.shift();
         if (buffered && ws.readyState === WebSocket.OPEN) {
@@ -285,9 +290,26 @@ export function useThemWsStreaming({
         typeof ev.data === "string" &&
         /not implemented by this model/i.test(ev.data)
       ) {
+        cachedBaseUrlRef.current = "";
         noteStreamingUnsupported();
       }
       handleAsrStreamFrame(ev.data, { onPartialTranscript, onFinalTranscript });
+      if (typeof ev.data === "string" && /"type"\s*:\s*"final"/.test(ev.data)) {
+        if (!state.stoppedByUs && wantRef.current) {
+          finalReceivedRef.current = true;
+        }
+        state.stoppedByUs = true;
+        if (closeTimerRef.current !== null) {
+          clearTimeout(closeTimerRef.current);
+          closeTimerRef.current = null;
+        }
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+          socketStateRef.current = null;
+        }
+        releaseOwner(epoch);
+        closeSocketDetached(ws);
+      }
     };
     ws.onclose = () => {
       // Only the CURRENT socket may free the shared slot.
@@ -327,6 +349,7 @@ export function useThemWsStreaming({
           producedText: state.producedText,
         })
       ) {
+        cachedBaseUrlRef.current = "";
         noteStreamingUnsupported();
       }
       // Finalized sockets are done; fresh speech, not silence, reopens them.
@@ -338,6 +361,7 @@ export function useThemWsStreaming({
       // A refused connection means the cached base URL is stale — the engine
       // rebounds to another port and the renderer must re-resolve it, otherwise
       // every later utterance is streamed into a dead port and never appears.
+      cachedBaseUrlRef.current = "";
       resetAsrBaseUrlCache();
       pushStatus({ online: false });
       try {
@@ -418,6 +442,7 @@ export function useThemWsStreaming({
    * utterance opens a fresh socket from `start()`.
    */
   const finalizeUtterance = useCallback(() => {
+    finalReceivedRef.current = false;
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || socketStateRef.current?.stoppedByUs) return;
     cancelConnect();
@@ -442,6 +467,7 @@ export function useThemWsStreaming({
   const finalizeAndClose = useCallback(() => {
     cancelConnect();
     wantRef.current = false;
+    finalReceivedRef.current = false;
     if (socketStateRef.current) socketStateRef.current.stoppedByUs = true;
     frameBufferRef.current = [];
     const ws = wsRef.current;
@@ -462,11 +488,11 @@ export function useThemWsStreaming({
       // needs to flush its `final`; the slot, which is what the other channel
       // competes for, is released immediately.
       releaseOwner();
-      if (closeTimerRef.current !== null) clearTimeout(closeTimerRef.current);
+      clearTimeout(closeTimerRef.current ?? undefined);
       closeTimerRef.current = setTimeout(() => {
         closeTimerRef.current = null;
         if (wsRef.current === ws) close();
-      }, 200);
+      }, FINALIZE_CLOSE_FALLBACK_MS);
     } else {
       close();
     }
@@ -476,6 +502,7 @@ export function useThemWsStreaming({
   const isStreaming = useCallback(
     () =>
       cloudSessionRef.current !== null ||
+      (wantRef.current && finalReceivedRef.current) ||
       (wsRef.current?.readyState === WebSocket.OPEN &&
         !socketStateRef.current?.stoppedByUs &&
         ownerEpochRef.current !== null),
@@ -488,8 +515,12 @@ export function useThemWsStreaming({
   /** Called at the start of an utterance. */
   const beginUtterance = useCallback(() => {
     producedTextRef.current = false;
+    finalReceivedRef.current = false;
+    if (socketStateRef.current && !socketStateRef.current.stoppedByUs) {
+      socketStateRef.current.framesSent = 0;
+      socketStateRef.current.producedText = false;
+    }
   }, []);
-
   return {
     start,
     feedFrame,

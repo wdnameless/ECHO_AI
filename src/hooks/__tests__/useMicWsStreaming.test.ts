@@ -6,6 +6,7 @@ import { getAsrLanguage } from "@/lib/asr-language";
 import * as asrGate from "@/lib/asr-gate";
 import { resetAsrGateForTests } from "@/lib/asr-gate";
 import { getAsrCapabilities } from "@/lib/asr-capabilities";
+import { micStateStore } from "@/stores/mic-state";
 
 vi.mock("@/lib/asr-discovery", () => ({
   getAsrBaseUrl: vi.fn(),
@@ -88,12 +89,14 @@ describe("useMicWsStreaming", () => {
     vi.mocked(getAsrLanguage).mockReturnValue("ru");
     vi.mocked(getAsrCapabilities).mockResolvedValue({ streaming: true, variant: "test" });
     resetAsrGateForTests();
+    micStateStore.setMode("DICTATION");
   });
 
   afterEach(() => {
     vi.useRealTimers();
     global.WebSocket = originalWebSocket;
     vi.clearAllMocks();
+    micStateStore.setMode("IDLE");
   });
 
   it("releases the model when it cannot resolve a base URL", async () => {
@@ -790,5 +793,112 @@ describe("useMicWsStreaming", () => {
     expect(onPartialTranscript).not.toHaveBeenCalled();
     expect(next.readyState).toBe(MockWebSocket.OPEN);
     expect(asrGate.tryAcquireStream("them")).toBe(false);
+  });
+
+  it("R04 skips health and capabilities probes on the second utterance and keeps warm socket when open", async () => {
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useMicWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    act(() => {
+      result.current.micBeginUtterance();
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const first = MockWebSocket.instances[0];
+    act(() => first.triggerOpen());
+    expect(getAsrBaseUrl).toHaveBeenCalledTimes(1);
+    expect(getAsrCapabilities).toHaveBeenCalledTimes(1);
+
+    // Keeping warm when socket is still open and not finalized
+    act(() => {
+      result.current.micBeginUtterance();
+      result.current.micWsConnect();
+    });
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(first.readyState).toBe(MockWebSocket.OPEN);
+
+    // After finalization and close, second utterance skips getAsrBaseUrl and getAsrCapabilities
+    act(() => {
+      result.current.micWsFinalizeAndClose();
+      vi.advanceTimersByTime(150);
+    });
+    expect(first.readyState).toBe(MockWebSocket.CLOSED);
+
+    await act(async () => {
+      result.current.micBeginUtterance();
+      result.current.micWsConnect();
+    });
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(getAsrBaseUrl).toHaveBeenCalledTimes(1);
+    expect(getAsrCapabilities).toHaveBeenCalledTimes(1);
+  });
+
+  it("R06 closes the mic socket immediately on a final frame and uses 150ms fallback otherwise", async () => {
+    const onFinalTranscript = vi.fn();
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useMicWsStreaming({
+        capturingRef,
+        onPartialTranscript: vi.fn(),
+        onFinalTranscript,
+      })
+    );
+
+    act(() => {
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const first = MockWebSocket.instances[0];
+    act(() => first.triggerOpen());
+
+    act(() => {
+      first.triggerMessage(JSON.stringify({ type: "final", text: "Мой ответ" }));
+    });
+    expect(onFinalTranscript).toHaveBeenCalledWith("Мой ответ");
+    expect(first.readyState).toBe(MockWebSocket.CLOSED);
+    expect(asrGate.tryAcquireStream("them")).toBe(true);
+    asrGate.releaseStream("them");
+
+    // Fallback path when final frame does not arrive: closes at 150ms
+    await act(async () => {
+      result.current.micBeginUtterance();
+      result.current.micWsConnect();
+    });
+    const second = MockWebSocket.instances[1];
+    act(() => second.triggerOpen());
+    act(() => result.current.micWsFinalizeAndClose());
+    expect(second.readyState).toBe(MockWebSocket.OPEN);
+    act(() => { vi.advanceTimersByTime(150); });
+    expect(second.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it("R06 skips mic slot acquisition when micStateStore is IDLE", async () => {
+    micStateStore.setMode("IDLE");
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useMicWsStreaming({ capturingRef, onPartialTranscript: vi.fn() })
+    );
+
+    act(() => {
+      result.current.micBeginUtterance();
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(asrGate.tryAcquireStream("them")).toBe(true);
   });
 });
