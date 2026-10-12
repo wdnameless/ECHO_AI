@@ -46,8 +46,9 @@ describe("trusted-hosts", () => {
     it("trusts hosts of the built-in providers", () => {
       expect(isTrustedHost("https://api.openai.com/v1/chat/completions")).toBe(true);
       expect(isTrustedHost("https://api.anthropic.com/v1/messages")).toBe(true);
+      expect(isTrustedHost("https://api.deepgram.com/v1/listen")).toBe(true);
+      expect(isTrustedHost("wss://api.deepgram.com/v1/listen")).toBe(true);
     });
-
     it("does not trust an arbitrary third-party host", () => {
       expect(isTrustedHost("https://evil.example.com/collect")).toBe(false);
     });

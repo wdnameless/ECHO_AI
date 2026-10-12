@@ -1,3 +1,5 @@
+import type { StreamingSTTSession } from "./stt/streaming";
+
 /**
  * The pluely-asr sidecar accepts ONE active stream per model: a second one is
  * rejected with `stream begin failed: model busy`, and while a stream is open
@@ -215,4 +217,40 @@ export function resetAsrGateForTests(): void {
   for (const wake of [...waiters]) wake();
   waiters.clear();
   httpActiveCount = 0;
+  activeCloudSession = null;
+  activeCloudProviderId = null;
+}
+
+/** S2: Cloud STT streaming slot alongside local WS. */
+let activeCloudSession: StreamingSTTSession | null = null;
+let activeCloudProviderId: string | null = null;
+
+export function acquireCloudStreamSlot(
+  providerId: string,
+  session: StreamingSTTSession
+): boolean {
+  if (activeCloudSession) return false;
+  activeCloudSession = session;
+  activeCloudProviderId = providerId;
+  return true;
+}
+
+export function releaseCloudStreamSlot(): void {
+  if (activeCloudSession) {
+    try {
+      activeCloudSession.close();
+    } catch {
+      // ignore
+    }
+  }
+  activeCloudSession = null;
+  activeCloudProviderId = null;
+}
+
+export function getActiveCloudStreamSlot(): {
+  providerId: string;
+  session: StreamingSTTSession;
+} | null {
+  if (!activeCloudSession || !activeCloudProviderId) return null;
+  return { providerId: activeCloudProviderId, session: activeCloudSession };
 }

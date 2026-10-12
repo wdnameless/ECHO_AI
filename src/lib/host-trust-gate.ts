@@ -35,6 +35,25 @@ export function setHostTrustPrompt(handler: TrustPrompt): () => void {
   };
 }
 
+/**
+ * S2: Проверяет доверие к хосту перед открытием стримингового соединения (WebSocket).
+ * Возвращает true, если хост доверен (молча или с подтверждения пользователя).
+ */
+export async function assertHostTrusted(
+  urlOrHost: string,
+  secretNames: string[] = []
+): Promise<boolean> {
+  if (isTrustedHost(urlOrHost)) return true;
+  const host = normalizeHost(urlOrHost);
+  if (!host || !promptHandler) return false;
+  const decision = await promptHandler({ host, secrets: secretNames });
+  if (decision === "trust") {
+    trustHost(host);
+    return true;
+  }
+  return false;
+}
+
 /** Имена заголовков, несущих учётные данные. */
 const SECRET_HEADER_PATTERN =
   /^(authorization|cookie|cookie2|proxy-authorization|www-authenticate|ocp-apim-subscription-key)$|api[_-]?key|token|secret|auth/i;
@@ -268,7 +287,12 @@ export async function warmProviderConnection(
   providerUrl: string,
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>
 ): Promise<void> {
-  const parsed = new URL(providerUrl);
+  let parsed: URL;
+  try {
+    parsed = new URL(providerUrl);
+  } catch {
+    throw new Error("Provider warmup requires an HTTP(S) origin.");
+  }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("Provider warmup requires an HTTP(S) origin.");
   }
