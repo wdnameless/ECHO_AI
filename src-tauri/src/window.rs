@@ -3,66 +3,140 @@ use tauri::LogicalPosition;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{App, AppHandle, Emitter, Manager, Runtime, WebviewWindow, WebviewWindowBuilder};
 
-#[cfg(target_os = "windows")]
-pub fn apply_stealth_to_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), Box<dyn std::error::Error>> {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE,
-        WDA_NONE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    };
+pub const WS_EX_TOOLWINDOW_VAL: isize = 0x00000080;
+pub const WS_EX_APPWINDOW_VAL: isize = 0x00040000;
+pub const WS_EX_NOACTIVATE_VAL: isize = 0x08000000;
 
-    if let Ok(hwnd_ptr) = window.hwnd() {
-        let hwnd = HWND(hwnd_ptr.0 as *mut _);
-        unsafe {
-            // (1) WS_EX_TOOLWINDOW (hide from Alt-Tab) & (2) WS_EX_NOACTIVATE (never steal focus on click)
-            let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            let new_ex_style = ex_style | (WS_EX_TOOLWINDOW.0 as isize) | (WS_EX_NOACTIVATE.0 as isize);
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex_style);
+static STEALTH_MODE_ENABLED: AtomicBool = AtomicBool::new(false);
 
-            // Stealth display affinity is off by default, controlled via toggle
-            let _ = SetWindowDisplayAffinity(hwnd, WDA_NONE);
+/// Reports whether window-level stealth mode is currently active.
+pub fn is_stealth_enabled() -> bool {
+    STEALTH_MODE_ENABLED.load(Ordering::SeqCst)
+}
+
+/// Calculates the target extended window style for stealth mode (R09-R11).
+///
+/// When stealth is enabled:
+/// - WS_EX_TOOLWINDOW is set (hides from Alt-Tab switcher).
+/// - WS_EX_APPWINDOW is cleared (prevents forcing onto taskbar).
+/// - If `is_overlay` is true (floating main bar), WS_EX_NOACTIVATE is set so it never steals focus.
+/// - If `is_overlay` is false (dashboard, dialogs), WS_EX_NOACTIVATE is cleared so the window remains interactive.
+///
+/// When stealth is disabled:
+/// - If `is_overlay` is true, WS_EX_TOOLWINDOW and WS_EX_NOACTIVATE remain set (floating toolbar design).
+/// - If `is_overlay` is false, WS_EX_TOOLWINDOW and WS_EX_NOACTIVATE are cleared (normal window appearance in Alt-Tab).
+pub fn calculate_stealth_ex_style(current_style: isize, enabled: bool, is_overlay: bool) -> isize {
+    if enabled {
+        let mut style = (current_style | WS_EX_TOOLWINDOW_VAL) & !WS_EX_APPWINDOW_VAL;
+        if is_overlay {
+            style |= WS_EX_NOACTIVATE_VAL;
+        } else {
+            style &= !WS_EX_NOACTIVATE_VAL;
         }
+        style
+    } else if is_overlay {
+        current_style | WS_EX_TOOLWINDOW_VAL | WS_EX_NOACTIVATE_VAL
+    } else {
+        current_style & !WS_EX_TOOLWINDOW_VAL & !WS_EX_NOACTIVATE_VAL
     }
-    Ok(())
 }
 
 #[cfg(target_os = "windows")]
-pub fn set_window_stealth<R: Runtime>(window: &WebviewWindow<R>, enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn apply_stealth_to_window_with_mode<R: Runtime>(
+    window: &WebviewWindow<R>,
+    enabled: bool,
+    is_overlay: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+        GetWindowLongPtrW, SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos,
+        GWL_EXSTYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+        WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
     };
 
     if let Ok(hwnd_ptr) = window.hwnd() {
         let hwnd = HWND(hwnd_ptr.0 as *mut _);
         unsafe {
+            let current_ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            let target_ex = calculate_stealth_ex_style(current_ex, enabled, is_overlay);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, target_ex);
+
             let affinity = if enabled {
                 WDA_EXCLUDEFROMCAPTURE
             } else {
                 WDA_NONE
             };
             let _ = SetWindowDisplayAffinity(hwnd, affinity);
+
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
         }
     }
+
+    if enabled {
+        let _ = window.set_skip_taskbar(true);
+    } else if !is_overlay {
+        let _ = window.set_skip_taskbar(false);
+    } else {
+        let _ = window.set_skip_taskbar(true);
+    }
+    let _ = window.set_content_protected(enabled);
+
     Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn set_window_stealth<R: Runtime>(_window: &WebviewWindow<R>, _enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn apply_stealth_to_window_with_mode<R: Runtime>(
+    window: &WebviewWindow<R>,
+    enabled: bool,
+    _is_overlay: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, set_content_protected sets NSWindowSharingNone (0) when enabled,
+        // which excludes the window from screen capture / recording / sharing.
+        let _ = window.set_content_protected(enabled);
+        if enabled {
+            let _ = window.set_skip_taskbar(true);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Linux honest no-op: X11/Wayland display protocols lack uniform OS-level
+        // screen-capture exclusion without compositor-specific private extensions.
+        // We do not fake process name or window class (hard ban on masking).
+        let _ = window.set_content_protected(enabled);
+    }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn apply_stealth_to_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<(), Box<dyn std::error::Error>> {
+    apply_stealth_to_window_with_mode(window, is_stealth_enabled(), true)
+}
+
+pub fn set_window_stealth<R: Runtime>(window: &WebviewWindow<R>, enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let is_overlay = window.label() == "main" || window.label() == "pluely";
+    apply_stealth_to_window_with_mode(window, enabled, is_overlay)
 }
 
 #[tauri::command]
 pub fn set_stealth_mode<R: Runtime>(app: AppHandle<R>, enabled: bool) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        set_window_stealth(&window, enabled)
-            .map_err(|e| format!("Failed to set stealth mode: {}", e))?;
-        let _ = window.set_content_protected(enabled);
+    STEALTH_MODE_ENABLED.store(enabled, Ordering::SeqCst);
+
+    // Apply to all existing windows (main, dashboard, aux dialogs, overlays)
+    for (label, window) in app.webview_windows() {
+        let is_overlay = label == "main" || label == "pluely" || label.starts_with("capture-overlay");
+        let _ = apply_stealth_to_window_with_mode(&window, enabled, is_overlay);
     }
-    if let Some(window) = app.get_webview_window("dashboard") {
-        let _ = set_window_stealth(&window, enabled);
-        let _ = window.set_content_protected(enabled);
-    }
+
     Ok(())
 }
 // The offset from the top of the screen to the window
@@ -340,6 +414,9 @@ pub fn create_dashboard_window<R: Runtime>(
     // take focus, which reads to the user as "buttons do not respond".
     let _ = window.hide();
     guard_settings_visibility(app.clone(), window.clone());
+    if is_stealth_enabled() {
+        let _ = apply_stealth_to_window_with_mode(&window, true, false);
+    }
     Ok(window)
 }
 
@@ -479,5 +556,59 @@ pub fn show_dashboard_window<R: Runtime>(app: &AppHandle<R>) -> Result<(), Strin
     dashboard_window
         .set_focus()
         .map_err(|e| format!("Failed to focus dashboard window: {}", e))?;
+    if is_stealth_enabled() {
+        let _ = apply_stealth_to_window_with_mode(&dashboard_window, true, false);
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_stealth_ex_style_overlay_enabled() {
+        let base_style = 0isize;
+        let style = calculate_stealth_ex_style(base_style, true, true);
+        assert_ne!(style & WS_EX_TOOLWINDOW_VAL, 0, "Overlay must have WS_EX_TOOLWINDOW");
+        assert_ne!(style & WS_EX_NOACTIVATE_VAL, 0, "Overlay must have WS_EX_NOACTIVATE");
+        assert_eq!(style & WS_EX_APPWINDOW_VAL, 0, "Overlay must not have WS_EX_APPWINDOW");
+    }
+
+    #[test]
+    fn test_calculate_stealth_ex_style_aux_window_enabled() {
+        let base_style = WS_EX_APPWINDOW_VAL;
+        let style = calculate_stealth_ex_style(base_style, true, false);
+        assert_ne!(style & WS_EX_TOOLWINDOW_VAL, 0, "Aux window must have WS_EX_TOOLWINDOW (hide from Alt-Tab)");
+        assert_eq!(style & WS_EX_APPWINDOW_VAL, 0, "Aux window must strip WS_EX_APPWINDOW (hide from taskbar)");
+        assert_eq!(style & WS_EX_NOACTIVATE_VAL, 0, "Aux window must NOT have WS_EX_NOACTIVATE (must remain clickable/interactive)");
+    }
+
+    #[test]
+    fn test_calculate_stealth_ex_style_aux_window_disabled() {
+        let stealth_style = WS_EX_TOOLWINDOW_VAL;
+        let style = calculate_stealth_ex_style(stealth_style, false, false);
+        assert_eq!(style & WS_EX_TOOLWINDOW_VAL, 0, "Disabled stealth must restore WS_EX_TOOLWINDOW for aux window");
+        assert_eq!(style & WS_EX_NOACTIVATE_VAL, 0, "Disabled stealth must not have WS_EX_NOACTIVATE for aux window");
+    }
+
+    #[test]
+    fn test_calculate_stealth_ex_style_overlay_disabled() {
+        let base_style = 0isize;
+        let style = calculate_stealth_ex_style(base_style, false, true);
+        assert_ne!(style & WS_EX_TOOLWINDOW_VAL, 0, "Overlay retains toolwindow even with stealth off");
+        assert_ne!(style & WS_EX_NOACTIVATE_VAL, 0, "Overlay retains noactivate even with stealth off");
+    }
+
+    #[test]
+    fn test_is_stealth_enabled_tracks_state() {
+        STEALTH_MODE_ENABLED.store(false, Ordering::SeqCst);
+        assert!(!is_stealth_enabled());
+
+        STEALTH_MODE_ENABLED.store(true, Ordering::SeqCst);
+        assert!(is_stealth_enabled());
+
+        STEALTH_MODE_ENABLED.store(false, Ordering::SeqCst);
+        assert!(!is_stealth_enabled());
+    }
 }
