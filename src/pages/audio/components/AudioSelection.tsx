@@ -8,13 +8,16 @@ import {
 } from "@/components";
 import { MicIcon, RefreshCwIcon, HeadphonesIcon } from "lucide-react";
 import { useState, useEffect } from "react";
-import { useApp } from "@/contexts";
+import { useAudioStore } from "@/stores";
 import { STORAGE_KEYS } from "@/config/constants";
 import { safeLocalStorage } from "@/lib/storage";
 import { invoke } from "@tauri-apps/api/core";
 
 export const AudioSelection = () => {
-  const { selectedAudioDevices, setSelectedAudioDevices } = useApp();
+  const selectedAudioDevices = useAudioStore((s) => s.selectedAudioDevices);
+  const setSelectedAudioDevices = useAudioStore(
+    (s) => s.setSelectedAudioDevices
+  );
 
   const [isLoadingDevices, setIsLoadingDevices] = useState(false);
   const [showSuccess, setShowSuccess] = useState<{

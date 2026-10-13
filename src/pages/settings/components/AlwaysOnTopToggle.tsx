@@ -1,12 +1,13 @@
 import { Switch, Label, Header } from "@/components";
-import { useApp } from "@/contexts";
+import { useStealthStore } from "@/stores";
 
 interface AlwaysOnTopToggleProps {
   className?: string;
 }
 
 export const AlwaysOnTopToggle = ({ className }: AlwaysOnTopToggleProps) => {
-  const { customizable, toggleAlwaysOnTop } = useApp();
+  const customizable = useStealthStore((s) => s.customizable);
+  const toggleAlwaysOnTop = useStealthStore((s) => s.toggleAlwaysOnTop);
 
   const handleSwitchChange = async (checked: boolean) => {
     await toggleAlwaysOnTop(checked);

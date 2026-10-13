@@ -9,7 +9,7 @@ import {
 } from "@/components";
 import { PlusIcon, SaveIcon } from "lucide-react";
 import { useCustomSttProviders } from "@/hooks";
-import { useApp } from "@/contexts";
+import { useAudioStore } from "@/stores";
 import { cn } from "@/lib/utils";
 
 interface CreateEditProviderProps {
@@ -19,7 +19,7 @@ interface CreateEditProviderProps {
 export const CreateEditProvider = ({
   customProviderHook,
 }: CreateEditProviderProps) => {
-  const { allSttProviders } = useApp();
+  const allSttProviders = useAudioStore((s) => s.allSttProviders);
   // Use the provided hook instance or create a new one
   const hookInstance = customProviderHook || useCustomSttProviders();
 

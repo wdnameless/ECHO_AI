@@ -18,7 +18,7 @@ import {
   CheckIcon,
   RotateCcwIcon,
 } from "lucide-react";
-import { useApp } from "@/contexts";
+import { useProfilesStore } from "@/stores";
 import { cn } from "@/lib/utils";
 import {
   JobProfile,
@@ -27,16 +27,14 @@ import {
 } from "@/lib/storage/job-profiles";
 
 export const JobProfilesSettings = () => {
-  const {
-    jobProfiles,
-    activeJobProfileId,
-    selectJobProfile,
-    updateJobProfile,
-    createJobProfile,
-    deleteJobProfile,
-    applyJobProfile,
-    refreshJobProfiles,
-  } = useApp();
+  const jobProfiles = useProfilesStore((s) => s.jobProfiles);
+  const activeJobProfileId = useProfilesStore((s) => s.activeJobProfileId);
+  const selectJobProfile = useProfilesStore((s) => s.selectJobProfile);
+  const updateJobProfile = useProfilesStore((s) => s.updateJobProfile);
+  const createJobProfile = useProfilesStore((s) => s.createJobProfile);
+  const deleteJobProfile = useProfilesStore((s) => s.deleteJobProfile);
+  const applyJobProfile = useProfilesStore((s) => s.applyJobProfile);
+  const refreshJobProfiles = useProfilesStore((s) => s.refreshJobProfiles);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<JobProfile | null>(null);

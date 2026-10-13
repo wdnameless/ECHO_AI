@@ -1,54 +1,22 @@
 import {
   AI_PROVIDERS,
-  DEFAULT_SYSTEM_PROMPT,
-  SPEECH_TO_TEXT_PROVIDERS,
   STORAGE_KEYS,
 } from "@/config";
-import { getPlatform, safeLocalStorage, trackAppStart } from "@/lib";
+import { safeLocalStorage, trackAppStart } from "@/lib";
 import { getShortcutsConfig } from "@/lib/storage";
-import { nonSecretAIProviderVariables, setAIProviderVariables } from "@/lib/storage/ai-providers";
+import {
+  nonSecretAIProviderVariables,
+  setAIProviderVariables,
+} from "@/lib/storage/ai-providers";
 import {
   migrateCurlLiteralsToSecrets,
   migrateSecretsFromLocalStorage,
 } from "@/lib/storage/secret-store";
-import {
-  getCustomizableState,
-  setCustomizableState,
-  updateAppIconVisibility,
-  updateAlwaysOnTop,
-  updateAutostart,
-  updateStealthMode,
-  CustomizableState,
-  DEFAULT_CUSTOMIZABLE_STATE,
-  CursorType,
-  updateCursorType,
-} from "@/lib/storage";
+import { getCustomizableState } from "@/lib/storage";
 import { IContextType, ScreenshotConfig, TYPE_PROVIDER } from "@/types";
-import {
-  applyProfileToStorage,
-  BUILTIN_PROFILES,
-  getActiveProfile,
-  getActiveProfileId,
-  getPromptProfiles,
-  PromptProfile,
-  removeBuiltinProfile,
-  restoreBuiltinProfile,
-  savePromptProfiles,
-  setActiveProfileId,
-} from "@/lib/storage/prompt-profiles";
-import {
-  applyJobProfileToStorage,
-  getActiveJobProfileId,
-  getJobProfiles,
-  JobProfile,
-  removeBuiltinJobProfile,
-  saveJobProfiles,
-  setActiveJobProfileId,
-} from "@/lib/storage/job-profiles";
 import curl2Json from "@bany/curl-to-json";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { enable, disable } from "@tauri-apps/plugin-autostart";
 import {
   ReactNode,
@@ -60,6 +28,11 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  useProfilesStore,
+  useAudioStore,
+  useStealthStore,
+} from "@/stores";
 
 const validateAndProcessCurlProviders = (
   providersJson: string,
@@ -79,8 +52,6 @@ const validateAndProcessCurlProviders = (
         } catch {
           return false;
         }
-
-        return true;
       })
       .map((p) => {
         const provider = { ...p, isCustom: true };
@@ -100,243 +71,51 @@ const AppContext = createContext<IContextType | undefined>(undefined);
 
 // Create the provider component
 export const AppProvider = ({ children }: { children: ReactNode }) => {
-  const [systemPrompt, setSystemPrompt] = useState<string>(
-    safeLocalStorage.getItem(STORAGE_KEYS.SYSTEM_PROMPT) ||
-      DEFAULT_SYSTEM_PROMPT
-  );
+  // Profiles store facade
+  const {
+    systemPrompt,
+    setSystemPrompt,
+    promptProfiles,
+    activeProfileId,
+    selectPromptProfile,
+    updatePromptProfile,
+    createPromptProfile,
+    deletePromptProfile,
+    resetPromptProfile,
+    refreshPromptProfiles,
+    jobProfiles,
+    activeJobProfileId,
+    activeJobProfile,
+    selectJobProfile,
+    updateJobProfile,
+    createJobProfile,
+    deleteJobProfile,
+    applyJobProfile,
+    refreshJobProfiles,
+    loadProfilesData,
+  } = useProfilesStore();
 
-  // Prompt profiles (Interview / General / custom)
-  const [promptProfiles, setPromptProfiles] = useState<PromptProfile[]>(() =>
-    getPromptProfiles()
-  );
-  const [activeProfileId, setActiveProfileIdState] = useState<string>(() =>
-    getActiveProfileId()
-  );
+  // Audio store facade
+  const {
+    selectedAudioDevices,
+    setSelectedAudioDevices,
+    allSttProviders,
+    customSttProviders,
+    selectedSttProvider,
+    onSetSelectedSttProvider,
+    loadAudioData,
+  } = useAudioStore();
 
-  const selectPromptProfile = useCallback(
-    (profileId: string) => {
-      const profiles = getPromptProfiles();
-      const profile = profiles.find((p) => p.id === profileId);
-      if (!profile) return;
-      setActiveProfileIdState(profileId);
-      setActiveProfileId(profileId);
-      applyProfileToStorage(profile);
-      setSystemPrompt(profile.systemPrompt);
-      // Refresh profile list (settings may have custom profiles)
-      setPromptProfiles(getPromptProfiles());
-    },
-    [setSystemPrompt]
-  );
-
-  const updatePromptProfile = useCallback(
-    (profileId: string, updates: Partial<PromptProfile>) => {
-      const profiles = getPromptProfiles();
-      const idx = profiles.findIndex((p) => p.id === profileId);
-      if (idx === -1) return;
-      const updated = { ...profiles[idx], ...updates };
-      profiles[idx] = updated;
-      savePromptProfiles(profiles);
-      setPromptProfiles(profiles);
-      // If the active profile was edited, re-apply to storage so the
-      // floating window and prompts pick up changes immediately.
-      if (profileId === getActiveProfileId()) {
-        applyProfileToStorage(updated);
-        setSystemPrompt(updated.systemPrompt);
-      }
-    },
-    [setSystemPrompt]
-  );
-
-  const createPromptProfile = useCallback(
-    (profile: Omit<PromptProfile, "id">): PromptProfile => {
-      const newProfile: PromptProfile = {
-        ...profile,
-        id: `profile-${Date.now().toString(36)}`,
-      };
-      const profiles = [...getPromptProfiles(), newProfile];
-      savePromptProfiles(profiles);
-      setPromptProfiles(profiles);
-      return newProfile;
-    },
-    []
-  );
-
-  /**
-   * Deletes a prompt profile.
-   *
-   * A custom profile is simply removed. A built-in is remembered as deleted, so the
-   * merge that runs on every load does not bring it back. The last remaining profile
-   * is kept: with nothing to activate, the copilot would have no prompt at all.
-   */
-  /** Re-reads profiles from storage: used after out-of-band edits such as restoring built-ins. */
-  const refreshPromptProfiles = useCallback(() => {
-    setPromptProfiles(getPromptProfiles());
-  }, []);
-
-  const deletePromptProfile = useCallback((profileId: string) => {
-    const current = getPromptProfiles();
-    if (current.length <= 1) return;
-    const target = current.find((p) => p.id === profileId);
-    if (!target) return;
-
-    if (target.isBuiltin) removeBuiltinProfile(profileId);
-
-    const profiles = current.filter((p) => p.id !== profileId);
-    savePromptProfiles(profiles);
-    setPromptProfiles(profiles);
-
-    if (profileId === getActiveProfileId()) {
-      const fallback = profiles.find((p) => p.isBuiltin) || profiles[0];
-      if (fallback) {
-        setActiveProfileIdState(fallback.id);
-        setActiveProfileId(fallback.id);
-        applyProfileToStorage(fallback);
-        setSystemPrompt(fallback.systemPrompt);
-      }
-    }
-  }, [setSystemPrompt]);
-
-  /**
-   * Restores a built-in profile to the prompt that ships with the app.
-   *
-   * The built-in profiles are merged into whatever is stored, so a user edit is
-   * kept on load. Without this there was no way back: the only visible action on a
-   * built-in profile was an inert delete.
-   */
-  const resetPromptProfile = useCallback(
-    (profileId: string) => {
-      const factory = BUILTIN_PROFILES.find((p) => p.id === profileId);
-      if (!factory) return;
-      // Resetting a built-in that had been deleted brings it back into the list.
-      restoreBuiltinProfile(profileId);
-
-      const profiles = getPromptProfiles().map((p) =>
-        p.id === profileId ? { ...factory } : p
-      );
-      savePromptProfiles(profiles);
-      setPromptProfiles(profiles);
-
-      if (profileId === getActiveProfileId()) {
-        applyProfileToStorage(factory);
-        setSystemPrompt(factory.systemPrompt);
-      }
-    },
-    [setSystemPrompt]
-  );
-
-  // Job profiles (Resume / Vacancy / Context presets)
-  const [jobProfiles, setJobProfiles] = useState<JobProfile[]>(() =>
-    getJobProfiles()
-  );
-  const [activeJobProfileId, setActiveJobProfileIdState] = useState<string>(() =>
-    getActiveJobProfileId()
-  );
-
-  const applyJobProfile = useCallback((profileId: string) => {
-    const profiles = getJobProfiles();
-    const profile = profiles.find((p) => p.id === profileId);
-    if (!profile) return;
-    setActiveJobProfileIdState(profileId);
-    setActiveJobProfileId(profileId);
-    applyJobProfileToStorage(profile);
-    setJobProfiles(getJobProfiles());
-  }, []);
-
-  const selectJobProfile = useCallback(
-    (profileId: string) => {
-      applyJobProfile(profileId);
-    },
-    [applyJobProfile]
-  );
-
-  const updateJobProfile = useCallback(
-    (profileId: string, updates: Partial<JobProfile>) => {
-      const profiles = getJobProfiles();
-      const idx = profiles.findIndex((p) => p.id === profileId);
-      if (idx === -1) return;
-      const updated = { ...profiles[idx], ...updates };
-      profiles[idx] = updated;
-      saveJobProfiles(profiles);
-      setJobProfiles(profiles);
-      if (profileId === getActiveJobProfileId()) {
-        applyJobProfileToStorage(updated);
-      }
-    },
-    []
-  );
-
-  const createJobProfile = useCallback(
-    (profile: Omit<JobProfile, "id">): JobProfile => {
-      const newProfile: JobProfile = {
-        ...profile,
-        id: `job-profile-${Date.now().toString(36)}`,
-      };
-      const profiles = [...getJobProfiles(), newProfile];
-      saveJobProfiles(profiles);
-      setJobProfiles(profiles);
-      return newProfile;
-    },
-    []
-  );
-
-  /**
-   * Deletes a job profile.
-   *
-   * A custom profile is removed from storage; a built-in is remembered as deleted so
-   * the merge that runs on every load does not bring it back. The last profile is
-   * kept, since without one there is no job context to fill at all.
-   */
-  /** Re-reads job profiles from storage: used after out-of-band edits such as restoring built-ins. */
-  const refreshJobProfiles = useCallback(() => {
-    setJobProfiles(getJobProfiles());
-  }, []);
-
-  const deleteJobProfile = useCallback((profileId: string) => {
-    const current = getJobProfiles();
-    if (current.length <= 1) return;
-    const target = current.find((p) => p.id === profileId);
-    if (!target) return;
-
-    if (target.isBuiltin) removeBuiltinJobProfile(profileId);
-
-    const profiles = current.filter((p) => p.id !== profileId);
-    saveJobProfiles(profiles);
-    setJobProfiles(profiles);
-    if (profileId === getActiveJobProfileId()) {
-      const fallback = profiles[0];
-      if (fallback) {
-        setActiveJobProfileIdState(fallback.id);
-        setActiveJobProfileId(fallback.id);
-        applyJobProfileToStorage(fallback);
-      }
-    }
-  }, []);
-
-  const activeJobProfile = useMemo(
-    () => jobProfiles.find((p) => p.id === activeJobProfileId) || null,
-    [jobProfiles, activeJobProfileId]
-  );
-
-  const [selectedAudioDevices, setSelectedAudioDevices] = useState<{
-    input: { id: string; name: string };
-    output: { id: string; name: string };
-  }>(() => {
-    const savedDevices = safeLocalStorage.getItem(
-      STORAGE_KEYS.SELECTED_AUDIO_DEVICES
-    );
-    if (savedDevices) {
-      try {
-        return JSON.parse(savedDevices);
-      } catch {
-        // Return default on parse error
-      }
-    }
-
-    return {
-      input: { id: "", name: "" },
-      output: { id: "", name: "" },
-    };
-  });
+  // Stealth store facade
+  const {
+    customizable,
+    toggleAppIconVisibility,
+    toggleAlwaysOnTop,
+    toggleAutostart,
+    toggleStealthMode,
+    setCursorType,
+    loadStealthData,
+  } = useStealthStore();
 
   // AI Providers
   const [customAiProviders, setCustomAiProviders] = useState<TYPE_PROVIDER[]>(
@@ -352,18 +131,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   /** True when the selection was changed locally and still needs persisting. */
   const aiSelectionDirtyRef = useRef(false);
 
-  // STT Providers
-  const [customSttProviders, setCustomSttProviders] = useState<TYPE_PROVIDER[]>(
-    []
-  );
-  const [selectedSttProvider, setSelectedSttProvider] = useState<{
-    provider: string;
-    variables: Record<string, string>;
-  }>({
-    provider: "",
-    variables: {},
-  });
-
   const [screenshotConfiguration, setScreenshotConfiguration] =
     useState<ScreenshotConfig>({
       mode: "manual",
@@ -371,10 +138,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       enabled: true,
     });
 
-  // Unified Customizable State
-  const [customizable, setCustomizable] = useState<CustomizableState>(
-    DEFAULT_CUSTOMIZABLE_STATE
-  );
   const [hasActiveLicense, setHasActiveLicense] = useState<boolean>(false);
   const [supportsImages, setSupportsImagesState] = useState<boolean>(() => {
     const stored = safeLocalStorage.getItem(STORAGE_KEYS.SUPPORTS_IMAGES);
@@ -394,9 +157,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
   const getActiveLicenseStatus = useCallback(async (): Promise<boolean> => {
     try {
-      // Single source of truth: check_license_status Rust command
-      // In dev builds, Rust returns true (cfg!(debug_assertions)).
-      // In release builds, Rust verifies real credentials and activation.
       const status = await invoke<boolean>("check_license_status");
       setHasActiveLicense(status);
       return status;
@@ -423,41 +183,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     syncLicenseState();
   }, [hasActiveLicense]);
 
-
-  const updateCursor = useCallback((type: CursorType | undefined) => {
-    try {
-      const currentWindow = getCurrentWindow();
-      const platform = getPlatform();
-      // For Linux, always use default cursor
-      if (platform === "linux") {
-        document.documentElement.style.setProperty("--cursor-type", "default");
-        return;
-      }
-      const windowLabel = currentWindow.label;
-
-      if (windowLabel === "dashboard") {
-        // For dashboard, always use default cursor
-        document.documentElement.style.setProperty("--cursor-type", "default");
-        return;
-      }
-
-      // For overlay windows (main, capture-overlay-*)
-      const safeType = type || "invisible";
-      const cursorValue = type === "invisible" ? "none" : safeType;
-      document.documentElement.style.setProperty("--cursor-type", cursorValue);
-    } catch {
-      document.documentElement.style.setProperty("--cursor-type", "default");
-    }
-  }, []);
-  // Function to load AI, STT, system prompt and screenshot config data from storage
+  // Function to load all data from storage
   const loadData = useCallback(() => {
-    // Load system prompt
-    const savedSystemPrompt = safeLocalStorage.getItem(
-      STORAGE_KEYS.SYSTEM_PROMPT
-    );
-    if (savedSystemPrompt) {
-      setSystemPrompt(savedSystemPrompt || DEFAULT_SYSTEM_PROMPT);
-    }
+    loadProfilesData();
+    loadAudioData();
+    loadStealthData();
 
     // Load screenshot configuration
     const savedScreenshotConfig = safeLocalStorage.getItem(
@@ -488,16 +218,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
     setCustomAiProviders(aiList);
 
-    // Load custom STT providers
-    const savedStt = safeLocalStorage.getItem(
-      STORAGE_KEYS.CUSTOM_SPEECH_PROVIDERS
-    );
-    let sttList: TYPE_PROVIDER[] = [];
-    if (savedStt) {
-      sttList = validateAndProcessCurlProviders(savedStt, "STT");
-    }
-    setCustomSttProviders(sttList);
-
     // Load selected AI provider
     const savedSelectedAi = safeLocalStorage.getItem(
       STORAGE_KEYS.SELECTED_AI_PROVIDER
@@ -505,20 +225,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (savedSelectedAi) {
       try {
         const parsedAi = JSON.parse(savedSelectedAi);
-        // Migrate stored variables: canonicalize duplicate/case-collision keys
         if (parsedAi && typeof parsedAi === "object" && parsedAi.variables) {
           parsedAi.variables = nonSecretAIProviderVariables(parsedAi.variables);
           setAIProviderVariables(parsedAi.provider, parsedAi.variables);
         }
-        // No legacy-model shim: the user's stored selection is the source of
-        // truth. The old recurring "gemini 3.6 flash high" rewrite clobbered
-        // newer user selections and re-persisted them every app start.
         setSelectedAIProvider(parsedAi);
       } catch {
         console.warn("Failed to parse selected AI provider");
       }
     } else {
-      // Default to Nullform AI Gateway with gemini-3.6-flash-low
       const defaultAi = {
         provider: "nullform-gateway",
         variables: {
@@ -533,76 +248,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       );
     }
 
-    // Load selected STT provider
-    const savedSelectedStt = safeLocalStorage.getItem(
-      STORAGE_KEYS.SELECTED_STT_PROVIDER
-    );
-    if (savedSelectedStt) {
-      // The stored value wins. The `catch` below is the ONLY path that falls
-      // back to the local engine.
-      //
-      // This block used to write `defaultStt` unconditionally right after the
-      // `setSelectedSttProvider(JSON.parse(savedSelectedStt))` call — there was
-      // no `else`, so every launch parsed the saved provider and then
-      // immediately overwrote it (in state AND in localStorage) with the local
-      // engine. A user who chose Groq or OpenAI STT lost the choice on the next
-      // start, and the branch could never take effect at all.
-      try {
-        setSelectedSttProvider(JSON.parse(savedSelectedStt));
-      } catch {
-        console.warn("Failed to parse selected STT provider, using the local engine");
-        const defaultStt = {
-          provider: "handy-local-whisper",
-          variables: {},
-        };
-        setSelectedSttProvider(defaultStt);
-        safeLocalStorage.setItem(
-          STORAGE_KEYS.SELECTED_STT_PROVIDER,
-          JSON.stringify(defaultStt)
-        );
-      }
-    } else {
-      // Nothing stored yet (first launch): persist the default so the choice is
-      // stable from the very first run.
-      const defaultStt = {
-        provider: "handy-local-whisper",
-        variables: {},
-      };
-      setSelectedSttProvider(defaultStt);
-      safeLocalStorage.setItem(
-        STORAGE_KEYS.SELECTED_STT_PROVIDER,
-        JSON.stringify(defaultStt)
-      );
-    }
-
-    // Load customizable state
-    const customizableState = getCustomizableState();
-    setCustomizable(customizableState);
-
-    updateCursor(customizableState.cursor.type || "invisible");
-    if (customizableState.stealth) {
-      invoke("set_stealth_mode", { enabled: customizableState.stealth.isEnabled }).catch((err) => {
-        console.debug("Failed to apply initial stealth mode:", err);
-      });
-    }
-    const stored = safeLocalStorage.getItem(STORAGE_KEYS.CUSTOMIZABLE);
-    if (!stored) {
-      // save the default state
-      setCustomizableState(customizableState);
-    } else {
-      // check if we need to update the schema
-      try {
-        const parsed = JSON.parse(stored);
-        if (!parsed.autostart) {
-          // save the merged state with new autostart property
-          setCustomizableState(customizableState);
-          updateCursor(customizableState.cursor.type || "invisible");
-        }
-      } catch (error) {
-        console.debug("Failed to check customizable state schema:", error);
-      }
-    }
-
     // Load Echo AI API enabled state
     const savedPluelyApiEnabled = safeLocalStorage.getItem(
       STORAGE_KEYS.PLUELY_API_ENABLED
@@ -610,46 +255,25 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     if (savedPluelyApiEnabled !== null) {
       setPluelyApiEnabledState(savedPluelyApiEnabled === "true");
     }
-
-    // Load selected audio devices
-    const savedAudioDevices = safeLocalStorage.getItem(
-      STORAGE_KEYS.SELECTED_AUDIO_DEVICES
-    );
-    if (savedAudioDevices) {
-      try {
-        const parsed = JSON.parse(savedAudioDevices);
-        if (parsed && typeof parsed === "object") {
-          setSelectedAudioDevices(parsed);
-        }
-      } catch {
-        console.warn("Failed to parse selected audio devices");
-      }
-    }
-  }, [updateCursor]);
+  }, [loadProfilesData, loadAudioData, loadStealthData]);
 
   // Load data on mount
   useEffect(() => {
     const initializeApp = async () => {
-      // S4: переносим ключи из localStorage в защищённое хранилище до того,
-      // как провайдеры будут прочитаны, чтобы дальнейшие чтения шли уже
-      // из защищённого источника.
       try {
         await migrateSecretsFromLocalStorage();
       } catch (error) {
         console.debug("Secret migration skipped:", error);
       }
 
-      // Keys that an older version wrote into the curl text itself.
       try {
         await migrateCurlLiteralsToSecrets();
       } catch (error) {
         console.debug("Curl secret sweep skipped:", error);
       }
 
-      // Load license and data
       await getActiveLicenseStatus();
 
-      // Track app start
       try {
         const appVersion = await invoke<string>("get_app_version");
         const storage = await invoke<{
@@ -660,10 +284,10 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         console.debug("Failed to track app start:", error);
       }
     };
-    // Load data
+
     loadData();
     initializeApp();
-  }, []);
+  }, [loadData, getActiveLicenseStatus]);
 
   // Handle customizable settings on state changes
   useEffect(() => {
@@ -692,7 +316,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           STORAGE_KEYS.AUTOSTART_INITIALIZED
         );
 
-        // Only apply autostart on the very first launch
         if (!autostartInitialized) {
           const autostartEnabled = customizable?.autostart?.isEnabled ?? true;
 
@@ -702,7 +325,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             await disable();
           }
 
-          // Mark as initialized so this never runs again
           safeLocalStorage.setItem(STORAGE_KEYS.AUTOSTART_INITIALIZED, "true");
         }
       } catch (error) {
@@ -711,7 +333,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     };
 
     initializeAutostart();
-  }, []);
+  }, [customizable?.autostart?.isEnabled]);
 
   // Listen for app icon hide/show events when window is toggled
   useEffect(() => {
@@ -725,14 +347,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     const unlistenHide = listen("handle-app-icon-on-hide", async () => {
       const currentState = getCustomizableState();
-      // Only hide app icon if user has set it to hide mode
       if (!currentState.appIcon.isVisible) {
         await handleAppIconVisibility(false);
       }
     });
 
     const unlistenShow = listen("handle-app-icon-on-show", async () => {
-      // Always show app icon when window is shown, regardless of user setting
       await handleAppIconVisibility(true);
     });
 
@@ -745,7 +365,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   // Listen to storage events for real-time sync (e.g., multi-tab)
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
-      // Sync supportsImages across windows
       if (e.key === STORAGE_KEYS.SUPPORTS_IMAGES && e.newValue !== null) {
         setSupportsImagesState(e.newValue === "true");
       }
@@ -765,52 +384,19 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     };
     window.addEventListener("storage", handleStorageChange);
     return () => window.removeEventListener("storage", handleStorageChange);
-  }, []);
-
-  // Apply the active prompt profile's settings on app start so the
-  // Interview / General / custom profile is active from the first moment.
-  useEffect(() => {
-    const profile = getActiveProfile();
-    applyProfileToStorage(profile);
-    setSystemPrompt(profile.systemPrompt);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+  }, [loadData]);
 
   // Sync selected AI to localStorage — only for changes made here.
-  //
-  // Every window runs this provider, and `loadData()` (fired by storage events)
-  // replaces the state object with whatever storage already holds. Persisting that
-  // copy back made the two windows fight: the window with the stale value could
-  // write it last and silently undo a selection made in the other one. Writing
-  // only when the value came from a local change removes the race.
   useEffect(() => {
     if (!selectedAIProvider.provider) return;
-    // Only a change made in this window may be persisted. `loadData()` copies
-    // whatever storage holds into the state, and persisting that copy back let a
-    // window with a stale value write it last and undo the other window's choice.
     if (!aiSelectionDirtyRef.current) return;
     const serialized = JSON.stringify(selectedAIProvider);
-    // A change can be dispatched while an older render is still being committed,
-    // and that older render runs this effect first. Comparing against storage
-    // keeps the stale render from writing its outdated value over the fresh one;
-    // the flag stays set so the render that actually carries the new value writes.
     if (safeLocalStorage.getItem(STORAGE_KEYS.SELECTED_AI_PROVIDER) === serialized) {
       return;
     }
     aiSelectionDirtyRef.current = false;
     safeLocalStorage.setItem(STORAGE_KEYS.SELECTED_AI_PROVIDER, serialized);
   }, [selectedAIProvider]);
-
-  // Sync selected STT to localStorage
-  useEffect(() => {
-    if (selectedSttProvider.provider) {
-      safeLocalStorage.setItem(
-        STORAGE_KEYS.SELECTED_STT_PROVIDER,
-        JSON.stringify(selectedSttProvider)
-      );
-    }
-  }, [selectedSttProvider]);
 
   // Computed all AI providers
   const allAiProviders: TYPE_PROVIDER[] = useMemo(
@@ -822,7 +408,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   useEffect(() => {
     const checkImageSupport = async () => {
       if (pluelyApiEnabled) {
-        // For Echo AI API, check the selected model's modality
         try {
           const storage = await invoke<{
             selected_pluely_model?: string;
@@ -833,19 +418,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             const hasImageSupport = model.modality?.includes("image") ?? false;
             setSupportsImages(hasImageSupport);
           } else {
-            // No model selected, assume no image support
             setSupportsImages(false);
           }
         } catch {
           setSupportsImages(false);
         }
       } else {
-        // For custom AI providers, check if curl contains {{IMAGE}}.
-        //
-        // `allAiProviders` is a dependency of this effect (see below). Reading it
-        // directly is what makes the check re-run when custom providers finish
-        // loading — a ref would never trigger that, and the effect would keep the
-        // verdict from its first run, when the list was still empty.
         const provider = allAiProviders.find(
           (p) => p.id === selectedAIProvider.provider
         );
@@ -859,20 +437,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     };
 
     checkImageSupport();
-    // `allAiProviders` belongs in this array.
-    //
-    // It is `useMemo`'d on `customAiProviders` (see above), so it is stable
-    // between renders and changes only when the provider list genuinely does — no
-    // re-run loop. Without it the effect kept the verdict from its FIRST run,
-    // when the list was still empty, so a custom provider that loads after mount
-    // never had its `{{IMAGE}}` capability checked.
-  }, [pluelyApiEnabled, selectedAIProvider.provider, allAiProviders]);
-
-  // Computed all STT providers
-  const allSttProviders: TYPE_PROVIDER[] = useMemo(
-    () => [...SPEECH_TO_TEXT_PROVIDERS, ...customSttProviders],
-    [customSttProviders]
-  );
+  }, [pluelyApiEnabled, selectedAIProvider.provider, allAiProviders, setSupportsImages]);
 
   const onSetSelectedAIProvider = useCallback(
     ({
@@ -887,7 +452,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         return;
       }
 
-      // Update supportsImages immediately when provider changes
       if (!pluelyApiEnabled) {
         const selectedProvider = allAiProviders.find((p) => p.id === provider);
         if (selectedProvider) {
@@ -911,98 +475,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     [allAiProviders, pluelyApiEnabled, setSupportsImages]
   );
 
-  // Setter for selected STT with validation
-  const onSetSelectedSttProvider = useCallback(
-    ({
-      provider,
-      variables,
-    }: {
-      provider: string;
-      variables: Record<string, string>;
-    }) => {
-      if (provider && !allSttProviders.some((p) => p.id === provider)) {
-        console.warn(`Invalid STT provider ID: ${provider}`);
-        return;
-      }
-
-      setSelectedSttProvider((prev) => ({ ...prev, provider, variables }));
-    },
-    [allSttProviders]
-  );
-
-  // Toggle handlers
-  const toggleAppIconVisibility = useCallback(
-    async (isVisible: boolean) => {
-      const newState = updateAppIconVisibility(isVisible);
-      setCustomizable(newState);
-      try {
-        await invoke("set_app_icon_visibility", { visible: isVisible });
-        loadData();
-      } catch (error) {
-        console.error("Failed to toggle app icon visibility:", error);
-      }
-    },
-    [loadData]
-  );
-
-  const toggleAlwaysOnTop = useCallback(
-    async (isEnabled: boolean) => {
-      const newState = updateAlwaysOnTop(isEnabled);
-      setCustomizable(newState);
-      try {
-        await invoke("set_always_on_top", { enabled: isEnabled });
-        loadData();
-      } catch (error) {
-        console.error("Failed to toggle always on top:", error);
-      }
-    },
-    [loadData]
-  );
-
-  const toggleStealthMode = useCallback(
-    async (isEnabled: boolean) => {
-      const newState = updateStealthMode(isEnabled);
-      setCustomizable(newState);
-      try {
-        await invoke("set_stealth_mode", { enabled: isEnabled });
-        loadData();
-      } catch (error) {
-        console.error("Failed to toggle stealth mode:", error);
-      }
-    },
-    [loadData]
-  );
-
-  const toggleAutostart = useCallback(
-    async (isEnabled: boolean) => {
-      const newState = updateAutostart(isEnabled);
-      setCustomizable(newState);
-      try {
-        if (isEnabled) {
-          await enable();
-        } else {
-          await disable();
-        }
-        loadData();
-      } catch (error) {
-        console.error("Failed to toggle autostart:", error);
-        const revertedState = updateAutostart(!isEnabled);
-        setCustomizable(revertedState);
-      }
-    },
-    [loadData]
-  );
-
-  const setCursorType = useCallback(
-    (type: CursorType) => {
-      setCustomizable((prev) => ({ ...prev, cursor: { type } }));
-      updateCursor(type);
-      updateCursorType(type);
-      loadData();
-    },
-    [updateCursor, loadData]
-  );
-
   const setPluelyApiEnabled = useCallback(
     async (enabled: boolean) => {
       setPluelyApiEnabledState(enabled);
@@ -1019,7 +491,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             const hasImageSupport = model.modality?.includes("image") ?? false;
             setSupportsImages(hasImageSupport);
           } else {
-            // No model selected, assume no image support
             setSupportsImages(false);
           }
         } catch (error) {
@@ -1027,7 +498,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           setSupportsImages(false);
         }
       } else {
-        // Switching to regular provider - check if curl contains {{IMAGE}}
         const provider = allAiProviders.find(
           (p) => p.id === selectedAIProvider.provider
         );
@@ -1044,8 +514,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     [setSupportsImages, allAiProviders, selectedAIProvider.provider, loadData]
   );
 
-  // Create the context value (extend IContextType accordingly)
-  // Create the context value (memoized with full dependency list)
+  // Create the context value (memoized facade over stores and local state)
   const value: IContextType = useMemo(
     () => ({
       systemPrompt,

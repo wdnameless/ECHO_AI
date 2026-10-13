@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { SettingsPanel } from "../SettingsPanel";
 import { DEFAULT_VAD_CONFIG } from "@/hooks/useSystemAudio";
+import type * as PromptProfilesModule from "@/lib/storage/prompt-profiles";
 
 const updatePromptProfile = vi.fn();
 
@@ -12,9 +13,15 @@ vi.mock("@/contexts", () => ({
   }),
 }));
 
-vi.mock("@/lib/storage/prompt-profiles", () => ({
-  getActiveProfile: () => ({ id: "profile-interview", flushGapMs: 450 }),
-}));
+vi.mock("@/lib/storage/prompt-profiles", async () => {
+  const actual = await vi.importActual<
+    typeof PromptProfilesModule
+  >("@/lib/storage/prompt-profiles");
+  return {
+    ...actual,
+    getActiveProfile: () => ({ id: "profile-interview", flushGapMs: 450 }),
+  };
+});
 
 function openAdvanced() {
   fireEvent.click(screen.getByText("Settings"));
