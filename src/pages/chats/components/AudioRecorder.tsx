@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components";
 import { AudioVisualizer } from "@/pages/app/components/speech/audio-visualizer";
 import { shouldUsePluelyAPI, transcribeWithFallback } from "@/lib";
-import { useApp } from "@/contexts";
+import { useAudioStore } from "@/stores";
 import { StopCircle, Send } from "lucide-react";
 
 interface AudioRecorderProps {
@@ -16,8 +16,9 @@ export const AudioRecorder = ({
   onTranscriptionComplete,
   onCancel,
 }: AudioRecorderProps) => {
-  const { selectedSttProvider, allSttProviders, selectedAudioDevices } =
-    useApp();
+  const selectedSttProvider = useAudioStore((s) => s.selectedSttProvider);
+  const allSttProviders = useAudioStore((s) => s.allSttProviders);
+  const selectedAudioDevices = useAudioStore((s) => s.selectedAudioDevices);
   const [audioStream, setAudioStream] = useState<MediaStream | null>(null);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [duration, setDuration] = useState(0);

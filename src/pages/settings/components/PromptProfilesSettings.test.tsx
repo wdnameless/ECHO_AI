@@ -51,17 +51,28 @@ const mockUseAppState: { profiles: PromptProfile[]; activeId: string } = {
   activeId: "profile-interview",
 };
 
-vi.mock("@/contexts", () => ({
-  useApp: () => ({
-    promptProfiles: mockUseAppState.profiles,
-    activeProfileId: mockUseAppState.activeId,
-    selectPromptProfile: mockSelectPromptProfile,
-    updatePromptProfile: mockUpdatePromptProfile,
-    createPromptProfile: mockCreatePromptProfile,
-    deletePromptProfile: mockDeletePromptProfile,
-    resetPromptProfile: mockResetPromptProfile,
-    refreshPromptProfiles: mockRefreshPromptProfiles,
-  }),
+const mockProfilesStoreState = {
+  get promptProfiles() {
+    return mockUseAppState.profiles;
+  },
+  get activeProfileId() {
+    return mockUseAppState.activeId;
+  },
+  selectPromptProfile: mockSelectPromptProfile,
+  updatePromptProfile: mockUpdatePromptProfile,
+  createPromptProfile: mockCreatePromptProfile,
+  deletePromptProfile: mockDeletePromptProfile,
+  resetPromptProfile: mockResetPromptProfile,
+  refreshPromptProfiles: mockRefreshPromptProfiles,
+};
+
+vi.mock("@/stores", () => ({
+  useProfilesStore: <T,>(
+    selector?: (state: typeof mockProfilesStoreState) => T
+  ) =>
+    typeof selector === "function"
+      ? selector(mockProfilesStoreState)
+      : mockProfilesStoreState,
 }));
 
 vi.mock("@/lib/storage/user-facts", () => ({
@@ -135,6 +146,8 @@ vi.mock("@/lib/storage/user-facts", () => ({
 
 vi.mock("@/lib/storage/prompt-profiles", () => ({
   SELF_EVOLUTION_PROFILE_ID: "profile-self-evolution",
+  getPromptProfiles: () => mockUseAppState.profiles,
+  getActiveProfileId: () => mockUseAppState.activeId,
   getRemovedBuiltinProfileIds: () => [],
   restoreAllBuiltinProfiles: vi.fn(),
   exportProfileToJson: vi.fn((p) => JSON.stringify(p)),
