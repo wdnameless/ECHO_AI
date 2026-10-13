@@ -22,8 +22,19 @@ pub struct UpdateLockGuard<'a> {
     disarmed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpdateLockError;
+
+impl std::fmt::Display for UpdateLockError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "portable update is already in progress")
+    }
+}
+
+impl std::error::Error for UpdateLockError {}
+
 impl<'a> UpdateLockGuard<'a> {
-    pub fn acquire(lock: &'a AtomicBool) -> Result<Self, ()> {
+    pub fn acquire(lock: &'a AtomicBool) -> Result<Self, UpdateLockError> {
         if lock
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
@@ -33,7 +44,7 @@ impl<'a> UpdateLockGuard<'a> {
                 disarmed: false,
             })
         } else {
-            Err(())
+            Err(UpdateLockError)
         }
     }
 

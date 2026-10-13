@@ -51,14 +51,6 @@ pub struct StorageItem {
     pub value: String,
 }
 
-impl StorageItem {
-    pub fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            key: key.into(),
-            value: value.into(),
-        }
-    }
-}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StorageResult {
     license_key: Option<String>,
@@ -968,7 +960,7 @@ mod tests {
                 let val = format!("secret_value_{}", i);
                 save_storage_items_internal(
                     &path_clone,
-                    vec![StorageItem::new(key, val)],
+                    vec![StorageItem { key, value: val }],
                 )
                 .expect("concurrent save must succeed");
             }));
@@ -1010,7 +1002,10 @@ mod tests {
         // Saving to the truncated file restores full functionality
         save_storage_items_internal(
             &path,
-            vec![StorageItem::new("recovered_key", "recovered_val")],
+            vec![StorageItem {
+                key: "recovered_key".to_string(),
+                value: "recovered_val".to_string(),
+            }],
         )
         .expect("saving to truncated file must succeed");
 
@@ -1027,7 +1022,10 @@ mod tests {
 
         save_storage_items_internal(
             &path,
-            vec![StorageItem::new("key_after_trunc", "val_after_trunc")],
+            vec![StorageItem {
+                key: "key_after_trunc".to_string(),
+                value: "val_after_trunc".to_string(),
+            }],
         )
         .expect("saving after corrupt file must recover and succeed");
 
