@@ -289,25 +289,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     initializeApp();
   }, [loadData, getActiveLicenseStatus]);
 
-  // Handle customizable settings on state changes
-  useEffect(() => {
-    const applyCustomizableSettings = async () => {
-      try {
-        await Promise.all([
-          invoke("set_app_icon_visibility", {
-            visible: customizable.appIcon.isVisible,
-          }),
-          invoke("set_always_on_top", {
-            enabled: customizable.alwaysOnTop.isEnabled,
-          }),
-        ]);
-      } catch (error) {
-        console.error("Failed to apply customizable settings:", error);
-      }
-    };
-
-    applyCustomizableSettings();
-  }, [customizable]);
 
   useEffect(() => {
     const initializeAutostart = async () => {

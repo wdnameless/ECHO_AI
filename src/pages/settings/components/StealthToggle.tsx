@@ -1,21 +1,9 @@
 import { Switch, Header } from "@/components";
-import { useApp } from "@/contexts";
-import type { IContextType } from "@/types";
 import { useStealthStore } from "@/stores";
 
 export const StealthToggle = () => {
-  const storeCustomizable = useStealthStore((s) => s.customizable);
-  const storeToggleStealthMode = useStealthStore((s) => s.toggleStealthMode);
-  let contextApp: Partial<IContextType> | undefined;
-  try {
-    contextApp = useApp();
-  } catch {
-    // outside AppProvider
-  }
-  const customizable = contextApp?.customizable ?? storeCustomizable;
-  const toggleStealthMode =
-    contextApp?.toggleStealthMode ?? storeToggleStealthMode;
-
+  const customizable = useStealthStore((s) => s.customizable);
+  const toggleStealthMode = useStealthStore((s) => s.toggleStealthMode);
   return (
     <div className="flex flex-row items-center justify-between">
       <Header
