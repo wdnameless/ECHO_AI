@@ -18,22 +18,15 @@ import {
   getUserStylePreferences,
   isSelfLearningEnabled,
   setSelfEvolutionStyleOverride,
-  LANGUAGE_RULE,
 } from "../storage/user-facts";
-import {
-  resolveAnswerLength,
-  SHORT_LENGTH_PROMPT,
-  LONG_LENGTH_PROMPT,
-} from "@/lib/answer-length";
 import { getAnswerLengthOverride } from "@/lib/answer-length-override";
 import { getAnswerMode, type AnswerMode } from "@/lib/answer-mode";
-import { MARKDOWN_FORMATTING_INSTRUCTIONS, STORAGE_KEYS } from "@/config/constants";
+import { STORAGE_KEYS } from "@/config/constants";
 import {
   getHumanizerSettings,
-  HUMANIZER_INSTRUCTIONS,
-  INTERVIEW_MODE_INSTRUCTIONS,
   pickAnswerOpener,
 } from "@/config/humanizer.rules";
+import { buildPrompt, THOUGHT_TRACE_PROMPT } from "@/lib/prompt-builder";
 import { getWebSearchSettings, performWebSearch, SearchResultItem } from "../web-search";
 import {
   buildSearchBlock,
@@ -51,18 +44,9 @@ import { safeLocalStorage } from "@/lib/storage/helper";
 import { detectLanguage } from "@/lib/language-detect";
 import { getAIProviderVariables } from "@/lib/storage/ai-providers";
 import { getActiveProfileId } from "@/lib/storage/prompt-profiles";
-import { shouldOfferVisual, VISUAL_PROMPT_HINT } from "@/lib/visual-answers";
+import { shouldOfferVisual } from "@/lib/visual-answers";
 
-export const THOUGHT_TRACE_PROMPT =
-  "THOUGHT-TRACE MODE (ХОД МЫСЛЕЙ):\n" +
-  "Before your direct spoken answer, provide a compact justification block explaining your line of thought (strictly 2-3 phrases: why this approach, what trade-offs you considered, what you relied upon / на что опирался).\n" +
-  "Enclose this justification inside <thought>...</thought> tags at the very start of your response.\n" +
-  "Example format:\n" +
-  "<thought>\n" +
-  "Опираюсь на соображения масштабируемости и изоляции отказов. Для таких нагрузок лучше разделить сервис на независимые воркеры с очередью сообщений.\n" +
-  "</thought>\n" +
-  "Follow immediately with your natural spoken answer to the interviewer.";
-
+export { THOUGHT_TRACE_PROMPT };
 export type AIStreamEvent =
   | { type: "attempt"; providerId: string }
   | { type: "restart"; providerId: string }
@@ -224,81 +208,8 @@ export async function buildEnhancedSystemPrompt(
 ): Promise<string> {
   const activeMode = mode ?? getAnswerMode();
   const responseSettings = getResponseSettings();
-  const prompts: string[] = [];
-
-  if (baseSystemPrompt) {
-    prompts.push(baseSystemPrompt);
-  }
-  // Thought trace justification block: inserted right after base prompt
-  if (activeMode === "thought" && !baseSystemPrompt?.includes("THOUGHT-TRACE MODE")) {
-    prompts.push(THOUGHT_TRACE_PROMPT);
-  }
-
-
-  // Anti-filler & question intent instruction
-  prompts.push(
-    "CONVERSATIONAL FILTER RULE: If the user input is merely a conversational acknowledgment, reaction, or filler sound (e.g. 'угу', 'мгм', 'ага', 'да', 'ну', 'хм', 'ок', 'yeah', 'uh-huh', 'mhm', 'got it') without a substantive question or topic, DO NOT replicate the filler or generate a lengthy answer. Only answer when an actual question, technical query, or request is made."
-  );
-
-  // Add markdown formatting instructions
-  prompts.push(MARKDOWN_FORMATTING_INSTRUCTIONS);
-  // Visual diagram rule (S5 / R15, R16)
   const activeProfileId = profileId ?? getActiveProfileId();
-  if (
-    shouldOfferVisual(activeProfileId, userMessage || "") &&
-    !baseSystemPrompt?.includes("VISUAL DIAGRAM RULE")
-  ) {
-    prompts.push(VISUAL_PROMPT_HINT);
-  }
 
-
-  // Answer length: per-question, not per-settings. The toolbar override and
-  // explicit prefixes beat the heuristic; the settings preset is the fallback
-  // when everything says "auto". The old path always pushed the preset, so a
-  // detailed "почему" was answered in 35-55 words no matter what.
-  // Answer length: in thought mode, bypass SHORT cap so justification is not choked
-  if (activeMode === "thought") {
-    prompts.push(LONG_LENGTH_PROMPT);
-  } else {
-    const answerLength = resolveAnswerLength(
-      userMessage || "",
-      getAnswerLengthOverride()
-    );
-    prompts.push(answerLength === "long" ? LONG_LENGTH_PROMPT : SHORT_LENGTH_PROMPT);
-  }
-
-  // Humanizer rules
-  // Humanizer rules: skipped in thought mode so humanizer cap/formatting rules do not suppress thoughts
-  if (activeMode !== "thought") {
-    const humanizer = getHumanizerSettings();
-    if (humanizer.enabled) {
-      prompts.push(HUMANIZER_INSTRUCTIONS);
-      if (humanizer.interviewMode) {
-        prompts.push(
-          INTERVIEW_MODE_INSTRUCTIONS.replace(
-            /KEEP ANSWERS CONCISE: strictly 1-3 spoken sentences \(35-55 words maximum\)\. Get straight to the point\./,
-            "LENGTH: the ANSWER-LENGTH rule above decides (short = tight, long = full detail)."
-          )
-        );
-      }
-      if (humanizer.customStyle?.trim()) {
-        prompts.push(
-          `Match this personal speaking style: ${humanizer.customStyle.trim()}`
-        );
-      }
-    }
-  }
-
-  // Rotating opener: skipped in thought mode so response opens cleanly with <thought>
-  if (activeMode !== "thought") {
-    const openerLang = detectLanguage(userMessage || "") === "russian" ? "ru" : "en";
-    const opener = pickAnswerOpener(openerLang);
-    if (opener) {
-      prompts.push(`Open with exactly this phrase, then answer: "${opener}"`);
-    } else {
-      prompts.push("Start straight into the answer with no introductory phrase.");
-    }
-  }
   // RAG context + meeting memory: fetched concurrently in ONE Promise.all
   const resumeEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_RESUME_ENABLED) === "true";
   const jobEnabled = safeLocalStorage.getItem(STORAGE_KEYS.RAG_JOB_ENABLED) === "true";
@@ -337,29 +248,8 @@ export async function buildEnhancedSystemPrompt(
     memoryPromise,
   ]);
 
-  if (resumeCtx?.content?.trim()) {
-    prompts.push(
-      `[CONTEXT: MY RESUME]\n${resumeCtx.content.trim()}\n[/CONTEXT]`
-    );
-  }
-
-  if (jobCtx?.content?.trim()) {
-    prompts.push(
-      `[CONTEXT: JOB DESCRIPTION]\n${jobCtx.content.trim()}\n[/CONTEXT]`
-    );
-  }
-
-  if (memoryHits && memoryHits.length > 0) {
-    const relevantHits = memoryHits.filter((h) => h.score >= 0.45);
-    if (relevantHits.length > 0) {
-      const memoryBlock = relevantHits
-        .map((h) => `[MEETING CONVERSATION: ${h.conversationId}]\n${h.text}`)
-        .join("\n\n");
-      prompts.push(
-        `[CONTEXT: RELEVANT PAST MEETINGS]\n${memoryBlock}\n[/CONTEXT]`
-      );
-    }
-  }
+  const openerLang = detectLanguage(userMessage || "") === "russian" ? "ru" : "en";
+  const opener = pickAnswerOpener(openerLang);
 
   const detected = detectLanguage(userMessage || "");
   const effectiveLanguage =
@@ -368,15 +258,9 @@ export async function buildEnhancedSystemPrompt(
   const languageOption = LANGUAGES.find(
     (l) => l.id === effectiveLanguage
   );
-  if (languageOption?.prompt?.trim()) {
-    prompts.push(languageOption.prompt);
-  }
+  const languagePrompt = languageOption?.prompt?.trim();
 
-  // Strict language rule applies globally and unconditionally.
-  prompts.push(LANGUAGE_RULE);
-
-  // Self-Evolution Memory & Personal Facts injection (gated by toggle):
-  // loads style truth synchronously from write-through localStorage cache (drops 400ms SQLite await).
+  let evolutionBlock: string | null = null;
   if (isSelfLearningEnabled()) {
     try {
       const cachedStyle = getUserStylePreferences();
@@ -384,12 +268,24 @@ export async function buildEnhancedSystemPrompt(
     } catch {
       // getStyleFromDbOrCache is resilient and never throws
     }
-    const evolutionBlock = buildSelfEvolutionPromptBlock();
-    if (evolutionBlock) {
-      prompts.push(evolutionBlock);
-    }
+    evolutionBlock = buildSelfEvolutionPromptBlock();
   }
-  return prompts.join(" ");
+
+  return buildPrompt({
+    baseSystemPrompt,
+    mode: activeMode,
+    userMessage,
+    offerVisual: shouldOfferVisual(activeProfileId, userMessage || ""),
+    answerLengthOverride: getAnswerLengthOverride(),
+    humanizer: getHumanizerSettings(),
+    opener: activeMode !== "thought" ? (opener ?? null) : undefined,
+    resumeContent: resumeCtx?.content?.trim() ?? null,
+    jobContent: jobCtx?.content?.trim() ?? null,
+    memoryHits,
+    languagePrompt,
+    evolutionBlock,
+    separator: " ",
+  });
 }
 
 // Hosted transport uses the same text/error contract as configured providers.
