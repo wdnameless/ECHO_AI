@@ -14,6 +14,7 @@ mod window;
 pub mod portable_update;
 pub mod memory;
 pub mod stt_stream;
+pub mod asr_stream;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tauri_plugin_posthog::{init as posthog_init, PostHogConfig, PostHogOptions};
@@ -251,6 +252,13 @@ pub fn run() {
             stt_stream::stt_stream_connect,
             stt_stream::stt_stream_send,
             stt_stream::stt_stream_close,
+            asr_stream::asr_native_connect,
+            asr_stream::asr_native_send,
+            asr_stream::asr_native_close,
+            asr_stream::asr_native_get_owner,
+            asr_stream::asr_native_try_acquire,
+            asr_stream::asr_native_release,
+            asr_stream::asr_native_reset,
             db::commands::db_create_system_prompt,
             db::commands::db_get_all_system_prompts,
             db::commands::db_get_system_prompt_by_id,

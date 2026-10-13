@@ -36,7 +36,14 @@ import { getAsrLanguage } from "@/lib/asr-language";
 import { noteStreamingUnsupported } from "@/lib/asr-capabilities";
 import { pushStatus } from "@/lib/asr-status";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
-import { releaseStream, tryAcquireStream, enqueueStreamSlot, cancelSlotQueue } from "@/lib/asr-gate";
+import {
+  releaseStream,
+  tryAcquireStream,
+  enqueueStreamSlot,
+  cancelSlotQueue,
+  createAsrSocket,
+  type AsrSocketLike,
+} from "@/lib/asr-gate";
 import { recordWsReconnect } from "@/lib/metrics";
 import {
   nextReconnectDelay,
@@ -64,7 +71,7 @@ export function useThemWsStreaming({
   selectedSttProvider,
 }: UseThemWsStreamingProps) {
   const cloudSessionRef = useRef<StreamingSTTSession | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const wsRef = useRef<WebSocket | AsrSocketLike | null>(null);
   const frameBufferRef = useRef<ArrayBuffer[]>([]);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Consecutive failed reconnect attempts, for the exponential backoff. */
@@ -225,9 +232,9 @@ export function useThemWsStreaming({
       return;
     }
 
-    let ws: WebSocket;
+    let ws: WebSocket | AsrSocketLike;
     try {
-      ws = new WebSocket(`${base.replace(/^http/, "ws")}/v1/asr/stream`);
+      ws = createAsrSocket(`${base.replace(/^http/, "ws")}/v1/asr/stream`, "them");
     } catch {
       releaseOwner(epoch);
       scheduleReconnect();
