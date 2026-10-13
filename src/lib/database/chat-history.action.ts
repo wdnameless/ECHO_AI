@@ -1,8 +1,8 @@
+import { invoke } from "@tauri-apps/api/core";
 import { indexTranscript } from "../rag/memory-index";
 import { getDatabase } from "./config";
 import { ChatConversation } from "@/types";
 import { safeLocalStorage } from "@/lib";
-
 // Legacy localStorage key for migration purposes
 const LEGACY_CHAT_HISTORY_KEY = "chat_history";
 
@@ -97,8 +97,13 @@ export async function createConversation(
     throw new Error("Invalid conversation data");
   }
 
-  const db = await getDatabase();
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    return await invoke<ChatConversation>("db_create_conversation", {
+      conversation,
+    });
+  }
 
+  const db = await getDatabase();
   try {
     // No BEGIN/COMMIT here: the plugin's pool does not pin one connection to a
     // sequence of execute() calls (measured live — a CREATE TABLE and the next
@@ -167,8 +172,10 @@ export async function createConversation(
  * Get all conversations with messages in a single optimized query
  */
 export async function getAllConversations(): Promise<ChatConversation[]> {
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    return await invoke<ChatConversation[]>("db_get_all_conversations");
+  }
   const db = await getDatabase();
-
   try {
     // Get all conversations
     const conversations = await db.select<DbConversation[]>(
@@ -238,8 +245,13 @@ export async function getConversationById(
     return null;
   }
 
-  const db = await getDatabase();
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    return await invoke<ChatConversation | null>("db_get_conversation_by_id", {
+      id,
+    });
+  }
 
+  const db = await getDatabase();
   try {
     // Get conversation
     const conversations = await db.select<DbConversation[]>(
@@ -289,8 +301,13 @@ export async function updateConversation(
     throw new Error("Invalid conversation data");
   }
 
-  const db = await getDatabase();
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    return await invoke<ChatConversation>("db_update_conversation", {
+      conversation,
+    });
+  }
 
+  const db = await getDatabase();
   try {
     // See the note in createConversation: a manual transaction cannot span the
     // plugin's pool, so none is opened here.
@@ -449,8 +466,11 @@ export async function deleteConversation(id: string): Promise<boolean> {
     return false;
   }
 
-  const db = await getDatabase();
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    return await invoke<boolean>("db_delete_conversation", { id });
+  }
 
+  const db = await getDatabase();
   try {
     const result = await db.execute("DELETE FROM conversations WHERE id = ?", [
       id,
@@ -467,8 +487,11 @@ export async function deleteConversation(id: string): Promise<boolean> {
  * Delete all conversations and messages
  */
 export async function deleteAllConversations(): Promise<void> {
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    await invoke("db_delete_all_conversations");
+    return;
+  }
   const db = await getDatabase();
-
   try {
     // Delete in correct order (messages first due to foreign key)
     await db.execute("DELETE FROM messages");
