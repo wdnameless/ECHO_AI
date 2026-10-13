@@ -20,6 +20,8 @@
  * a shallow module, not a deep one.
  */
 
+import type { AsrSocketLike } from "./asr-gate";
+
 /** Base delay and ceiling for a channel's reconnect backoff. */
 export interface ReconnectBackoff {
   baseMs: number;
@@ -49,7 +51,7 @@ export function nextReconnectDelay(
  * three sessions shared by both channels. Detaching the handlers first means the
  * teardown cannot re-enter the reconnect logic.
  */
-export function closeSocketDetached(ws: WebSocket | null): void {
+export function closeSocketDetached(ws: WebSocket | AsrSocketLike | null): void {
   if (!ws) return;
   if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
     ws.onclose = null;
@@ -92,4 +94,6 @@ export {
   cancelSlotQueue,
   waitForStreamSlot,
   getSlotQueueLength,
+  createAsrSocket,
+  type AsrSocketLike,
 } from "./asr-gate";
