@@ -6,10 +6,22 @@ pub const EMBEDDING_DIM: usize = 384;
 
 static VEC_INIT: Once = Once::new();
 
+type SqliteExtensionInitFn = unsafe extern "C" fn(
+    *mut rusqlite::ffi::sqlite3,
+    *mut *mut std::os::raw::c_char,
+    *const rusqlite::ffi::sqlite3_api_routines,
+) -> std::os::raw::c_int;
+
 pub fn init_sqlite_vec() {
     VEC_INIT.call_once(|| {
         unsafe {
-            sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
+            // SAFETY: `sqlite3_vec_init` is the C extension entry point exported by `sqlite-vec`.
+            // Its ABI and parameters conform to the SQLite extension initialization function
+            // pointer expected by `sqlite3_auto_extension`.
+            let init_fn = std::mem::transmute::<*const (), SqliteExtensionInitFn>(
+                sqlite3_vec_init as *const (),
+            );
+            sqlite3_auto_extension(Some(init_fn));
         }
     });
 }
