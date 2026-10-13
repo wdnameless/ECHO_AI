@@ -1,183 +1,24 @@
-import { useState, useCallback, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { safeLocalStorage } from "@/lib";
-import { buildInitialPrompt } from "@/lib/vocab";
-import { transcribeWithFallback, isSttErrorMessage } from "@/lib/functions";
-import { recordPartialLatency, recordFirstText } from "@/lib/metrics";
-import { micStateStore } from "@/stores/mic-state";
-import { useThemWsStreaming } from "./useThemWsStreaming";
-import { getAsrCapabilities } from "@/lib/asr-capabilities";
-import { isAsrModelBusyError, withNoStream } from "@/lib/asr-gate";
+import { useCallback, useRef } from "react";
+import {
+  type VadConfig,
+  DEFAULT_VAD_CONFIG,
+  FLUSH_SAFETY_TIMEOUT_MS,
+  decodeSpeechFramePayload,
+  hasSpeechEnergy,
+  type UseSystemAudioCaptureProps,
+} from "./audio/types";
+import { useCapture } from "./audio/useCapture";
+import { useRecovery } from "./audio/useRecovery";
+import { useTranscribe } from "./audio/useTranscribe";
 
-export interface VadConfig {
-  enabled: boolean;
-  hop_size: number;
-  sensitivity_rms: number;
-  peak_threshold: number;
-  silence_chunks: number;
-  min_speech_chunks: number;
-  pre_speech_chunks: number;
-  noise_gate_threshold: number;
-  max_recording_duration_secs: number;
-}
-
-export const DEFAULT_VAD_CONFIG: VadConfig = {
-  enabled: true,
-  hop_size: 1024,
-  sensitivity_rms: 0.012,
-  peak_threshold: 0.035,
-  silence_chunks: 12, // ~0.28s. Measured: a 1-3s utterance returns text in ~1.1s, while a long one waits ~12s (the recogniser re-runs its language check over the whole buffer). Short utterances are faster here; the question assembler merges them.
-  min_speech_chunks: 7, // ~0.16s — 12 discarded real speech as noise and no utterance finished
-  pre_speech_chunks: 12,
-  noise_gate_threshold: 0.003,
-  max_recording_duration_secs: 180,
+export {
+  type VadConfig,
+  DEFAULT_VAD_CONFIG,
+  FLUSH_SAFETY_TIMEOUT_MS,
+  decodeSpeechFramePayload,
+  hasSpeechEnergy,
+  type UseSystemAudioCaptureProps,
 };
-
-/**
- * Cadence of the live re-transcription used when the loaded model cannot
- * stream.
- *
- * Was 600ms. Measured on this engine, a live pass costs 55ms for a 0.6s clip,
- * 70ms at 1s, 104ms at 2s and ~220ms at 8s — so at 600ms the engine sat idle
- * for most of every interval while the user waited for text. At 300ms the
- * cadence still leaves 2-5x headroom over the measured cost (and ~1.4x on a
- * pathological 8s utterance), and the first words reach the screen ~300ms
- * sooner, which is the delay that is actually perceived.
- *
- * At 250ms the headroom on a pathological 8s utterance is ~1.15x — thin but
- * guarded: liveBusyRef drops (not queues) an overlapping pass, and the
- * end-of-speech batch pass always covers the whole utterance. First words
- * reach the screen ~50ms sooner than at 300ms, which is the delay the user
- * actually perceives. Below 250ms the passes would queue instead of arriving.
- */
-const LIVE_BATCH_MS = 250;
-
-/**
- * Hard limit on how long ONE utterance may grow before the live pass keeps only
- * its tail, in samples at 16 kHz.
- *
- * Normal speech is cut into utterances by the VAD well before this (a pause of
- * ~0.3s ends one), so the limit only catches a pathological minutes-long
- * monologue. Cost is linear in clip length (measured: 90ms at 2.5s, 806ms at
- * 20s), and the end-of-speech batch pass always covers the whole utterance, so
- * trimming the live preview there is safe.
- */
-const LIVE_MAX_UTTERANCE_MS = 20 * 16000;
-
-/**
- * Safety timeout before falling back if final stream frame is dropped.
- * Reduced from 1200ms to 350ms per R05.
- */
-export const FLUSH_SAFETY_TIMEOUT_MS = 350;
-
-/**
- * Decodes speech-frame event payload from Tauri IPC.
- * Supports binary IPC (Uint8Array, ArrayBuffer, Vec<u8> as number[])
- * as well as legacy base64 strings.
- */
-export function decodeSpeechFramePayload(payload: unknown): Uint8Array | null {
-  if (!payload) return null;
-  if (payload instanceof Uint8Array) return payload;
-  if (payload instanceof ArrayBuffer) return new Uint8Array(payload);
-  if (Array.isArray(payload)) return new Uint8Array(payload);
-  if (typeof payload === "string") {
-    const bin = atob(payload);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return bytes;
-  }
-  return null;
-}
-
-/**
- * Whether a PCM buffer holds enough energy to be worth transcribing.
- *
- * Measured against the engine with the app's own settings: 300ms of pure
- * silence does not come back empty — it comes back as the single word "Yeah."
- * (12 runs, identical every time), and the live feed showed that word as the
- * interviewer's line. The Rust VAD normally supplies these frames, but the live
- * pass also carries the trailing silence before the end-of-speech threshold, so
- * a segment can reach the model with no voice in it. Below this floor there is
- * nothing to read and asking anyway invents a word.
- *
- * The measure is the LOUDEST ~100ms window, not the average of the buffer. An
- * average is diluted by the trailing silence that prompted this check: 0.16s of
- * quiet speech followed by 3s of silence averages below any sensible floor and
- * would drop the words, while one window still holds them clearly.
- *
- * The floor is the configured `noise_gate_threshold`, not a constant: that knob
- * already means "below this is room noise" and the settings panel exposes it, so
- * tuning the noise gate tunes this too.
- */
-export function hasSpeechEnergy(pcm: Int16Array, config: VadConfig): boolean {
-  if (pcm.length === 0) return false;
-  // ~100ms at 16 kHz, and never longer than the buffer itself, so a short
-  // segment is measured whole in a single pass.
-  const windowSize = Math.min(1600, pcm.length);
-  for (let start = 0; start < pcm.length; start += windowSize) {
-    const end = Math.min(start + windowSize, pcm.length);
-    let sumsq = 0;
-    for (let i = start; i < end; i++) {
-      // Normalise back to the -1..1 scale the threshold is expressed in.
-      const v = pcm[i] / 32768;
-      sumsq += v * v;
-    }
-    if (Math.sqrt(sumsq / (end - start)) >= config.noise_gate_threshold) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Wraps 16-bit mono PCM at 16 kHz in a WAV container.
- *
- * The engine rejects a header whose `data` size does not match the payload
- * ("invalid WAV: failed to read int samples"), so the header is rebuilt for
- * every growing utterance instead of carrying the original clip's sizes.
- */
-function encodeWav16kMono(pcm: Int16Array): ArrayBuffer {
-  const dataLen = pcm.length * 2;
-  const buf = new ArrayBuffer(44 + dataLen);
-  const view = new DataView(buf);
-  const ascii = (off: number, s: string) => {
-    for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i));
-  };
-  ascii(0, "RIFF");
-  view.setUint32(4, 36 + dataLen, true);
-  ascii(8, "WAVE");
-  ascii(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, 1, true); // mono
-  view.setUint32(24, 16000, true);
-  view.setUint32(28, 32000, true); // byte rate
-  view.setUint16(32, 2, true); // block align
-  view.setUint16(34, 16, true);
-  ascii(36, "data");
-  view.setUint32(40, dataLen, true);
-  new Int16Array(buf, 44).set(pcm);
-  return buf;
-}
-
-interface UseSystemAudioCaptureProps {
-  selectedAudioDevices: {
-    input: { id: string; name: string };
-    output: { id: string; name: string };
-  };
-  selectedSttProvider: {
-    provider: string;
-    variables: Record<string, string>;
-  };
-  appendLiveSegment: (source: "me" | "them", text: string, isPartial?: boolean) => void;
-  onInterviewerTranscription: (text: string, pauseBeforeMs?: number) => Promise<void>;
-  onInterviewerSpeechActivity?: () => void;
-  setMyLastTranscription: (text: string) => void;
-  setTheirLastTranscription: (text: string) => void;
-  setIsAIProcessing: (v: boolean) => void;
-  setError: (err: string) => void;
-}
 
 export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
   const {
@@ -192,914 +33,118 @@ export function useSystemAudioCapture(props: UseSystemAudioCaptureProps) {
     setError,
   } = props;
 
-  const [capturing, setCapturingState] = useState(false);
-  const capturingRef = useRef<boolean>(capturing);
-  const captureEpochRef = useRef(0);
-  const [isMicProcessing, setIsMicProcessing] = useState(false);
-  const [isSystemProcessing, setIsSystemProcessing] = useState(false);
-  const [setupRequired, setSetupRequired] = useState<boolean>(false);
-  const [isPopoverOpen, setIsPopoverOpen] = useState(false);
-
-  const [vadConfig, setVadConfig] = useState<VadConfig>(DEFAULT_VAD_CONFIG);
-  const [recordingProgress, setRecordingProgress] = useState<number>(0);
-  const [isContinuousMode, setIsContinuousMode] = useState<boolean>(false);
-  const [isRecordingInContinuousMode, setIsRecordingInContinuousMode] =
-    useState<boolean>(false);
-
-  const [pendingScreenshot, setPendingScreenshot] = useState<string | null>(null);
-  const pendingScreenshotRef = useRef<string | null>(null);
-  const [micStream, setMicStream] = useState<MediaStream | null>(null);
-  const micStreamRef = useRef<MediaStream | null>(null);
-  /**
-   * True while the candidate's microphone owns the single-model stream. The
-   * interviewer channel must not start an HTTP transcription in that window:
-   * the sidecar answers "model busy: a stream is active on this model".
-   */
-  const micStreamOwnsModelRef = useRef(false);
-  const utteranceActiveRef = useRef(false);
-  const speechEpochRef = useRef(0);
-  /** Text accumulated from streamed chunks, awaiting the real end of speech. */
-  const rolledTextRef = useRef("");
-  /** True when the last final came from the end-of-speech flush, not a roll. */
-  const utteranceEndedRef = useRef(false);
-  /**
-   * Dispatches the accumulated monologue to the question assembler.
-   *
-   * Reached from the final frame when it arrives, and from a safety timer when
-   * it does not: the rolling flush closes the socket exactly when speech ends,
-   * so the end-of-speech `finalize` can be lost — the feed kept growing in
-   * italics and the AI never answered because the question was never emitted.
-   */
-  const flushUtteranceRef = useRef<() => void>(() => {});
-  /**
-   * Latest `runLiveBatch`, so the "speech-frame" listener can call it without
-   * capturing a first-render copy.
-   *
-   * The listener effect depends only on `[capturingRef]` (a stable ref), so it
-   * subscribes ONCE and its closure keeps whatever `runLiveBatch` existed on the
-   * first render — with the `vadConfig`, `selectedSttProvider` and
-   * `appendLiveSegment` of that moment, forever. Measured consequence: the VAD /
-   * Noise Gate sliders in the settings panel could not affect live transcription
-   * until a full remount. Assigning through a ref keeps the callback current
-   * without resubscribing the Tauri listener on every settings change.
-   */
-  const runLiveBatchRef = useRef<() => Promise<void>>(async () => {});
-  /** Fires if the end-of-speech final never reaches us. */
-  const flushSafetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /**
-   * Whether the loaded model implements the streaming protocol. Non-streamable
-   * models (Parakeet) are served by the batch path; the socket is never opened
-   * for them, so no utterance is wasted on a request the engine rejects.
-   */
-  const streamingModelRef = useRef(false);
-  /** Raw PCM frames of the utterance being re-transcribed by the live batch. */
-  const livePcmRef = useRef<Uint8Array[]>([]);
-  /** Pending cadence timer for the live batch re-transcription. */
-  const liveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /**
-   * Last text produced by the live batch, so a re-transcription that returns
-   * less than the previous one never makes the line shrink.
-   */
-  const liveTextRef = useRef("");
-  /** When the current utterance's first audio frame arrived, for first-text. */
-  const utteranceStartedAtRef = useRef<number | null>(null);
-  /** True while a live pass is in flight, so passes never overlap. */
-  const liveBusyRef = useRef(false);
-
-  useEffect(() => {
-    return () => {
-      captureEpochRef.current += 1;
-      capturingRef.current = false;
-      if (flushSafetyTimerRef.current !== null) {
-        clearTimeout(flushSafetyTimerRef.current);
-        flushSafetyTimerRef.current = null;
-      }
-    };
+  const setIsSystemProcessingRef = useRef<(v: boolean) => void>(() => {});
+  const handleSetIsSystemProcessing = useCallback((v: boolean) => {
+    setIsSystemProcessingRef.current(v);
   }, []);
 
-  useEffect(() => {
-    capturingRef.current = capturing;
-    const epoch = captureEpochRef.current;
-    // Resolve the model's capabilities when capture starts, not on the first
-    // `speech-start`: the microphone channel asks `canStream()` from its own VAD,
-    // and if the candidate spoke before the interviewer, the flag was still its
-    // initial `false` — the stream was skipped for a model that supports it and
-    // that utterance went through the slower batch path.
-    if (capturing) {
-      void (async () => {
-        const caps = await getAsrCapabilities();
-        if (epoch !== captureEpochRef.current || !capturingRef.current) return;
-        streamingModelRef.current = caps.streaming;
-      })();
-    }
-  }, [capturing]);
-
-  useEffect(() => {
-    pendingScreenshotRef.current = pendingScreenshot;
-  }, [pendingScreenshot]);
-
-  useEffect(() => {
-    const savedVadConfig = safeLocalStorage.getItem("vad_config");
-    if (savedVadConfig) {
-      try {
-        const parsed = JSON.parse(savedVadConfig);
-        setVadConfig(parsed);
-      } catch (err) {
-        console.error("Failed to load VAD config:", err);
-      }
-    }
+  const setRecordingProgressRef = useRef<(v: number) => void>(() => {});
+  const handleSetRecordingProgress = useCallback((v: number) => {
+    setRecordingProgressRef.current(v);
   }, []);
 
-  const updateVadConfiguration = useCallback(async (config: VadConfig) => {
-    try {
-      setVadConfig(config);
-      safeLocalStorage.setItem("vad_config", JSON.stringify(config));
-      await invoke("update_vad_config", { config });
-    } catch (err) {
-      console.error("Failed to update VAD config:", err);
-    }
+  const capture = useCapture({
+    selectedAudioDevices,
+    setError,
+    setIsSystemProcessing: handleSetIsSystemProcessing,
+    setRecordingProgress: handleSetRecordingProgress,
+  });
+
+  const onSpeechDiscardedRef = useRef<() => void>(() => {});
+  const handleSpeechDiscarded = useCallback(() => {
+    onSpeechDiscardedRef.current();
   }, []);
 
-  useEffect(() => {
-    if (capturing) {
-      setIsContinuousMode(!vadConfig.enabled);
-      if (!vadConfig.enabled) {
-        setIsRecordingInContinuousMode(false);
-      }
-    }
-  }, [vadConfig.enabled, capturing]);
-
-  const transcribeSegment = useCallback(
-    async (
-      audioBlob: Blob,
-      source: "me" | "them",
-      options?: {
-        skipOnInterviewerTranscription?: boolean;
-        pauseBeforeMs?: number;
-        /** Rechecked if the gate wait times out: true means another path transcribed it. */
-        isCoveredByOtherPath?: () => boolean;
-      }
-    ) => {
-      const epoch = captureEpochRef.current;
-      const isCurrent = () => epoch === captureEpochRef.current &&
-        (source === "me" || capturingRef.current);
-      if (!isCurrent()) return;
-      const setSegmentProcessing =
-        source === "me" ? setIsMicProcessing : setIsSystemProcessing;
-
-      try {
-        setSegmentProcessing(true);
-
-        const batchStarted = Date.now();
-
-        // A stream holds the model; the sidecar answers 500 "model busy" for
-        // HTTP transcription while one is open, so wait for it to finish.
-        // The mic batch is the ONLY path when its stream was skipped (see
-        // onMicSegment), so it waits for a full utterance, not 300ms.
-        const sttPromise = withNoStream(
-          () => isCurrent() ? transcribeWithFallback({
-            selectedProvider: selectedSttProvider,
-            audio: audioBlob,
-            priority: "high",
-            prompt: buildInitialPrompt(),
-          }) : Promise.resolve(""),
-          source === "them" ? 45000 : 5000
-        );
-
-        // Sidecar waits for the GPU lease up to 30s (busy-retry) and the
-        // batch queue holds up to 40s; the race timeout must stay above the
-        // server-side worst case so a legitimately queued request is not
-        // abandoned mid-wait (its slot would still be parked server-side).
-        let timeoutId: ReturnType<typeof setTimeout> | undefined;
-        const timeoutPromise = new Promise<string>((_, reject) => {
-          timeoutId = setTimeout(
-            () => reject(new Error("Speech transcription timed out (45s)")),
-            45000
-          );
-        });
-
-        let transcription: string;
-        try {
-          transcription = await Promise.race([sttPromise, timeoutPromise]);
-        } finally {
-          clearTimeout(timeoutId);
-        }
-        if (!isCurrent()) return;
-        // The timer shows what a finished utterance costs end to end.
-        recordPartialLatency(Date.now() - batchStarted);
-
-        if (transcription.trim()) {
-          const currentMicMode = micStateStore.getState().mode;
-          if (source === "me" && currentMicMode === "IDLE") {
-            // Ignore transcript if mic is idle
-            setError("");
-            return;
-          }
-
-          if (source === "me") {
-            setMyLastTranscription(transcription);
-          } else {
-            setTheirLastTranscription(transcription);
-          }
-          appendLiveSegment(source, transcription);
-          setError("");
-
-          if (source === "me") {
-            return;
-          }
-
-          if (source === "them") {
-            // The authoritative pass has consumed this utterance: drop the live
-            // preview state so the next one starts clean, and let the dedupe in
-            // appendLiveSegment replace the preview row with this text.
-            livePcmRef.current = [];
-            liveTextRef.current = "";
-            utteranceStartedAtRef.current = null;
-          }
-
-          if (source === "them" && !options?.skipOnInterviewerTranscription) {
-            await onInterviewerTranscription(
-              transcription,
-              options?.pauseBeforeMs ?? 0
-            );
-          }
-        } else {
-          // A 200 with no text is what the engine answers for a segment that
-          // turned out to be silence (verified: 100ms of near-silence returns
-          // `text: ""` with HTTP 200). That is not a fault, and reporting it as
-          // one lit the red «Локальный движок распознавания не отвечает»
-          // banner — the same message used for a genuinely unreachable engine —
-          // while the engine was healthy and answering every request.
-          setError("");
-        }
-      } catch (sttError: unknown) {
-        if (!isCurrent()) return;
-        // Lost the race for the single model. Drop silently ONLY if another
-        // path covered this audio; otherwise the utterance is lost entirely.
-        if (isAsrModelBusyError(sttError)) {
-          if (source === "me" && !options?.isCoveredByOtherPath?.()) {
-            setError("Распознавание занято другим каналом, речь пропущена");
-            return;
-          }
-          console.debug("[system-audio] batch skipped, stream holds model:", sttError.owner);
-          return;
-        }
-        console.error("STT Error:", sttError);
-      } finally {
-        if (isCurrent()) setSegmentProcessing(false);
-      }
+  const handleSetIsRecordingInContinuousMode = useCallback(
+    (v: boolean) => {
+      capture.setIsRecordingInContinuousMode(v);
     },
-    [
-      selectedSttProvider,
-      appendLiveSegment,
-      onInterviewerTranscription,
-      setMyLastTranscription,
-      setTheirLastTranscription,
-      setError,
-    ]
+    [capture]
   );
 
-  /** When the VAD last reported that an utterance had ended (wall clock). */
-  const lastAudioSpeechEndRef = useRef<number | null>(null);
-  /**
-   * Silence in the AUDIO before the utterance currently being transcribed.
-   *
-   * The recogniser returns text ~1.1s after the speech that produced it, so the
-   * interval between two TEXT arrivals equals the second utterance's spoken
-   * duration plus the pause between them — a 3s clause after a 300ms pause looks
-   * like a 3.3s silence and was treated as a new question, discarding the text
-   * already transcribed. Measured between the VAD's own events instead, the
-   * value is the real pause: the VAD needs ~280ms of silence to close an
-   * utterance at all, so a mid-sentence breath measures near zero while a
-   * finished question measures hundreds of milliseconds.
-   */
-  const pauseBeforeUtteranceRef = useRef(0);
-
-  const handleSpeechDetectedRef = useRef<(base64Audio: string) => void>(() => {});
-  useEffect(() => {
-    handleSpeechDetectedRef.current = async (base64Audio: string) => {
-      try {
-        if (!capturingRef.current) return;
-        // Snapshot the pause NOW: transcription takes ~1s, and by the time it
-        // returns the next utterance may already have started and overwritten
-        // this ref with ITS pause — which belongs to a different utterance.
-        const pauseBeforeMs = pauseBeforeUtteranceRef.current;
-        const binaryString = atob(base64Audio);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        const audioBlob = new Blob([bytes], { type: "audio/wav" });
-
-        await transcribeSegment(audioBlob, "them", { pauseBeforeMs });
-      } catch (err) {
-        console.warn("[system-audio]", err);
-        setError("Failed to process speech");
-      }
-    };
+  const recovery = useRecovery({
+    setIsSystemProcessing: handleSetIsSystemProcessing,
+    setIsAIProcessing,
+    setIsRecordingInContinuousMode: handleSetIsRecordingInContinuousMode,
+    setError,
+    onSpeechDiscarded: handleSpeechDiscarded,
   });
+  setRecordingProgressRef.current = recovery.setRecordingProgress;
 
-  // Live channel: Rust emits ~250 ms of fresh PCM per `speech-frame` while the
-  // interviewer speaks, and this forwards it to the sidecar's streaming socket.
-  // Without it the only live path re-transcribed the whole utterance once a
-  // second over HTTP - a second of delay per partial, and every result repeating
-  // the text that was already on screen.
-  const themWs = useThemWsStreaming({
-    capturingRef,
+  const transcribe = useTranscribe({
+    capturing: capture.capturing,
+    capturingRef: capture.capturingRef,
+    captureEpochRef: recovery.captureEpochRef,
+    speechEpochRef: recovery.speechEpochRef,
+    vadConfig: capture.vadConfig,
     selectedSttProvider,
-    onPartialTranscript: (text) => {
-      if (!capturingRef.current) return;
-      onInterviewerSpeechActivity?.();
-      appendLiveSegment("them", text, true);
-    },
-    onFinalTranscript: (text) => {
-      if (!capturingRef.current) return;
-      onInterviewerSpeechActivity?.();
-      const chunk = text.trim();
-      if (!chunk) return;
-
-      // A transport chunk from a rolling flush: shown live and accumulated,
-      // never dispatched on its own — a 1.5s chunk looks like a "pause" to the
-      // question assembler and the AI would answer a half-formed question.
-      rolledTextRef.current = [rolledTextRef.current, chunk]
-        .filter(Boolean)
-        .join(" ");
-
-      if (utteranceEndedRef.current) {
-        utteranceEndedRef.current = false;
-        flushUtteranceRef.current();
-        return;
-      }
-
-      appendLiveSegment("them", rolledTextRef.current, true);
-    },
+    appendLiveSegment,
+    onInterviewerTranscription,
+    onInterviewerSpeechActivity,
+    setMyLastTranscription,
+    setTheirLastTranscription,
+    setError,
+    clearFlushSafety: recovery.clearFlushSafety,
+    scheduleFlushSafety: recovery.scheduleFlushSafety,
+    markSpeechEnd: recovery.markSpeechEnd,
+    recordSpeechStart: recovery.recordSpeechStart,
+    pauseBeforeUtteranceRef: recovery.pauseBeforeUtteranceRef,
+    utteranceStartedAtRef: recovery.utteranceStartedAtRef,
   });
-  const themWsRef = useRef(themWs);
-  themWsRef.current = themWs;
+  setIsSystemProcessingRef.current = transcribe.setIsSystemProcessing;
+  onSpeechDiscardedRef.current = transcribe.onSpeechDiscarded;
 
-  // Invalidate synchronously: React may batch stop and restart into one render.
-  const setCapturing = useCallback((value: boolean | ((previous: boolean) => boolean)) => {
-    const next = typeof value === "function" ? value(capturingRef.current) : value;
-    if (next !== capturingRef.current) {
-      captureEpochRef.current += 1;
-      speechEpochRef.current += 1;
-      capturingRef.current = next;
-      if (flushSafetyTimerRef.current !== null) {
-        clearTimeout(flushSafetyTimerRef.current);
-        flushSafetyTimerRef.current = null;
+  const setCapturing = useCallback(
+    (value: boolean | ((previous: boolean) => boolean)) => {
+      const next =
+        typeof value === "function" ? value(capture.capturingRef.current) : value;
+      if (next !== capture.capturingRef.current) {
+        recovery.captureEpochRef.current += 1;
+        recovery.speechEpochRef.current += 1;
+        capture.capturingRef.current = next;
+        recovery.clearFlushSafety();
+        transcribe.resetOnCaptureChange(next);
       }
-      rolledTextRef.current = "";
-      utteranceEndedRef.current = false;
-      if (!next) {
-        utteranceActiveRef.current = false;
-        themWsRef.current.close();
-      }
-    }
-    setCapturingState(next);
-  }, []);
-
-  /**
-   * Sends the accumulated utterance to the question assembler once, and clears
-   * the accumulation so nothing is dispatched twice.
-   */
-  flushUtteranceRef.current = () => {
-    if (flushSafetyTimerRef.current) {
-      clearTimeout(flushSafetyTimerRef.current);
-      flushSafetyTimerRef.current = null;
-    }
-    const whole = rolledTextRef.current.trim();
-    rolledTextRef.current = "";
-    utteranceEndedRef.current = false;
-    if (!whole) return;
-    setTheirLastTranscription(whole);
-    appendLiveSegment("them", whole);
-    void onInterviewerTranscription(whole);
-  };
-
-  /**
-   * Re-transcribes the growing utterance over HTTP on a fixed cadence.
-   *
-   * Used when the loaded model has no streaming protocol. Measured on Parakeet:
-   * one call costs 44-58ms whatever the clip length, so re-running it four
-   * times a second is cheaper than the streaming model's single late answer —
-   * and it is what makes live text possible on a non-streamable model.
-   */
-  const runLiveBatch = useCallback(async () => {
-    if (!capturingRef.current) return;
-    // One pass at a time: a pass can take longer than the cadence on a busy
-    // engine, and overlapping passes queue behind each other — their reported
-    // latency would then be queueing time, not the live delay.
-    if (liveBusyRef.current) return;
-    liveBusyRef.current = true;
-    // Take the frames WITHOUT putting them back: the previous `splice` followed
-    // by a re-assign kept the whole utterance in memory, so every pass
-    // re-transcribed a longer clip and cost grew with the monologue (measured:
-    // 90ms at 2.5s of audio, 1.5s at 40s — instead of a flat ~50ms).
-    const frames = livePcmRef.current;
-    livePcmRef.current = [];
-    if (frames.length === 0) {
-      liveBusyRef.current = false;
-      return;
-    }
-
-    // Finished utterances are transcribed whole and dropped, so the frames left
-    // here belong to the utterance still being spoken. A bounded window would
-    // silently cut the opening words off a long monologue; the cap is therefore
-    // expressed as a limit on how long ONE utterance may run (below), not on how
-    // much of it reaches the recogniser.
-    let sampleCount = 0;
-    for (const f of frames) sampleCount += f.length;
-    const maxSamples = LIVE_MAX_UTTERANCE_MS;
-    let skipBytes = 0;
-    if (sampleCount / 4 > maxSamples) {
-      // A pathological monologue (minutes without a pause): keep the tail, which
-      // is what the live line is for, and let the end-of-speech batch pass cover
-      // the whole thing.
-      skipBytes = (sampleCount / 4 - maxSamples) * 4;
-    }
-
-    const pcm = new Int16Array(Math.floor((sampleCount - skipBytes) / 4));
-    let written = 0;
-    let consumed = 0;
-    for (const f of frames) {
-      if (consumed + f.byteLength <= skipBytes) {
-        consumed += f.byteLength;
-        continue;
-      }
-      const view = new DataView(f.buffer, f.byteOffset, f.byteLength);
-      for (let o = 0; o + 4 <= f.byteLength; o += 4) {
-        if (consumed + o < skipBytes) continue;
-        const v = view.getFloat32(o, true);
-        if (written >= pcm.length) break;
-        pcm[written++] = Math.max(-1, Math.min(1, v)) * 32767;
-      }
-      consumed += f.byteLength;
-    }
-
-    // Speech floor. The frames start at detected speech, but the pass also
-    // carries the trailing silence that has not yet hit the end-of-speech
-    // threshold, so a segment can hold almost no voice. Measured against the
-    // engine with the app's own settings, 300ms of pure silence does not come
-    // back empty — it comes back as the word "Yeah." (12 runs, the same answer
-    // every time), and the live feed showed exactly that word as the
-    // interviewer's line. Below this floor the model has nothing to read, and
-    // asking it anyway invents a word.
-    if (!hasSpeechEnergy(pcm.subarray(0, written), vadConfig)) {
-      liveBusyRef.current = false;
-      return;
-    }
-
-    const wav = encodeWav16kMono(pcm.subarray(0, written));
-    const started = Date.now();
-    const epoch = speechEpochRef.current;
-    try {
-      const text = await transcribeWithFallback({
-        selectedProvider: selectedSttProvider,
-        audio: new Blob([wav], { type: "audio/wav" }),
-        priority: "high",
-        prompt: buildInitialPrompt(),
-      });
-      // The utterance rotated while this pass was in flight: its preview
-      // belongs to finished audio and must not overwrite the new line.
-      if (epoch !== speechEpochRef.current) return;
-      const clean = text.trim();
-      if (!clean || isSttErrorMessage(clean)) return;
-      recordPartialLatency(Date.now() - started);
-      // First text of this utterance: the delay the user actually perceives.
-      if (utteranceStartedAtRef.current !== null && liveTextRef.current === "") {
-        recordFirstText(Date.now() - utteranceStartedAtRef.current);
-      }
-      // Never let a shorter reading of the same audio shrink the live line.
-      if (clean.length >= liveTextRef.current.length) {
-        liveTextRef.current = clean;
-        appendLiveSegment("them", clean, true);
-      }
-    } catch {
-      // A dropped live pass is not an error: the next one covers the audio.
-    } finally {
-      liveBusyRef.current = false;
-    }
-  }, [appendLiveSegment, selectedSttProvider, vadConfig]);
-  // Keep the listener's view of the batch current (see the ref's comment).
-  runLiveBatchRef.current = runLiveBatch;
-
-  useEffect(() => {
-    let frameUnlisten: (() => void) | undefined;
-    let cancelled = false;
-
-    listen<unknown>("speech-frame", (event) => {
-      if (!capturingRef.current) return;
-      const bytes = decodeSpeechFramePayload(event.payload);
-      if (!bytes) return;
-      if (streamingModelRef.current) {
-        if (micStreamOwnsModelRef.current) return;
-        themWsRef.current.feedFrame(bytes.buffer as ArrayBuffer);
-        return;
-      }
-      // Non-streamable model: keep the raw PCM of the growing utterance and
-      // re-transcribe it on a cadence. Measured on Parakeet: 44-58ms per call
-      // regardless of clip length, so a ~600ms cadence gives live text at a
-      // fraction of the cost of the streaming model's late 1.1-12s results.
-      livePcmRef.current.push(new Uint8Array(bytes.buffer as ArrayBuffer));
-      if (liveTimerRef.current === null) {
-        liveTimerRef.current = setTimeout(() => {
-          liveTimerRef.current = null;
-          // Through the ref, not the closure: this listener subscribes once and
-          // would otherwise run the first render's callback forever.
-          void runLiveBatchRef.current();
-        }, LIVE_BATCH_MS);
-      }
-    })
-      .then((unlisten) => {
-        if (cancelled) {
-          unlisten();
-        } else {
-          frameUnlisten = unlisten;
-        }
-      })
-      .catch((err) => {
-        console.warn("[system-audio] frame listener failed:", err);
-      });
-
-    return () => {
-      cancelled = true;
-      if (frameUnlisten) frameUnlisten();
-    };
-  }, [capturingRef]);
-
-  // One socket per utterance, as the sidecar's protocol demands: it CLOSES the
-  // stream as soon as it answers a `finalize` (verified: state CLOSED within
-  // 2s), so a session-scoped socket churned reconnects and lost the audio that
-  // arrived while it was down. Frames that arrive during the handshake are
-  // buffered and flushed on open, so nothing is dropped in between.
-  //
-  // The socket is opened only when the loaded model implements the streaming
-  // protocol. A fast model may not: Parakeet answers a stream request with
-  // `stream begin failed: not implemented by this model`, so opening one wasted
-  // the whole utterance. Those models are served by the batch path instead,
-  // which is also the faster one for them (measured ~64ms per utterance).
-  useEffect(() => {
-    let startUnlisten: (() => void) | undefined;
-    let cancellable = false;
-
-    listen("speech-start", () => {
-      if (!capturingRef.current) return;
-      utteranceActiveRef.current = true;
-      const epoch = ++speechEpochRef.current;
-      // A new utterance starts empty: the previous monologue was already
-      // dispatched (or dropped) when its speech ended.
-      //
-      // The pause that closed the previous utterance is measured from the VAD
-      // event, not from the previous text: the recogniser returns text ~1.1s
-      // after the speech, so arrival intervals reflect how long the second
-      // clause was spoken, not the silence between the two.
-      if (lastAudioSpeechEndRef.current !== null) {
-        pauseBeforeUtteranceRef.current = Math.max(
-          0,
-          Date.now() - lastAudioSpeechEndRef.current
-        );
-      }
-      // Flush the previous utterance before clearing its accumulated text.
-      if (flushSafetyTimerRef.current) {
-        clearTimeout(flushSafetyTimerRef.current);
-        flushSafetyTimerRef.current = null;
-        flushUtteranceRef.current();
-      }
-      rolledTextRef.current = "";
-      utteranceEndedRef.current = false;
-      livePcmRef.current = [];
-      liveTextRef.current = "";
-      utteranceStartedAtRef.current = Date.now();
-      void (async () => {
-        const caps = await getAsrCapabilities();
-        if (epoch !== speechEpochRef.current || !capturingRef.current) return;
-        streamingModelRef.current = caps.streaming;
-        if (!caps.streaming || micStreamOwnsModelRef.current) return;
-        themWsRef.current.beginUtterance();
-        themWsRef.current.start();
-      })();
-    })
-      .then((unlisten) => {
-        if (cancellable) {
-          unlisten();
-        } else {
-          startUnlisten = unlisten;
-        }
-      })
-      .catch((err) => {
-        console.warn("[system-audio] speech-start listener failed:", err);
-      });
-
-    return () => {
-      cancellable = true;
-      if (startUnlisten) startUnlisten();
-    };
-  }, [capturingRef]);
-
-  useEffect(() => {
-    if (!capturing) {
-      utteranceActiveRef.current = false;
-      themWsRef.current.finalizeAndClose();
-      speechEpochRef.current += 1;
-      // Stop the live cadence with the capture: a pending timer used to fire
-      // once more after leaving meeting mode and post a transcription for audio
-      // that was no longer being recorded.
-      if (liveTimerRef.current !== null) {
-        clearTimeout(liveTimerRef.current);
-        liveTimerRef.current = null;
-      }
-      livePcmRef.current = [];
-      liveTextRef.current = "";
-      utteranceStartedAtRef.current = null;
-    }
-    return () => {
-      utteranceActiveRef.current = false;
-      micStreamOwnsModelRef.current = false;
-      themWsRef.current.finalizeAndClose();
-      if (liveTimerRef.current !== null) {
-        clearTimeout(liveTimerRef.current);
-        liveTimerRef.current = null;
-      }
-    };
-  }, [capturing]);
-
-  useEffect(() => {
-    let speechUnlisten: (() => void) | undefined;
-    let cancelled = false;
-
-    listen("speech-detected", (event) => {
-      // End of the interviewer's utterance. Which path finishes it depends on
-      // the loaded model: a streamable one owns the socket and is asked to
-      // flush; a non-streamable one (Parakeet) never had a socket, so the WAV
-      // the capture attached to this event is transcribed over HTTP — measured
-      // at ~64ms, the fastest path available.
-      //
-      // This event marks the true end of speech in the audio, so the pause
-      // before the next utterance is measured from here rather than from the
-      // text that this transcription will produce much later.
-      lastAudioSpeechEndRef.current = Date.now();
-      utteranceActiveRef.current = false;
-      speechEpochRef.current += 1;
-      if (
-        !micStreamOwnsModelRef.current &&
-        streamingModelRef.current &&
-        themWsRef.current.isStreaming()
-      ) {
-        onInterviewerSpeechActivity?.();
-        utteranceEndedRef.current = true;
-        // If the final frame is lost (the socket can close as speech ends),
-        // dispatch the accumulated monologue anyway — otherwise the feed keeps
-        // growing in italics and the AI is never asked anything.
-        if (flushSafetyTimerRef.current) clearTimeout(flushSafetyTimerRef.current);
-        flushSafetyTimerRef.current = setTimeout(() => {
-          flushSafetyTimerRef.current = null;
-          flushUtteranceRef.current();
-          // The final frame never arrived. Dispatching the accumulated text is
-          // not enough: the socket is still open and the engine keeps holding a
-          // session until it is closed, which is how the pool ran out.
-          themWsRef.current.finalizeAndClose();
-        }, FLUSH_SAFETY_TIMEOUT_MS);
-        themWsRef.current.finalizeUtterance();
-        return;
-      }
-      // Batch path: the model cannot stream. The live cadence produced a
-      // PREVIEW that is up to one cadence (~600ms) behind, so its text can miss
-      // the closing words of the utterance — often the actual question. The
-      // end-of-speech pass over the whole utterance is therefore authoritative:
-      // it replaces the preview and is what the question assembler and the AI
-      // receive. Clearing the frames before it (as this used to) threw away the
-      // tail before anything had read it.
-      onInterviewerSpeechActivity?.();
-      if (liveTimerRef.current !== null) {
-        clearTimeout(liveTimerRef.current);
-        liveTimerRef.current = null;
-      }
-      // Reached when the stream was not considered active — including the race
-      // where `speech-start` opened a socket that is still CONNECTING. A socket
-      // left in that state holds an engine session forever, so it is released
-      // here; the batch path below does not need it.
-      // No usable stream owns the full utterance. Its WAV is authoritative,
-      // including when the microphone preempted a partial interviewer stream.
-      if (flushSafetyTimerRef.current !== null) {
-        clearTimeout(flushSafetyTimerRef.current);
-        flushSafetyTimerRef.current = null;
-      }
-      rolledTextRef.current = "";
-      utteranceEndedRef.current = false;
-      themWsRef.current.close();
-      handleSpeechDetectedRef.current(event.payload as string);
-    })
-      .then((unlisten) => {
-        if (cancelled) {
-          unlisten();
-        } else {
-          speechUnlisten = unlisten;
-        }
-      })
-      .catch((err) => {
-        console.warn("[system-audio]", err);
-        setError("Failed to setup speech listener");
-      });
-
-    return () => {
-      cancelled = true;
-      if (speechUnlisten) speechUnlisten();
-    };
-  }, [appendLiveSegment, onInterviewerSpeechActivity, setError]);
-  useEffect(() => {
-    let cancelled = false;
-    const unlisteners: (() => void)[] = [];
-
-    const addListener = (unlisten: () => void) => {
-      if (cancelled) {
-        unlisten();
-      } else {
-        unlisteners.push(unlisten);
-      }
-    };
-
-    const setupContinuousListeners = async () => {
-      try {
-        const progressUnlisten = await listen("recording-progress", (event) => {
-          const seconds = event.payload as number;
-          setRecordingProgress(seconds);
-        });
-        addListener(progressUnlisten);
-
-        const startUnlisten = await listen("continuous-recording-start", () => {
-          setRecordingProgress(0);
-          setIsRecordingInContinuousMode(true);
-        });
-        addListener(startUnlisten);
-
-        const stopUnlisten = await listen("continuous-recording-stopped", () => {
-          setRecordingProgress(0);
-          setIsRecordingInContinuousMode(false);
-        });
-        addListener(stopUnlisten);
-
-        const errorUnlisten = await listen("audio-encoding-error", (event) => {
-          const errorMsg = event.payload as string;
-          console.error("Audio encoding error:", errorMsg);
-          setError(`Failed to process audio: ${errorMsg}`);
-          setIsSystemProcessing(false);
-          setIsAIProcessing(false);
-          setIsRecordingInContinuousMode(false);
-        });
-        addListener(errorUnlisten);
-
-        const discardedUnlisten = await listen("speech-discarded", (event) => {
-          const reason = event.payload as string;
-          utteranceActiveRef.current = false;
-          console.log("Speech discarded:", reason);
-          // The VAD opened a stream on `speech-start`, but the engine judged the
-          // clip too short to transcribe and will never send a `final`. Nothing
-          // else closes that socket, so the engine kept holding its session —
-          // measured: after a few short utterances no stream could be opened at
-          // all ("model busy: a stream is already active on this model") and
-          // recognition stopped for the rest of the session. Release it here.
-          if (streamingModelRef.current) {
-            themWsRef.current.finalizeAndClose();
-          }
-        });
-        addListener(discardedUnlisten);
-      } catch (err) {
-        console.error("Failed to setup continuous recording listeners:", err);
-      }
-    };
-
-    void setupContinuousListeners();
-
-    return () => {
-      cancelled = true;
-      unlisteners.forEach((fn) => fn());
-      unlisteners.length = 0;
-    };
-  }, [setIsAIProcessing, setError]);
-
-  const startContinuousRecording = useCallback(async () => {
-    try {
-      setRecordingProgress(0);
-      setError("");
-
-      const deviceId =
-        selectedAudioDevices.output.id !== "default"
-          ? selectedAudioDevices.output.id
-          : null;
-
-      await invoke<string>("start_system_audio_capture", {
-        vadConfig: vadConfig,
-        deviceId: deviceId,
-      });
-    } catch (err) {
-      console.error("Failed to start continuous recording:", err);
-      setError(`Failed to start recording: ${err}`);
-    }
-  }, [vadConfig, selectedAudioDevices.output.id, setError]);
-
-  const ignoreContinuousRecording = useCallback(async () => {
-    try {
-      if (!isContinuousMode || !isRecordingInContinuousMode) return;
-
-      await invoke<string>("stop_system_audio_capture");
-
-      setRecordingProgress(0);
-      setIsSystemProcessing(false);
-      setIsRecordingInContinuousMode(false);
-    } catch (err) {
-      console.error("Failed to ignore recording:", err);
-      setError(`Failed to ignore recording: ${err}`);
-    }
-  }, [isContinuousMode, isRecordingInContinuousMode, setError]);
-
-  const manualStopAndSend = useCallback(async () => {
-    try {
-      if (!isContinuousMode) {
-        console.warn("Not in continuous mode");
-        return;
-      }
-
-      setIsSystemProcessing(true);
-      await invoke("manual_stop_continuous");
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      setError(`Failed to manually stop: ${errorMessage}`);
-      setIsSystemProcessing(false);
-      console.error("Manual stop error:", err);
-    }
-  }, [isContinuousMode, setError]);
-
-  const stopMicVisualizerStream = useCallback(() => {
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach((track) => track.stop());
-      micStreamRef.current = null;
-      setMicStream(null);
-    }
-  }, []);
+      capture.setCapturingState(next);
+    },
+    [capture, recovery, transcribe]
+  );
 
   return {
-    capturing,
+    capturing: capture.capturing,
     setCapturing,
-    capturingRef,
-    isMicProcessing,
-    setIsMicProcessing,
-    isSystemProcessing,
-    setIsSystemProcessing,
-    setupRequired,
-    setSetupRequired,
-    isPopoverOpen,
-    setIsPopoverOpen,
-    vadConfig,
-    setVadConfig,
-    updateVadConfiguration,
-    recordingProgress,
-    setRecordingProgress,
-    isContinuousMode,
-    setIsContinuousMode,
-    isRecordingInContinuousMode,
-    setIsRecordingInContinuousMode,
-    pendingScreenshot,
-    setPendingScreenshot,
-    pendingScreenshotRef,
-    micStream,
-    setMicStream,
-    micStreamRef,
-    transcribeSegment,
-    /**
-     * True when the loaded model implements the streaming protocol.
-     *
-     * The microphone channel has the same constraint as the interviewer one: a
-     * non-streamable model (Parakeet) refuses `/v1/asr/stream`, so opening a
-     * socket for it wasted the utterance and dropped the cached port. The mic
-     * path is fed by the webview VAD and must ask before connecting.
-     */
-    canStream: useCallback(() => streamingModelRef.current, []),
-    /** True while the interviewer's own stream is open and owns the model. */
-    themIsStreaming: useCallback(
-      () => themWsRef.current.isStreaming(),
-      []
-    ),
-    /** Hands the single-model stream to the microphone channel. */
-    yieldThemToMic: useCallback(() => {
-      micStreamOwnsModelRef.current = true;
-      speechEpochRef.current += 1;
-      themWsRef.current.finalizeAndClose();
-    }, []),
-    /** Takes the stream back once the microphone utterance ended. */
-    releaseMicModelOwnership: useCallback(() => {
-      micStreamOwnsModelRef.current = false;
-      if (
-        capturingRef.current &&
-        streamingModelRef.current &&
-        utteranceActiveRef.current
-      ) {
-        themWsRef.current.beginUtterance();
-        themWsRef.current.start();
-      }
-    }, []),
-    startContinuousRecording,
-    ignoreContinuousRecording,
-    manualStopAndSend,
-    stopMicVisualizerStream,
+    capturingRef: capture.capturingRef,
+    isMicProcessing: transcribe.isMicProcessing,
+    setIsMicProcessing: transcribe.setIsMicProcessing,
+    isSystemProcessing: transcribe.isSystemProcessing,
+    setIsSystemProcessing: transcribe.setIsSystemProcessing,
+    setupRequired: capture.setupRequired,
+    setSetupRequired: capture.setSetupRequired,
+    isPopoverOpen: capture.isPopoverOpen,
+    setIsPopoverOpen: capture.setIsPopoverOpen,
+    vadConfig: capture.vadConfig,
+    setVadConfig: capture.setVadConfig,
+    updateVadConfiguration: capture.updateVadConfiguration,
+    recordingProgress: recovery.recordingProgress,
+    setRecordingProgress: recovery.setRecordingProgress,
+    isContinuousMode: capture.isContinuousMode,
+    setIsContinuousMode: capture.setIsContinuousMode,
+    isRecordingInContinuousMode: capture.isRecordingInContinuousMode,
+    setIsRecordingInContinuousMode: capture.setIsRecordingInContinuousMode,
+    pendingScreenshot: capture.pendingScreenshot,
+    setPendingScreenshot: capture.setPendingScreenshot,
+    pendingScreenshotRef: capture.pendingScreenshotRef,
+    micStream: capture.micStream,
+    setMicStream: capture.setMicStream,
+    micStreamRef: capture.micStreamRef,
+    transcribeSegment: transcribe.transcribeSegment,
+    canStream: transcribe.canStream,
+    themIsStreaming: transcribe.themIsStreaming,
+    yieldThemToMic: transcribe.yieldThemToMic,
+    releaseMicModelOwnership: transcribe.releaseMicModelOwnership,
+    startContinuousRecording: capture.startContinuousRecording,
+    ignoreContinuousRecording: capture.ignoreContinuousRecording,
+    manualStopAndSend: capture.manualStopAndSend,
+    stopMicVisualizerStream: capture.stopMicVisualizerStream,
   };
 }
