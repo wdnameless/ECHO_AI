@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { registerStoreReset } from "./reset";
 import { SPEECH_TO_TEXT_PROVIDERS, STORAGE_KEYS } from "@/config";
 import { safeLocalStorage } from "@/lib";
 import { TYPE_PROVIDER } from "@/types";
@@ -233,3 +234,11 @@ export const useAudioStore = create<AudioState>((set, get) => {
     },
   };
 });
+
+export const initialAudioState: AudioState = useAudioStore.getState();
+
+export const resetAudioStore = () => {
+  useAudioStore.setState(initialAudioState, true);
+};
+
+registerStoreReset(resetAudioStore);

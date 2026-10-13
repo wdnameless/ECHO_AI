@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { registerStoreReset } from "./reset";
 import {
   getAllConversations,
   deleteConversation,
@@ -181,3 +182,17 @@ export const useHistoryStore = create<HistoryState>((set, get) => ({
     }
   },
 }));
+
+export const initialHistoryState: HistoryState = useHistoryStore.getState();
+
+export const resetHistoryStore = () => {
+  useHistoryStore.setState(
+    {
+      ...initialHistoryState,
+      downloadedConversations: new Set(),
+    },
+    true
+  );
+};
+
+registerStoreReset(resetHistoryStore);

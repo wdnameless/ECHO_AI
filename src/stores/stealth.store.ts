@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { registerStoreReset } from "./reset";
 import { STORAGE_KEYS } from "@/config";
 import { getPlatform, safeLocalStorage } from "@/lib";
 import {
@@ -147,3 +148,11 @@ export const useStealthStore = create<StealthState>((set, get) => {
     },
   };
 });
+
+export const initialStealthState: StealthState = useStealthStore.getState();
+
+export const resetStealthStore = () => {
+  useStealthStore.setState(initialStealthState, true);
+};
+
+registerStoreReset(resetStealthStore);

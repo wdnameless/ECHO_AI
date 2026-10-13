@@ -3,3 +3,4 @@ export * from "./profiles.store";
 export * from "./audio.store";
 export * from "./stealth.store";
 export * from "./history.store";
+export * from "./reset";

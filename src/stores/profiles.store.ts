@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { registerStoreReset } from "./reset";
 import {
   DEFAULT_SYSTEM_PROMPT,
   STORAGE_KEYS,
@@ -303,3 +304,11 @@ export const useProfilesStore = create<ProfilesState>((set, get) => {
     },
   };
 });
+
+export const initialProfilesState: ProfilesState = useProfilesStore.getState();
+
+export const resetProfilesStore = () => {
+  useProfilesStore.setState(initialProfilesState, true);
+};
+
+registerStoreReset(resetProfilesStore);
