@@ -44,6 +44,7 @@ let activeOwner: AsrStreamOwner | null = null;
 let httpActiveCount = 0;
 const waiters = new Set<() => void>();
 
+let releaseInProgress: Promise<void> | null = null;
 export interface SlotQueueRequest {
   owner: AsrStreamOwner;
   callback: () => boolean | void;
@@ -61,22 +62,11 @@ export function getActiveStreamOwner(): AsrStreamOwner | null {
   return activeOwner;
 }
 
-/** Queries Rust for the authoritative active owner of the native ASR stream. */
-export async function getRustStreamOwner(): Promise<AsrStreamOwner | null> {
-  if (!isTauriEnvironment()) {
-    return activeOwner;
-  }
-  try {
-    const owner = await invoke<string | null>("asr_native_get_owner");
-    return (owner as AsrStreamOwner) ?? null;
-  } catch {
-    return activeOwner;
-  }
-}
 
 /** True when a stream may be opened for this owner right now. */
 export function tryAcquireStream(owner: AsrStreamOwner): boolean {
   if (httpActiveCount > 0) return false;
+  if (releaseInProgress !== null) return false;
   if (activeOwner !== null && activeOwner !== owner) return false;
   activeOwner = owner;
 
@@ -194,12 +184,22 @@ export function waitForStreamSlot(
   });
 }
 
-export function releaseStream(owner: AsrStreamOwner): void {
+export async function releaseStream(owner: AsrStreamOwner): Promise<void> {
   if (activeOwner !== owner) return;
   activeOwner = null;
 
   if (isTauriEnvironment()) {
-    void invoke("asr_native_release", { owner }).catch(() => {});
+    const p = invoke("asr_native_release", { owner })
+      .catch(() => {})
+      .then(() => {});
+    releaseInProgress = p;
+    try {
+      await p;
+    } finally {
+      if (releaseInProgress === p) {
+        releaseInProgress = null;
+      }
+    }
   }
 
   // Hand off fairly: wake HTTP waiters first so withNoStream never starves.
@@ -255,6 +255,7 @@ export async function withNoStream<T>(
 /** Only for tests: forget any owner and clear queued requests. */
 export function resetAsrGateForTests(): void {
   activeOwner = null;
+  releaseInProgress = null;
   slotQueue.length = 0;
   for (const wake of [...waiters]) wake();
   waiters.clear();
@@ -373,13 +374,15 @@ class NativeAsrSocket implements AsrSocketLike {
     } else if (data instanceof ArrayBuffer) {
       void invoke("asr_native_send", {
         streamId: this.streamId,
-        pcmBytes: Array.from(new Uint8Array(data)),
+        pcmBytes: new Uint8Array(data),
       }).catch(console.warn);
     } else if (ArrayBuffer.isView(data)) {
       void invoke("asr_native_send", {
         streamId: this.streamId,
-        pcmBytes: Array.from(
-          new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+        pcmBytes: new Uint8Array(
+          data.buffer,
+          data.byteOffset,
+          data.byteLength
         ),
       }).catch(console.warn);
     }

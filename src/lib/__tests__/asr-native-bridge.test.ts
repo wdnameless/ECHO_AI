@@ -4,9 +4,14 @@ import {
   createAsrSocket,
   tryAcquireStream,
   releaseStream,
-  getRustStreamOwner,
+  enqueueStreamSlot,
   resetAsrGateForTests,
 } from "../asr-gate";
+
+
+function hasPcmBytes(args: unknown): args is { streamId: string; pcmBytes: unknown } {
+  return typeof args === "object" && args !== null && "pcmBytes" in args;
+}
 
 interface ConnectPayload {
   onEvent?: {
@@ -81,7 +86,7 @@ describe("Native ASR bridge (R03 native WS to sidecar)", () => {
     expect(invokeMock).toHaveBeenCalledWith(
       "asr_native_send",
       expect.objectContaining({
-        pcmBytes: [10, 20, 30],
+        pcmBytes: new Uint8Array([10, 20, 30]),
       })
     );
 
@@ -126,10 +131,6 @@ describe("Native ASR bridge (R03 native WS to sidecar)", () => {
     releaseStream("them");
     expect(invokeMock).toHaveBeenCalledWith("asr_native_release", { owner: "them" });
 
-    invokeMock.mockResolvedValueOnce("me" as never);
-    const owner = await getRustStreamOwner();
-    expect(owner).toBe("me");
-    expect(invokeMock).toHaveBeenCalledWith("asr_native_get_owner");
 
     resetAsrGateForTests();
     expect(invokeMock).toHaveBeenCalledWith("asr_native_reset");
@@ -149,5 +150,109 @@ describe("Native ASR bridge (R03 native WS to sidecar)", () => {
     const socket = createAsrSocket("ws://127.0.0.1:8765/v1/asr/stream", "me");
     expect(MockWs).toHaveBeenCalledWith("ws://127.0.0.1:8765/v1/asr/stream");
     expect(socket).toBe(mockWsInstance);
+  });
+  it("binary test: sends PCM as binary Uint8Array IPC payload, not JSON number array (B4)", async () => {
+    (window as unknown as { __TAURI_INTERNALS__: Record<string, unknown> }).__TAURI_INTERNALS__ = {};
+    const invokeMock = vi.mocked(invoke);
+    invokeMock.mockResolvedValue(undefined);
+
+    const socket = createAsrSocket("ws://127.0.0.1:8765/v1/asr/stream", "me");
+    await Promise.resolve();
+    expect(socket.readyState).toBe(1); // OPEN
+
+    // Send from ArrayBuffer
+    const buf = new Uint8Array([1, 2, 3, 4]).buffer;
+    socket.send(buf);
+
+    const sendCall1 = invokeMock.mock.calls.find(
+      (c) => c[0] === "asr_native_send" && hasPcmBytes(c[1])
+    );
+    expect(sendCall1).toBeDefined();
+    const rawArg1 = sendCall1?.[1];
+    if (!hasPcmBytes(rawArg1)) {
+      throw new Error("Expected call arguments to include pcmBytes");
+    }
+    expect(Array.isArray(rawArg1.pcmBytes)).toBe(false);
+    expect(rawArg1.pcmBytes).toBeInstanceOf(Uint8Array);
+    expect(rawArg1.pcmBytes).toEqual(new Uint8Array([1, 2, 3, 4]));
+
+    // Send from ArrayBufferView (e.g. Int16Array)
+    const view = new Int16Array([100, 200]);
+    socket.send(view);
+
+    const sendCalls = invokeMock.mock.calls.filter(
+      (c) => c[0] === "asr_native_send" && hasPcmBytes(c[1])
+    );
+    const sendCall2 = sendCalls[sendCalls.length - 1];
+    const rawArg2 = sendCall2?.[1];
+    if (!hasPcmBytes(rawArg2)) {
+      throw new Error("Expected call arguments to include pcmBytes");
+    }
+    expect(Array.isArray(rawArg2.pcmBytes)).toBe(false);
+    expect(rawArg2.pcmBytes).toBeInstanceOf(Uint8Array);
+    expect(rawArg2.pcmBytes).toEqual(
+      new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
+    );
+  });
+
+  it("race test: awaits native release before handing off slot to next waiter under mocked IPC latency (B1)", async () => {
+    (window as unknown as { __TAURI_INTERNALS__: Record<string, unknown> }).__TAURI_INTERNALS__ = {};
+    const invokeMock = vi.mocked(invoke);
+
+    const events: string[] = [];
+    let resolveReleaseIpc!: () => void;
+    const releaseIpcPromise = new Promise<void>((resolve) => {
+      resolveReleaseIpc = resolve;
+    });
+
+    invokeMock.mockImplementation(async (cmd, _args) => {
+      events.push(`invoke:${cmd}`);
+      if (cmd === "asr_native_release") {
+        await releaseIpcPromise;
+      }
+      return undefined;
+    });
+
+    // "them" owns the slot initially
+    expect(tryAcquireStream("them")).toBe(true);
+
+    let waiterCalled = false;
+    enqueueStreamSlot("me", () => {
+      waiterCalled = true;
+      events.push("waiter:me:called");
+      createAsrSocket("ws://127.0.0.1:8765/v1/asr/stream", "me");
+      return true;
+    });
+
+    // "them" starts releasing the stream; native release has simulated IPC latency
+    const releasePromise = releaseStream("them");
+
+    // Flush immediate microtasks
+    await Promise.resolve();
+
+    // Verify: while native release is pending in Rust IPC:
+    // 1. Waiter has NOT been invoked yet
+    expect(waiterCalled).toBe(false);
+    expect(events).toContain("invoke:asr_native_release");
+    expect(events).not.toContain("waiter:me:called");
+    expect(events).not.toContain("invoke:asr_native_connect");
+    // 2. Direct acquisition is rejected while release is in progress
+    expect(tryAcquireStream("me")).toBe(false);
+
+    // Now resolve the native release IPC in Rust
+    resolveReleaseIpc();
+    await releasePromise;
+    await Promise.resolve();
+
+    // Verify: ONLY after native release completed, waiter was handed off and connected
+    expect(waiterCalled).toBe(true);
+    expect(events).toContain("waiter:me:called");
+    expect(events).toContain("invoke:asr_native_connect");
+
+    const releaseIdx = events.indexOf("invoke:asr_native_release");
+    const waiterIdx = events.indexOf("waiter:me:called");
+    const connectIdx = events.indexOf("invoke:asr_native_connect");
+    expect(releaseIdx).toBeLessThan(waiterIdx);
+    expect(waiterIdx).toBeLessThan(connectIdx);
   });
 });
