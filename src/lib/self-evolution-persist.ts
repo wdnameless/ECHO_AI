@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getDatabase } from "@/lib/database/config";
 import {
   getUserStylePreferences,
@@ -22,6 +23,18 @@ import {
 /** Mirror the current style profile into SQLite (fire-and-forget). */
 export async function mirrorStyle(style: UserStylePreference): Promise<void> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      await invoke("db_save_se_style", {
+        style: {
+          tone: style.tone,
+          preferredLength: style.preferredLength,
+          favoritePatterns: style.favoritePatterns,
+          avoidPatterns: style.avoidPatterns,
+          customRules: style.customRules,
+        },
+      });
+      return;
+    }
     const db = await getDatabase();
     await db.execute(
       `INSERT INTO se_style (id, tone, preferred_length, favorite_patterns, avoid_patterns, custom_rules, updated_at)
@@ -50,6 +63,20 @@ export async function mirrorStyle(style: UserStylePreference): Promise<void> {
 /** Mirror one feedback entry into SQLite (fire-and-forget). */
 export async function mirrorFeedback(entry: FeedbackEntry): Promise<void> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      await invoke("db_append_se_feedback", {
+        entry: {
+          id: entry.id,
+          question: entry.question,
+          response: entry.response,
+          rating: entry.rating,
+          reason: entry.reason ?? null,
+          topic: entry.topic ?? null,
+          timestamp: entry.timestamp,
+        },
+      });
+      return;
+    }
     const db = await getDatabase();
     await db.execute(
       `INSERT OR REPLACE INTO se_feedback_log
@@ -159,6 +186,10 @@ export async function restoreSelfEvolution(): Promise<void> {
  */
 export async function getStyleFromDb(): Promise<UserStylePreference | null> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      const style = await invoke<UserStylePreference | null>("db_get_se_style");
+      return style;
+    }
     const db = await getDatabase();
     const rows = await db.select<
       Array<{
@@ -171,7 +202,6 @@ export async function getStyleFromDb(): Promise<UserStylePreference | null> {
     >(
       "SELECT tone, preferred_length, favorite_patterns, avoid_patterns, custom_rules FROM se_style WHERE id = 1"
     );
-
     const row = rows[0];
     if (!row) return null;
 
@@ -214,6 +244,10 @@ export async function getStyleFromDbOrCache(): Promise<UserStylePreference> {
  */
 export async function resetSelfEvolutionDb(): Promise<void> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      await invoke("db_reset_se_data");
+      return;
+    }
     const db = await getDatabase();
     await db.execute("DELETE FROM se_feedback_log");
     await db.execute("DELETE FROM se_style");
