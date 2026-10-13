@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getDatabase } from "./config";
 import type {
   SystemPrompt,
@@ -5,14 +6,19 @@ import type {
   UpdateSystemPromptInput,
 } from "@/types";
 
+function isTauri(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
+  );
+}
+
 /**
  * Create a new system prompt
  */
 export async function createSystemPrompt(
   input: SystemPromptInput
 ): Promise<SystemPrompt> {
-  const db = await getDatabase();
-
   // Validate and sanitize input
   const name = input.name.trim();
   const prompt = input.prompt.trim();
@@ -24,6 +30,15 @@ export async function createSystemPrompt(
   if (!prompt) {
     throw new Error("System prompt text cannot be empty");
   }
+
+  if (isTauri()) {
+    return await invoke<SystemPrompt>("db_create_system_prompt", {
+      name,
+      prompt,
+    });
+  }
+
+  const db = await getDatabase();
 
   const result = await db.execute(
     "INSERT INTO system_prompts (name, prompt) VALUES (?, ?)",
@@ -47,6 +62,9 @@ export async function createSystemPrompt(
  * Get all system prompts
  */
 export async function getAllSystemPrompts(): Promise<SystemPrompt[]> {
+  if (isTauri()) {
+    return await invoke<SystemPrompt[]>("db_get_all_system_prompts");
+  }
   const db = await getDatabase();
   return await db.select<SystemPrompt[]>(
     "SELECT * FROM system_prompts ORDER BY created_at DESC"
@@ -59,6 +77,11 @@ export async function getAllSystemPrompts(): Promise<SystemPrompt[]> {
 export async function getSystemPromptById(
   id: number
 ): Promise<SystemPrompt | null> {
+  if (isTauri()) {
+    return await invoke<SystemPrompt | null>("db_get_system_prompt_by_id", {
+      id,
+    });
+  }
   const db = await getDatabase();
   const result = await db.select<SystemPrompt[]>(
     "SELECT * FROM system_prompts WHERE id = ?",
@@ -74,32 +97,43 @@ export async function updateSystemPrompt(
   id: number,
   input: UpdateSystemPromptInput
 ): Promise<SystemPrompt> {
+  const name = input.name !== undefined ? input.name.trim() : undefined;
+  const prompt = input.prompt !== undefined ? input.prompt.trim() : undefined;
+
+  if (name !== undefined && !name) {
+    throw new Error("System prompt name cannot be empty");
+  }
+
+  if (prompt !== undefined && !prompt) {
+    throw new Error("System prompt text cannot be empty");
+  }
+
+  if (name === undefined && prompt === undefined) {
+    throw new Error("No fields to update");
+  }
+
+  if (isTauri()) {
+    return await invoke<SystemPrompt>("db_update_system_prompt", {
+      id,
+      name: name ?? null,
+      prompt: prompt ?? null,
+    });
+  }
+
   const db = await getDatabase();
 
   // Build dynamic update query
   const updates: string[] = [];
   const values: unknown[] = [];
 
-  if (input.name !== undefined) {
-    const name = input.name.trim();
-    if (!name) {
-      throw new Error("System prompt name cannot be empty");
-    }
+  if (name !== undefined) {
     updates.push("name = ?");
     values.push(name);
   }
 
-  if (input.prompt !== undefined) {
-    const prompt = input.prompt.trim();
-    if (!prompt) {
-      throw new Error("System prompt text cannot be empty");
-    }
+  if (prompt !== undefined) {
     updates.push("prompt = ?");
     values.push(prompt);
-  }
-
-  if (updates.length === 0) {
-    throw new Error("No fields to update");
   }
 
   values.push(id);
@@ -125,6 +159,10 @@ export async function updateSystemPrompt(
  * Delete a system prompt
  */
 export async function deleteSystemPrompt(id: number): Promise<void> {
+  if (isTauri()) {
+    await invoke("db_delete_system_prompt", { id });
+    return;
+  }
   const db = await getDatabase();
   const result = await db.execute("DELETE FROM system_prompts WHERE id = ?", [
     id,

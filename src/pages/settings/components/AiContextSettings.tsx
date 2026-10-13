@@ -4,7 +4,7 @@ import { Header } from "@/components/Header";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { useApp } from "@/contexts";
+import { useProfilesStore } from "@/stores";
 import { STORAGE_KEYS, DEFAULT_SYSTEM_PROMPT } from "@/config/constants";
 import { safeLocalStorage } from "@/lib/storage/helper";
 import { getAllSystemPrompts } from "@/lib/database";
@@ -19,7 +19,10 @@ import { HumanizerSettings } from "./HumanizerSettings";
  * legacy system_prompts database table.
  */
 export function AiContextSettings() {
-  const { systemPrompt, setSystemPrompt, activeProfileId, updatePromptProfile } = useApp();
+  const systemPrompt = useProfilesStore((s) => s.systemPrompt);
+  const setSystemPrompt = useProfilesStore((s) => s.setSystemPrompt);
+  const activeProfileId = useProfilesStore((s) => s.activeProfileId);
+  const updatePromptProfile = useProfilesStore((s) => s.updatePromptProfile);
   const [draft, setDraft] = useState(systemPrompt);
   const [saved, setSaved] = useState(false);
   const [dbPrompts, setDbPrompts] = useState<

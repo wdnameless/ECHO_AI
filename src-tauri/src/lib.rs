@@ -14,6 +14,7 @@ mod window;
 pub mod portable_update;
 pub mod memory;
 pub mod stt_stream;
+pub mod asr_stream;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use tauri_plugin_posthog::{init as posthog_init, PostHogConfig, PostHogOptions};
@@ -251,6 +252,36 @@ pub fn run() {
             stt_stream::stt_stream_connect,
             stt_stream::stt_stream_send,
             stt_stream::stt_stream_close,
+            asr_stream::asr_native_connect,
+            asr_stream::asr_native_send,
+            asr_stream::asr_native_close,
+            asr_stream::asr_native_get_owner,
+            asr_stream::asr_native_try_acquire,
+            asr_stream::asr_native_release,
+            asr_stream::asr_native_reset,
+            db::commands::db_create_system_prompt,
+            db::commands::db_get_all_system_prompts,
+            db::commands::db_get_system_prompt_by_id,
+            db::commands::db_update_system_prompt,
+            db::commands::db_delete_system_prompt,
+            db::commands::db_create_conversation,
+            db::commands::db_get_all_conversations,
+            db::commands::db_get_conversation_by_id,
+            db::commands::db_update_conversation,
+            db::commands::db_delete_conversation,
+            db::commands::db_delete_all_conversations,
+            db::commands::db_get_retention_days,
+            db::commands::db_set_retention_days,
+            db::commands::db_prune_old_conversations,
+            db::commands::db_save_se_style,
+            db::commands::db_get_se_style,
+            db::commands::db_append_se_feedback,
+            db::commands::db_get_se_feedback,
+            db::commands::db_reset_se_data,
+            db::commands::db_get_rag_context,
+            db::commands::db_save_rag_context,
+            db::commands::db_delete_rag_context,
+            db::commands::db_get_all_rag_contexts,
         ])
         .setup(|app| {
             portable_update::cleanup_old_staging_if_needed();

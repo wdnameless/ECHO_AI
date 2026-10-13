@@ -84,7 +84,8 @@
     "tailwindcss": "^4.1.12",
     "tauri-plugin-keychain": "^2.0.1",
     "tauri-plugin-macos-permissions-api": "^2.3.0",
-    "tauri-plugin-posthog-api": "^0.2.2"
+    "tauri-plugin-posthog-api": "^0.2.2",
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

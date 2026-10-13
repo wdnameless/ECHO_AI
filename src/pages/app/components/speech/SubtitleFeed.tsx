@@ -1,21 +1,13 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  AlertCircleIcon,
   CaptionsIcon,
   CheckIcon,
   CopyIcon,
-  HeadphonesIcon,
   Loader2,
-  MicIcon,
   PauseIcon,
-  PencilIcon,
   PlayIcon,
   SparklesIcon,
-  ThumbsDownIcon,
-  ThumbsUpIcon,
-  Trash2Icon,
-  XIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTranslationQueue } from "@/hooks/useTranslationQueue";
@@ -26,34 +18,22 @@ import { getAnswerLengthOverride } from "@/lib/answer-length-override";
 import { getSpeechModelLang } from "@/hooks/useSpeechModelSwitch";
 import {
   recordFeedback,
-  getRuleSource,
   getSelfEvolutionStats,
   isSelfLearningEnabled,
-  type SelfEvolutionStats,
 } from "@/lib/storage/user-facts";
 import {
   createDefaultSmartRule,
-  deleteSmartRule,
   getSmartRules,
   saveSmartRule,
-  type SmartRule,
 } from "@/lib/storage/smart-rules";
 import {
   extractRuleCandidate,
   refineRuleCandidate,
 } from "@/lib/rule-extract";
 import {
-  BEHAVIOR_SUGGESTION_EVENT,
-  confirmSuggestion,
-  dismissSuggestion,
-  getActiveSuggestions,
   observeElaborate,
   observeShorten,
-  type BehaviorSuggestion,
 } from "@/lib/behavior-watch";
-import { SelfLearningToggle } from "@/components/SelfLearningToggle";
-import { splitCodeAnswer } from "@/lib/code-answer";
-import { HoverTranslate } from "@/lib/hover-translate";
 import { resolveProviderModel } from "@/lib/functions/ai-response.function";
 import { addCorrection, applyCorrections } from "@/lib/vocab";
 import { Switch, Button } from "@/components";
@@ -72,6 +52,53 @@ import type { ChatConversation, LiveSegment } from "@/hooks/useSystemAudio";
 import { detectTextLanguage } from "@/lib/transcript-stabilizer";
 import { getAIProviderVariables } from "@/lib/storage/ai-providers";
 import { useEffectiveProvider } from "@/hooks/useEffectiveProvider";
+import { RulePreview, type RulePreviewProps } from "./feed/RulePreview";
+export { RulePreview, type RulePreviewProps };
+import { FeedRow, type FeedRowProps } from "./feed/FeedRow";
+export { FeedRow, FeedRow as SpeechFeedRow, type FeedRowProps };
+import {
+  AICard,
+  type AICardProps,
+  ThoughtContainer,
+  AnswerBody,
+  splitThoughtAnswer,
+  answerForCopy,
+  splitCodeForCopy,
+  DISLIKE_REASONS,
+} from "./feed/AICard";
+export {
+  AICard,
+  AICard as AiFeedRow,
+  type AICardProps,
+  type AICardProps as AiFeedRowProps,
+  ThoughtContainer,
+  splitThoughtAnswer,
+  answerForCopy,
+  splitCodeForCopy,
+  DISLIKE_REASONS,
+};
+import {
+  FeedPopovers,
+  SelfEvolutionPopover,
+  type SelfEvolutionPopoverProps,
+  BehaviorSuggestionBanner,
+  type BehaviorSuggestionBannerProps,
+  EvolutionNoteBanner,
+  type EvolutionNoteBannerProps,
+  useFeedPopovers,
+  type UseFeedPopoversOptions,
+} from "./feed/FeedPopovers";
+export {
+  FeedPopovers,
+  SelfEvolutionPopover,
+  type SelfEvolutionPopoverProps,
+  BehaviorSuggestionBanner,
+  type BehaviorSuggestionBannerProps,
+  EvolutionNoteBanner,
+  type EvolutionNoteBannerProps,
+  useFeedPopovers,
+  type UseFeedPopoversOptions,
+};
 
 /**
  * Newest text spoken by the interviewer, preferring the live feed (fresher than
@@ -169,20 +196,6 @@ interface SubtitleFeedProps {
   onTakeAsRule?: (entryId: string, text: string) => void;
 }
 
-const DISLIKE_REASONS = [
-  "Слишком длинно / много воды",
-  "Слишком сухо / роботизировано",
-  "Слишком сложно / академично",
-  "Не попал в тему вопроса",
-  "Лишние вводные слова",
-  "Шаблонный зачин / ИИ-клише",
-  "Отвечает не на мой вопрос",
-  "Слишком коротко, не хватает деталей",
-  "Звучит как лекция, а не как человек",
-  "Много терминов, нужно проще",
-  "Нет конкретики и примеров",
-  "Повторяет то, что уже было сказано",
-];
 
 const KIND_BADGE: Record<FeedKind, { label: string; cls: string }> = {
   me: {
@@ -247,710 +260,8 @@ const StreamingAiRow = memo(function StreamingAiRow({
     </div>
   );
 });
-/** Splits an answer into compact justification thought block + spoken response. */
-export function splitThoughtAnswer(text: string): {
-  thought: string | null;
-  answer: string;
-} {
-  const m = text.match(/<\s*thought\s*>([\s\S]*?)(?:<\s*\/thought\s*>|$)/i);
-  if (!m) return { thought: null, answer: text };
-  const thought = m[1].trim();
-  const hasClosing = /<\s*\/thought\s*>/i.test(m[0]);
-  const answer = hasClosing
-    ? text.slice(m.index! + m[0].length).trim()
-    : "";
-  return { thought: thought || null, answer };
-}
-
-/** What the copy button puts on the clipboard: the spoken answer, never the thought trace. */
-export function answerForCopy(text: string): string {
-  const { thought, answer } = splitThoughtAnswer(text);
-  if (thought === null) return text;
-  return answer || text;
-}
-
-/** Thought trace container rendered inline on top of the answer. */
-export const ThoughtContainer = memo(function ThoughtContainer({
-  thought,
-}: {
-  thought: string;
-}) {
-  return (
-    <div
-      data-testid="thought-container"
-      className="rounded-md border border-amber-500/30 bg-amber-500/5 dark:bg-amber-500/10 p-2 space-y-1 text-[0.8em] text-foreground/90 transition-all mb-1.5"
-    >
-      <div className="flex items-center gap-1.5 text-[0.72em] font-medium text-amber-600 dark:text-amber-400 uppercase tracking-wide">
-        <SparklesIcon className="w-3 h-3" />
-        <span>Ход мыслей</span>
-      </div>
-      <div className="leading-relaxed text-muted-foreground italic select-text">
-        {thought}
-      </div>
-    </div>
-  );
-});
 
 
-
-/** Code block with tab stops, copy-snippet button, and spoken narration below. */
-const CodeAnswerBody = memo(function CodeAnswerBody({
-  code,
-  lang,
-  prose,
-  onCopyCode,
-  codeCopied,
-}: {
-  code: string;
-  lang: string;
-  prose: string[];
-  onCopyCode: () => void;
-  codeCopied: boolean;
-}) {
-  return (
-    <div className="min-w-0 space-y-1.5">
-      <div className="relative rounded-md border border-border/60 bg-black/80 dark:bg-black/60 overflow-hidden">
-        <div className="flex items-center justify-between px-2 py-1 border-b border-white/10">
-          <span className="text-[0.62em] font-mono text-white/60">{lang}</span>
-          <button
-            onClick={onCopyCode}
-            className="flex items-center gap-1 text-[0.62em] text-white/60 hover:text-white transition-colors"
-            title="Скопировать код (табуляция preserved)"
-          >
-            {codeCopied ? (
-              <CheckIcon className="w-3 h-3 text-emerald-400" />
-            ) : (
-              <CopyIcon className="w-3 h-3" />
-            )}
-            {codeCopied ? "Скопировано" : "Код"}
-          </button>
-        </div>
-        <pre className="m-0 p-2 overflow-x-auto text-[0.82em] leading-relaxed text-emerald-50 font-mono whitespace-pre" style={{ tabSize: 4 }}>
-          <code>{code}</code>
-        </pre>
-      </div>
-      {prose.map((p, i) => (
-        <p key={i} className="leading-relaxed text-[0.86em] text-foreground">
-          {p}
-        </p>
-      ))}
-    </div>
-  );
-});
-
-/** Routes code answers to the block renderer, prose to paragraphs, with thought container rendered inline. */
-const AnswerBody = memo(function AnswerBody({
-  text,
-  onCopyCode,
-  codeCopied,
-}: {
-  text: string;
-  onCopyCode?: () => void;
-  codeCopied?: boolean;
-}) {
-  const { thought, answer } = splitThoughtAnswer(text);
-  const contentText = thought !== null ? answer : text;
-  const split = splitCodeAnswer(contentText);
-  return (
-    <div className="min-w-0 w-full space-y-1.5">
-      {thought && <ThoughtContainer thought={thought} />}
-      {!split.code ? (
-        <div
-          className="min-w-0 text-[0.86em] leading-relaxed text-foreground space-y-1.5"
-          style={{ wordBreak: "break-word", overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
-        >
-          {split.prose.map((p, i) => (
-            <p key={i} className="leading-relaxed">
-              {p}
-            </p>
-          ))}
-        </div>
-      ) : (
-        <CodeAnswerBody
-          code={split.code}
-          lang={split.lang}
-          prose={split.prose}
-          onCopyCode={onCopyCode ?? (() => {})}
-          codeCopied={codeCopied ?? false}
-        />
-      )}
-    </div>
-  );
-});
-
-/** Extracts the raw snippet for the copy button (fence stripped, tabs kept). Thought prefix stripped first. */
-export function splitCodeForCopy(text: string): string {
-  const { answer } = splitThoughtAnswer(text);
-  const { code } = splitCodeAnswer(answer || text);
-  return code ?? text;
-}
-
-const AiFeedRow = memo(function AiFeedRow({
-  id,
-  text,
-  streaming,
-  feedback,
-  translation,
-  translationsOn,
-  translationFailed,
-  copied,
-  isDislikeOpen,
-  customReason,
-  onCopy,
-  onDeepen,
-  onFeedback,
-  onToggleDislike,
-  onCustomReasonChange,
-}: {
-  id: string;
-  text: string;
-  streaming?: boolean;
-  feedback?: "like" | "dislike";
-  translation?: string;
-  translationsOn: boolean;
-  /** True when this row's translation already failed (show a dash, not a spinner). */
-  translationFailed: boolean;
-  copied: boolean;
-  isDislikeOpen: boolean;
-  customReason: string;
-  onCopy: (id: string, text: string) => void;
-  onDeepen?: () => void;
-  onFeedback: (
-    id: string,
-    text: string,
-    rating: "like" | "dislike",
-    reason?: string
-  ) => void;
-  onToggleDislike: (id: string) => void;
-  onCustomReasonChange: (val: string) => void;
-}) {
-  const badge = KIND_BADGE["ai"];
-  return (
-    <div
-      className={cn(
-        "relative rounded-lg border p-2 space-y-1 transition-shadow",
-        "border-violet-500/40 bg-violet-500/5 shadow-[0_0_0_1px_rgba(139,92,246,0.08)]",
-        streaming && "opacity-90"
-      )}
-    >
-      <div className="flex items-center justify-between text-[0.6em]">
-        <span
-          className={cn(
-            "inline-flex items-center gap-1 font-semibold px-1 py-px rounded border uppercase tracking-wide",
-            badge.cls
-          )}
-        >
-          <SparklesIcon className="w-2.5 h-2.5" />
-          {badge.label}
-        </span>
-        <div className="flex items-center gap-0.5">
-          {feedback ? (
-            <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium px-1">
-              <CheckIcon className="w-3 h-3" />
-              {feedback === "like" ? "паттерн усвоен" : "учтено"}
-            </span>
-          ) : (
-            !streaming && (
-              <div className="flex items-center gap-0.5 relative">
-                {onDeepen && (
-                  <button
-                    className="p-0.5 rounded hover:bg-violet-500/10 text-muted-foreground hover:text-violet-500"
-                    title="Углубить эту тему: продолжить рассказ"
-                    onClick={onDeepen}
-                  >
-                    <SparklesIcon className="w-3 h-3" />
-                  </button>
-                )}
-                <button
-                  className="p-0.5 rounded hover:bg-emerald-500/10 text-muted-foreground hover:text-emerald-500"
-                  title="Лайк: закрепить стиль ответа"
-                  onClick={() => onFeedback(id, text, "like")}
-                >
-                  <ThumbsUpIcon className="w-3 h-3" />
-                </button>
-                <button
-                  className="p-0.5 rounded hover:bg-red-500/10 text-muted-foreground hover:text-red-500"
-                  title="Дизлайк: указать, что улучшить"
-                  onClick={() => onToggleDislike(id)}
-                >
-                  <ThumbsDownIcon className="w-3 h-3" />
-                </button>
-                {isDislikeOpen && (
-                  <div className="absolute right-0 top-5 z-40 w-72 rounded-lg border border-border/80 bg-background/95 p-1.5 shadow-lg text-[10px] space-y-0.5 animate-in fade-in duration-100 max-h-80 overflow-y-auto">
-                    <div className="px-2 py-1 font-semibold text-muted-foreground border-b border-border/40 uppercase tracking-wider text-[8px]">
-                      Что улучшить в ответах?
-                    </div>
-                    {DISLIKE_REASONS.map((reason) => (
-                      <button
-                        key={reason}
-                        onClick={() => onFeedback(id, text, "dislike", reason)}
-                        className="w-full text-left px-2 py-1 rounded hover:bg-muted text-foreground/90 transition-colors"
-                      >
-                        {reason}
-                      </button>
-                    ))}
-                    <div className="border-t border-border/40 pt-1 mt-1 flex items-center gap-1 px-1">
-                      <input
-                        value={customReason}
-                        onChange={(ev) => onCustomReasonChange(ev.target.value)}
-                        onKeyDown={(ev) => {
-                          if (ev.key === "Enter" && customReason.trim()) {
-                            onFeedback(id, text, "dislike", customReason.trim());
-                          }
-                        }}
-                        placeholder="Своя причина…"
-                        className="flex-1 min-w-0 bg-transparent border border-border/60 rounded px-1.5 py-0.5 text-[10px] outline-none focus:border-primary/60"
-                      />
-                      <button
-                        onClick={() => {
-                          if (customReason.trim()) {
-                            onFeedback(id, text, "dislike", customReason.trim());
-                          }
-                        }}
-                        className="px-1 py-0.5 rounded bg-primary/10 text-primary hover:bg-primary/20"
-                        title="Отправить"
-                      >
-                        ✓
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )
-          )}
-          <button
-            onClick={() => onCopy(id, answerForCopy(text))}
-            className="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:opacity-100 text-muted-foreground hover:text-foreground"
-            title="Скопировать ответ"
-          >
-            {copied ? (
-              <CheckIcon className="w-3 h-3 text-emerald-500" />
-            ) : (
-              <CopyIcon className="w-3 h-3" />
-            )}
-          </button>
-        </div>
-      </div>
-
-      <div
-        className={cn(
-          "grid gap-x-2 w-full min-w-0 max-w-full",
-          translationsOn && !streaming ? "grid-cols-2" : "grid-cols-1"
-        )}
-      >
-        <AnswerBody
-          text={text}
-          onCopyCode={() => onCopy(id, splitCodeForCopy(text))}
-          codeCopied={copied}
-        />
-        {translationsOn && !streaming && (
-          <div className="min-w-0 flex items-start border-l border-border/30 pl-2">
-            {translation === undefined && !translationFailed ? (
-              // Only a row still waiting on a provider spins. A row whose
-              // translation failed used to spin forever, because a failure
-              // leaves `translations[key]` unset and the spinner keyed on
-              // exactly that.
-              <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/50 mt-1" />
-            ) : translation === undefined ? (
-              <span className="text-muted-foreground/50" title="Перевод недоступен">
-                —
-              </span>
-            ) : (
-              <p
-                className="text-[0.8em] leading-relaxed text-violet-700/90 dark:text-violet-300/90"
-                style={{
-                  wordBreak: "break-word",
-                  overflowWrap: "anywhere",
-                  whiteSpace: "pre-wrap",
-                }}
-              >
-                {translation}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-});
-
-export interface RulePreviewProps {
-  candidate: string;
-  onSave: (text: string) => void;
-  onEdit?: (text: string) => void;
-  onCancel: () => void;
-}
-
-export const RulePreview = memo(function RulePreview({
-  candidate,
-  onSave,
-  onEdit,
-  onCancel,
-}: RulePreviewProps) {
-  const [isEditing, setIsEditing] = useState(false);
-  const [draft, setDraft] = useState(candidate);
-
-  useEffect(() => {
-    if (!isEditing) {
-      setDraft(candidate);
-    }
-  }, [candidate, isEditing]);
-
-  return (
-    <div
-      className="flex flex-wrap items-center gap-1.5 py-1 px-2 rounded border border-violet-500/30 bg-violet-500/5 text-[0.72em]"
-      role="region"
-      aria-label="Превью правила"
-    >
-      <SparklesIcon className="w-3 h-3 text-violet-500 shrink-0" />
-      {isEditing ? (
-        <input
-          type="text"
-          value={draft}
-          onChange={(e) => {
-            setDraft(e.target.value);
-            onEdit?.(e.target.value);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              const finalText = draft.trim() || candidate;
-              if (finalText) onSave(finalText);
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              onCancel();
-            }
-          }}
-          className="flex-1 min-w-[140px] h-6 px-1.5 py-0.5 text-[0.95em] font-medium bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
-        />
-      ) : (
-        <span className="flex-1 min-w-0 font-medium text-foreground break-words">
-          {draft}
-        </span>
-      )}
-      <div className="flex items-center gap-1 shrink-0">
-        <button
-          type="button"
-          onClick={() => {
-            const finalText = (isEditing ? draft : candidate).trim();
-            if (finalText) onSave(finalText);
-          }}
-          className="h-5 px-1.5 inline-flex items-center gap-1 rounded text-[0.9em] font-medium bg-primary text-primary-foreground hover:bg-primary/90"
-        >
-          <CheckIcon className="w-2.5 h-2.5" />
-          Сохранить
-        </button>
-        {!isEditing && (
-          <button
-            type="button"
-            onClick={() => {
-              setIsEditing(true);
-              onEdit?.(draft);
-            }}
-            className="h-5 px-1.5 inline-flex items-center gap-1 rounded text-[0.9em] font-medium border border-border/60 text-muted-foreground hover:text-foreground hover:bg-muted/50"
-          >
-            <PencilIcon className="w-2.5 h-2.5" />
-            Править
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onCancel}
-          className="h-5 px-1.5 inline-flex items-center gap-1 rounded text-[0.9em] font-medium text-muted-foreground hover:text-foreground"
-        >
-          <XIcon className="w-2.5 h-2.5" />
-          Отмена
-        </button>
-      </div>
-    </div>
-  );
-});
-
-const SpeechFeedRow = memo(function SpeechFeedRow({
-  id,
-  kind,
-  text,
-  streaming,
-  translation,
-  translationsOn,
-  translationFailed,
-  isEditing,
-  editWrongWord,
-  editRightWord,
-  editInputRef,
-  isSavingCorrection,
-  showAskAI,
-  isAskDisabled,
-  showFillerBelow,
-  activeFiller,
-  copied,
-  ruleTaken,
-  rulePreviewCandidate,
-  onCopy,
-  onAskAI,
-  onTakeAsRule,
-  onSaveRulePreview,
-  onEditRulePreview,
-  onCancelRulePreview,
-  onStartInlineEdit,
-  onCancelInlineEdit,
-  onSaveInlineEdit,
-  onEditRightWordChange,
-}: {
-  id: string;
-  kind: "me" | "them";
-  text: string;
-  streaming?: boolean;
-  translation?: string;
-  translationsOn: boolean;
-  /** True when this row's translation already failed (show a dash, not a spinner). */
-  translationFailed: boolean;
-  isEditing: boolean;
-  editWrongWord: string;
-  editRightWord: string;
-  editInputRef: React.RefObject<HTMLInputElement | null>;
-  isSavingCorrection: boolean;
-  showAskAI: boolean;
-  isAskDisabled: boolean;
-  showFillerBelow: boolean;
-  activeFiller?: string | null;
-  copied: boolean;
-  ruleTaken?: boolean;
-  rulePreviewCandidate?: string | null;
-  onCopy: (id: string, text: string) => void;
-  onAskAI?: (utteranceId: string, text: string, source: "me" | "them") => Promise<void>;
-  onTakeAsRule?: (entryId: string, text: string) => void;
-  onSaveRulePreview?: (entryId: string, text: string) => void;
-  onEditRulePreview?: (entryId: string, text: string) => void;
-  onCancelRulePreview?: () => void;
-  onStartInlineEdit: (rowId: string, text: string, sel?: string) => void;
-  onCancelInlineEdit: () => void;
-  onSaveInlineEdit: (originalText: string, wrongWord: string, rightWord: string) => void;
-  onEditRightWordChange: (val: string) => void;
-}) {
-  const badge = KIND_BADGE[kind];
-  return (
-    <div className="space-y-0.5">
-      <div
-        className={cn(
-          "group grid gap-x-2 py-0.5 border-b border-border/20 hover:bg-muted/30 rounded transition-colors w-full min-w-0 max-w-full",
-          translationsOn ? "grid-cols-2" : "grid-cols-1"
-        )}
-      >
-        <div className="flex items-start gap-1.5 min-w-0 overflow-hidden">
-          <span
-            className={cn(
-              "shrink-0 mt-px inline-flex items-center gap-0.5 text-[0.56em] font-semibold px-1 py-px rounded border uppercase tracking-wide",
-              badge.cls
-            )}
-          >
-            {kind === "me" ? (
-              <MicIcon className="w-2.5 h-2.5" />
-            ) : (
-              <HeadphonesIcon className="w-2.5 h-2.5" />
-            )}
-            {badge.label}
-          </span>
-
-          {isEditing ? (
-            <div className="flex-1 min-w-0 flex flex-col gap-1 py-0.5">
-              <div className="flex items-center gap-1">
-                <span
-                  className="shrink-0 h-6 px-1.5 inline-flex items-center text-[0.72em] font-medium text-muted-foreground bg-muted/50 border border-border rounded"
-                  title="Распознано (не редактируется)"
-                >
-                  {editWrongWord}
-                </span>
-                <span className="text-[0.7em] text-muted-foreground">→</span>
-                <input
-                  ref={editInputRef}
-                  type="text"
-                  value={editRightWord}
-                  onChange={(e) => onEditRightWordChange(e.target.value)}
-                  placeholder="Как правильно?"
-                  className="flex-1 min-w-0 h-6 px-1.5 py-0.5 text-[0.74em] font-medium bg-background border border-border rounded focus:outline-none focus:ring-1 focus:ring-primary"
-                  onKeyDown={(evt) => {
-                    if (evt.key === "Escape") {
-                      evt.preventDefault();
-                      onCancelInlineEdit();
-                    } else if (evt.key === "Enter") {
-                      evt.preventDefault();
-                      if (editWrongWord && editRightWord) {
-                        void onSaveInlineEdit(text, editWrongWord, editRightWord);
-                      }
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (editWrongWord && editRightWord) {
-                      void onSaveInlineEdit(text, editWrongWord, editRightWord);
-                    }
-                  }}
-                  disabled={isSavingCorrection || !editRightWord.trim()}
-                  className="shrink-0 h-6 px-1.5 inline-flex items-center gap-1 rounded text-[0.68em] font-medium bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                  title="Сохранить в словарь"
-                >
-                  {isSavingCorrection ? (
-                    <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                  ) : (
-                    <CheckIcon className="w-2.5 h-2.5" />
-                  )}
-                  Сохранить
-                </button>
-                <button
-                  type="button"
-                  onClick={onCancelInlineEdit}
-                  className="shrink-0 h-6 px-1 inline-flex items-center justify-center rounded text-muted-foreground hover:text-foreground"
-                  title="Отмена (Esc)"
-                >
-                  <XIcon className="w-3 h-3" />
-                </button>
-              </div>
-              <span className="text-[0.62em] text-muted-foreground">
-                Enter — сохранить в словарь ASR, Esc — отмена
-              </span>
-            </div>
-          ) : (
-            <p
-              onMouseUp={() => {
-                const sel = window.getSelection()?.toString().trim();
-                if (sel && sel.split(/\s+/).length <= 4) {
-                  onStartInlineEdit(id, text, sel);
-                }
-              }}
-              className={cn(
-                "flex-1 min-w-0 text-[0.76em] leading-snug break-words cursor-text",
-                kind === "me"
-                  ? "text-foreground/80"
-                  : "text-foreground/95 font-medium",
-                streaming && "italic text-muted-foreground"
-              )}
-              style={{
-                wordBreak: "break-word",
-                overflowWrap: "anywhere",
-                whiteSpace: "pre-wrap",
-              }}
-              title="Выделите слово для исправления"
-            >
-              {streaming ? text : <HoverTranslate text={text} />}
-            </p>
-          )}
-
-          {!isEditing && (
-            <button
-              type="button"
-              onClick={() => onStartInlineEdit(id, text)}
-              className={cn(
-                "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.62em] font-medium transition-colors border",
-                "text-muted-foreground hover:text-foreground border-border/40 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary",
-                "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-              )}
-              aria-label="Исправить"
-              title="Исправить слово в словаре"
-            >
-              <PencilIcon className="w-2.5 h-2.5" />
-              Исправить
-            </button>
-          )}
-
-          {showAskAI && (
-            <button
-              type="button"
-              onClick={() => onAskAI?.(id, text, "me")}
-              disabled={isAskDisabled}
-              className={cn(
-                "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.62em] font-medium transition-colors border",
-                "text-violet-600 dark:text-violet-300 border-violet-500/30 hover:bg-violet-500/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-500",
-                "disabled:opacity-40 disabled:pointer-events-none"
-              )}
-              aria-label="Спросить ИИ"
-              title="Спросить ИИ"
-            >
-              <SparklesIcon className="w-2.5 h-2.5" />
-              Спросить ИИ
-            </button>
-          )}
-          {kind === "them" && !streaming && !isEditing && onTakeAsRule && (
-            <button
-              type="button"
-              onClick={() => onTakeAsRule(id, text)}
-              className={cn(
-                "shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[0.62em] font-medium transition-colors border",
-                ruleTaken
-                  ? "text-emerald-600 dark:text-emerald-400 border-emerald-500/40 bg-emerald-500/10"
-                  : "text-violet-600 dark:text-violet-300 border-violet-500/30 hover:bg-violet-500/10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-              )}
-              aria-label="Взять как правило"
-              title="Взять как правило"
-            >
-              {ruleTaken ? (
-                <CheckIcon className="w-2.5 h-2.5" />
-              ) : (
-                <SparklesIcon className="w-2.5 h-2.5" />
-              )}
-              Взять как правило
-            </button>
-          )}
-          {!isEditing && (
-            <button
-              onClick={() => onCopy(id, text)}
-              className="shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted-foreground hover:text-foreground mt-0.5"
-              title="Скопировать"
-            >
-              {copied ? (
-                <CheckIcon className="w-3 h-3 text-emerald-500" />
-              ) : (
-                <CopyIcon className="w-3 h-3" />
-              )}
-            </button>
-          )}
-        </div>
-        {translationsOn && (
-          <div className="min-w-0 flex items-start">
-            {translation === undefined && !translationFailed ? (
-              <Loader2 className="w-2.5 h-2.5 animate-spin text-muted-foreground/40 mt-0.5" />
-            ) : translation === undefined ? (
-              <span className="text-muted-foreground/40" title="Перевод недоступен">
-                —
-              </span>
-            ) : (
-              <p
-                className="flex-1 min-w-0 text-[0.72em] leading-snug text-primary/75 break-words"
-                style={{
-                  wordBreak: "break-word",
-                  overflowWrap: "anywhere",
-                  whiteSpace: "pre-wrap",
-                }}
-              >
-                {translation}
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-      {showFillerBelow && (
-        <div
-          className="flex items-center gap-1.5 py-1 px-2 rounded border border-violet-500/20 bg-violet-500/5 text-violet-600 dark:text-violet-300 text-[0.72em]"
-          role="status"
-          aria-live="polite"
-        >
-          <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-          <span className="truncate">{activeFiller}</span>
-        </div>
-      )}
-      {rulePreviewCandidate !== undefined && rulePreviewCandidate !== null && onSaveRulePreview && onCancelRulePreview && (
-        <RulePreview
-          candidate={rulePreviewCandidate}
-          onSave={(finalText) => onSaveRulePreview(id, finalText)}
-          onEdit={(editedText) => onEditRulePreview?.(id, editedText)}
-          onCancel={onCancelRulePreview}
-        />
-      )}
-    </div>
-  );
-});
 
 export const SubtitleFeed = ({
   conversation,
@@ -1044,55 +355,21 @@ export const SubtitleFeed = ({
   } | null>(null);
   const [dislikeMenuFor, setDislikeMenuFor] = useState<string | null>(null);
   const [customReason, setCustomReason] = useState("");
-  const [evolutionNote, setEvolutionNote] = useState<string | null>(null);
-  const [showBrain, setShowBrain] = useState(false);
-  const [evoStats, setEvoStats] = useState<SelfEvolutionStats>(() =>
-    getSelfEvolutionStats()
-  );
-  const [smartRules, setSmartRules] = useState<SmartRule[]>(() =>
-    getSmartRules()
-  );
-  const [behaviorSuggestions, setBehaviorSuggestions] = useState<
-    BehaviorSuggestion[]
-  >(() => getActiveSuggestions());
-
-  useEffect(() => {
-    const syncSuggestions = () =>
-      setBehaviorSuggestions(getActiveSuggestions());
-    window.addEventListener(BEHAVIOR_SUGGESTION_EVENT, syncSuggestions);
-    return () =>
-      window.removeEventListener(BEHAVIOR_SUGGESTION_EVENT, syncSuggestions);
-  }, []);
-
-  const handleConfirmSuggestion = useCallback((id: string) => {
-    const rule = confirmSuggestion(id);
-    setBehaviorSuggestions(getActiveSuggestions());
-    if (rule) {
-      setSmartRules(getSmartRules());
-      setEvoStats(getSelfEvolutionStats());
-      setEvolutionNote("Правило сохранено");
-      setTimeout(() => setEvolutionNote(null), 4000);
-    }
-  }, []);
-
-  const handleDismissSuggestion = useCallback((id: string) => {
-    dismissSuggestion(id);
-    setBehaviorSuggestions(getActiveSuggestions());
-  }, []);
-
-  const handleOpenBrainChange = useCallback((open: boolean) => {
-    setShowBrain(open);
-    if (open) {
-      setEvoStats(getSelfEvolutionStats());
-      setSmartRules(getSmartRules());
-    }
-  }, []);
-
-  const handleDeleteSmartRule = useCallback((id: string) => {
-    deleteSmartRule(id);
-    setSmartRules(getSmartRules());
-    setEvoStats(getSelfEvolutionStats());
-  }, []);
+  const {
+    evolutionNote,
+    showEvolutionNote,
+    showBrain,
+    handleOpenBrainChange,
+    evoStats,
+    setEvoStats,
+    smartRules,
+    setSmartRules,
+    handleDeleteSmartRule,
+    behaviorSuggestions,
+    handleConfirmSuggestion,
+    handleDismissSuggestion,
+    refreshSuggestions,
+  } = useFeedPopovers();
 
   // Word-correction overrides keyed by a STABLE text key (first 40
   // normalized chars) so a correction survives the live-to-final id change.
@@ -1405,7 +682,7 @@ export const SubtitleFeed = ({
       onTogglePause();
     }
     observeElaborate();
-    setBehaviorSuggestions(getActiveSuggestions());
+    refreshSuggestions();
     onDeepen?.();
   }, [paused, onTogglePause, onDeepen]);
 
@@ -1444,10 +721,6 @@ export const SubtitleFeed = ({
     [entries, theirLastTranscription]
   );
 
-  const showEvolutionNote = useCallback((msg: string) => {
-    setEvolutionNote(msg);
-    setTimeout(() => setEvolutionNote(null), 4000);
-  }, []);
 
   const giveFeedback = useCallback(
     (
@@ -1473,7 +746,7 @@ export const SubtitleFeed = ({
           observeElaborate();
         }
       }
-      setBehaviorSuggestions(getActiveSuggestions());
+      refreshSuggestions();
       setFeedbackGiven((prev) => ({ ...prev, [entryId]: rating }));
       setDislikeMenuFor(null);
       setCustomReason("");
@@ -1484,7 +757,7 @@ export const SubtitleFeed = ({
           : `Добавлено правило избегать: ${reason ?? "этот подход"}`
       );
     },
-    [entries, questionContextFor, showEvolutionNote]
+    [entries, questionContextFor, showEvolutionNote, refreshSuggestions]
   );
 
   const handleTakeAsRule = useCallback(
@@ -1669,125 +942,13 @@ export const SubtitleFeed = ({
             {paused ? "Продолжить" : "Читаю"}
             {paused && heldCount > 0 && ` (+${heldCount})`}
           </Button>
-          <DropdownMenu
+          <SelfEvolutionPopover
             open={showBrain}
             onOpenChange={handleOpenBrainChange}
-          >
-            <DropdownMenuTrigger asChild>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-5 px-1.5 text-[0.62em] gap-1 shrink-0"
-                title="Что ИИ выучил из ваших оценок"
-              >
-                🧠
-                {evoStats.totalEdits > 0 && (
-                  <span className="font-mono">{evoStats.totalEdits}</span>
-                )}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-72 p-2 text-[0.68em] space-y-1.5">
-              <div className="font-semibold uppercase tracking-wider text-[0.8em] text-muted-foreground border-b border-border/40 pb-1">
-                Self-Evolution · что учтено · всего правок: {evoStats.totalEdits}
-              </div>
-              <SelfLearningToggle variant="compact" />
-              <div className="text-muted-foreground">
-                👍 {evoStats.likes} · 👎 {evoStats.dislikes} · тон:{" "}
-                <span className="text-foreground">{evoStats.tone}</span>
-                {evoStats.concise && (
-                  <span className="text-primary"> · максимально кратко</span>
-                )}
-              </div>
-              {evoStats.favoritePatterns.length > 0 && (
-                <div>
-                  <div className="font-semibold text-emerald-600 dark:text-emerald-400 mb-0.5">
-                    Эталоны стиля:
-                  </div>
-                  {evoStats.favoritePatterns.map((p, i) => (
-                    <div key={i} className="truncate text-foreground/80" title={p}>
-                      • {p}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {evoStats.avoidPatterns.length > 0 && (
-                <div>
-                  <div className="font-semibold text-red-500 mb-0.5">
-                    Избегать:
-                  </div>
-                  {evoStats.avoidPatterns.map((p, i) => (
-                    <div key={i} className="truncate text-foreground/80" title={p}>
-                      • {p}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {smartRules.length > 0 ? (
-                <div>
-                  <div className="font-semibold text-violet-500 mb-0.5">
-                    Личные правила:
-                  </div>
-                  <div className="space-y-1 max-h-48 overflow-y-auto">
-                    {smartRules.map((r) => {
-                      const originLabel = r.origin.quote || r.origin.source;
-                      return (
-                        <div
-                          key={r.id}
-                          className="flex items-start justify-between gap-1 p-1 rounded bg-muted/40 text-[0.95em]"
-                          data-testid={`smart-rule-${r.id}`}
-                        >
-                          <div className="min-w-0 flex-1 space-y-0.5">
-                            <div className="font-medium text-foreground truncate" title={r.text}>
-                              • {r.text}
-                            </div>
-                            <div className="flex items-center gap-1.5 text-[0.85em] text-muted-foreground flex-wrap">
-                              <span
-                                className="px-1 py-px rounded bg-violet-500/10 text-violet-500 shrink-0"
-                                title="Источник"
-                              >
-                                источник: {originLabel}
-                              </span>
-                              <span>хиты: {r.hits}</span>
-                              <span>вес: {r.weight}</span>
-                            </div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteSmartRule(r.id)}
-                            className="p-0.5 rounded hover:bg-destructive/10 text-muted-foreground hover:text-destructive shrink-0 transition-colors"
-                            title="Удалить правило"
-                            aria-label={`Удалить правило ${r.text}`}
-                          >
-                            <Trash2Icon className="w-3 h-3" />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : evoStats.customRules.length > 0 ? (
-                <div>
-                  <div className="font-semibold text-violet-500 mb-0.5">
-                    Личные правила:
-                  </div>
-                  {evoStats.customRules.map((r, i) => {
-                    const src =
-                      typeof getRuleSource === "function"
-                        ? getRuleSource(r)
-                        : "manual";
-                    return (
-                      <div key={i} className="flex items-center gap-1 truncate text-foreground/80" title={r}>
-                        <span className="px-1 py-px rounded text-[0.8em] bg-violet-500/10 text-violet-500 shrink-0">
-                          {src}
-                        </span>
-                        <span className="truncate">• {r}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </DropdownMenuContent>
-          </DropdownMenu>
+            stats={evoStats}
+            smartRules={smartRules}
+            onDeleteSmartRule={handleDeleteSmartRule}
+          />
 
           <label className="flex items-center gap-1 text-[0.62em] text-muted-foreground cursor-pointer shrink-0">
             <LanguagesInline on={translationsOn} />
@@ -1818,53 +979,14 @@ export const SubtitleFeed = ({
       )}
 
       {/* Self-evolution acknowledgment banner */}
-      {evolutionNote && (
-        <div
-          className={cn(
-            "flex items-center gap-1.5 px-2 py-1 border-b text-[0.65em] shrink-0 animate-in fade-in slide-in-from-top-1",
-            evolutionNote === "Самообучение выключено"
-              ? "bg-amber-500/10 border-amber-500/30 text-amber-700 dark:text-amber-300"
-              : "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300"
-          )}
-        >
-          {evolutionNote === "Самообучение выключено" ? (
-            <AlertCircleIcon className="w-3 h-3 shrink-0" />
-          ) : (
-            <CheckIcon className="w-3 h-3 shrink-0" />
-          )}
-          {evolutionNote}
-          {evolutionNote !== "Самообучение выключено" && " — подход изменён для следующего ответа"}
-        </div>
-      )}
+      <EvolutionNoteBanner note={evolutionNote} />
 
       {/* Behavior watch rule suggestions (R07) */}
-      {behaviorSuggestions.map((s) => (
-        <div
-          key={s.id}
-          data-testid={`behavior-suggestion-${s.id}`}
-          className="flex items-center justify-between gap-2 px-2 py-1 border-b border-violet-500/30 bg-violet-500/10 text-[0.65em] text-violet-800 dark:text-violet-200 shrink-0 animate-in fade-in"
-        >
-          <span className="truncate">
-            Предложить правило «{s.ruleText}?» ({s.reason})
-          </span>
-          <div className="flex items-center gap-1 shrink-0">
-            <button
-              type="button"
-              onClick={() => handleConfirmSuggestion(s.id)}
-              className="px-1.5 py-0.5 rounded bg-violet-600 text-white hover:bg-violet-700 font-medium"
-            >
-              Да
-            </button>
-            <button
-              type="button"
-              onClick={() => handleDismissSuggestion(s.id)}
-              className="px-1.5 py-0.5 rounded border border-violet-500/40 hover:bg-violet-500/20 font-medium"
-            >
-              Нет
-            </button>
-          </div>
-        </div>
-      ))}
+      <BehaviorSuggestionBanner
+        suggestions={behaviorSuggestions}
+        onConfirm={handleConfirmSuggestion}
+        onDismiss={handleDismissSuggestion}
+      />
 
       {/* Column headers (only when translation is on) */}
       {translationsOn && (
@@ -1980,7 +1102,7 @@ export const SubtitleFeed = ({
 
           if (isAI) {
             return (
-              <AiFeedRow
+              <AICard
                 key={rowId}
                 id={rowId}
                 text={e.text}
@@ -2013,7 +1135,7 @@ export const SubtitleFeed = ({
           const showFillerBelow = isPending && Boolean(activeFiller);
 
           return (
-            <SpeechFeedRow
+            <FeedRow
               key={rowId}
               id={rowId}
               kind={speechKind}

@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from "react";
 import { Header } from "@/components";
-import { useApp } from "@/contexts";
+import { useProfilesStore } from "@/stores";
 import {
   PromptProfile,
   SELF_EVOLUTION_PROFILE_ID,
@@ -75,17 +75,16 @@ export function isDraftDirty(
 }
 
 export const PromptProfilesSettings: React.FC = () => {
-  const {
-    promptProfiles,
-    activeProfileId,
-    selectPromptProfile,
-    updatePromptProfile,
-    createPromptProfile,
-    deletePromptProfile,
-    resetPromptProfile,
-    refreshPromptProfiles,
-  } = useApp();
-
+  const promptProfiles = useProfilesStore((s) => s.promptProfiles);
+  const activeProfileId = useProfilesStore((s) => s.activeProfileId);
+  const selectPromptProfile = useProfilesStore((s) => s.selectPromptProfile);
+  const updatePromptProfile = useProfilesStore((s) => s.updatePromptProfile);
+  const createPromptProfile = useProfilesStore((s) => s.createPromptProfile);
+  const deletePromptProfile = useProfilesStore((s) => s.deletePromptProfile);
+  const resetPromptProfile = useProfilesStore((s) => s.resetPromptProfile);
+  const refreshPromptProfiles = useProfilesStore(
+    (s) => s.refreshPromptProfiles
+  );
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<PromptProfile | null>(null);
   const [showWizard, setShowWizard] = useState(false);

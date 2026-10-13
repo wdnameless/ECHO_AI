@@ -17,7 +17,14 @@ import {
 import { getAsrLanguage } from "@/lib/asr-language";
 import { recordWsReconnect, recordLostSegment } from "@/lib/metrics";
 import { handleAsrStreamFrame } from "@/lib/asr-stream-frame";
-import { releaseStream, tryAcquireStream, enqueueStreamSlot, cancelSlotQueue } from "@/lib/asr-gate";
+import {
+  releaseStream,
+  tryAcquireStream,
+  enqueueStreamSlot,
+  cancelSlotQueue,
+  createAsrSocket,
+  type AsrSocketLike,
+} from "@/lib/asr-gate";
 import {
   nextReconnectDelay,
   closeSocketDetached,
@@ -44,7 +51,7 @@ export function useMicWsStreaming({
   onPartialTranscript,
   onFinalTranscript,
 }: UseMicWsStreamingProps) {
-  const micWsRef = useRef<WebSocket | null>(null);
+  const micWsRef = useRef<WebSocket | AsrSocketLike | null>(null);
   const micWsWantRef = useRef(false);
   const micFrameBufferRef = useRef<ArrayBuffer[]>([]);
   const micWsReconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -244,9 +251,9 @@ export function useMicWsStreaming({
           return;
         }
         const wsUrl = `${base.replace(/^http/, "ws")}/v1/asr/stream`;
-        let ws: WebSocket;
+        let ws: WebSocket | AsrSocketLike;
         try {
-          ws = new WebSocket(wsUrl);
+          ws = createAsrSocket(wsUrl, "me");
         } catch (err) {
           console.warn("[mic-ws]", err);
           releaseMicOwner(epoch);

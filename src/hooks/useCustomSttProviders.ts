@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { TYPE_PROVIDER } from "@/types";
 import { SPEECH_TO_TEXT_PROVIDERS } from "@/config";
-import { useApp } from "@/contexts";
+import { useAudioStore } from "@/stores";
 import {
   addCustomSttProvider,
   getCustomSttProviders,
@@ -11,7 +11,7 @@ import {
 } from "@/lib";
 
 export function useCustomSttProviders() {
-  const { loadData } = useApp();
+  const loadData = useAudioStore((s) => s.loadAudioData);
   const [showForm, setShowForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [formData, setFormData] = useState<TYPE_PROVIDER>({

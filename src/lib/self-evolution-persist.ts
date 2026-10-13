@@ -1,8 +1,10 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getDatabase } from "@/lib/database/config";
 import {
   getUserStylePreferences,
   saveUserStylePreferences,
   getFeedbackLog,
+  saveFeedbackLog,
   type FeedbackEntry,
   type UserStylePreference,
 } from "@/lib/storage/user-facts";
@@ -22,6 +24,18 @@ import {
 /** Mirror the current style profile into SQLite (fire-and-forget). */
 export async function mirrorStyle(style: UserStylePreference): Promise<void> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      await invoke("db_save_se_style", {
+        style: {
+          tone: style.tone,
+          preferredLength: style.preferredLength,
+          favoritePatterns: style.favoritePatterns,
+          avoidPatterns: style.avoidPatterns,
+          customRules: style.customRules,
+        },
+      });
+      return;
+    }
     const db = await getDatabase();
     await db.execute(
       `INSERT INTO se_style (id, tone, preferred_length, favorite_patterns, avoid_patterns, custom_rules, updated_at)
@@ -50,6 +64,20 @@ export async function mirrorStyle(style: UserStylePreference): Promise<void> {
 /** Mirror one feedback entry into SQLite (fire-and-forget). */
 export async function mirrorFeedback(entry: FeedbackEntry): Promise<void> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      await invoke("db_append_se_feedback", {
+        entry: {
+          id: entry.id,
+          question: entry.question,
+          response: entry.response,
+          rating: entry.rating,
+          reason: entry.reason ?? null,
+          topic: entry.topic ?? null,
+          timestamp: entry.timestamp,
+        },
+      });
+      return;
+    }
     const db = await getDatabase();
     await db.execute(
       `INSERT OR REPLACE INTO se_feedback_log
@@ -70,6 +98,26 @@ export async function mirrorFeedback(entry: FeedbackEntry): Promise<void> {
   }
 }
 
+function toFeedbackEntry(r: {
+  id: string;
+  question: string;
+  response: string;
+  rating: string;
+  reason?: string | null;
+  topic?: string | null;
+  timestamp: number;
+}): FeedbackEntry {
+  return {
+    id: r.id,
+    question: r.question,
+    response: r.response,
+    rating: r.rating === "dislike" ? "dislike" : "like",
+    reason: r.reason ?? undefined,
+    topic: r.topic ?? undefined,
+    timestamp: r.timestamp,
+  };
+}
+
 /**
  * Startup restore: if the WebView storage was cleared (localStorage empty or
  * has fewer feedback entries than SQLite), restore the learned state from
@@ -77,66 +125,112 @@ export async function mirrorFeedback(entry: FeedbackEntry): Promise<void> {
  */
 export async function restoreSelfEvolution(): Promise<void> {
   try {
-    const db = await getDatabase();
+    const isTauri =
+      typeof window !== "undefined" &&
+      ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
 
-    const dbLog = await db.select<
-      Array<{
-        id: string;
-        question: string;
-        response: string;
-        rating: string;
-        reason: string | null;
-        topic: string | null;
-        timestamp: number;
-      }>
-    >("SELECT * FROM se_feedback_log ORDER BY timestamp DESC");
+    let restoredFeedback: FeedbackEntry[] | null = null;
+    let dbStyleDto: {
+      tone: string;
+      preferredLength: string;
+      favoritePatterns: string[];
+      avoidPatterns: string[];
+      customRules: string[];
+    } | null = null;
+    let dbFeedbackCount = 0;
 
-    const localLog = getFeedbackLog();
+    if (isTauri) {
+      const feedbackDtos = await invoke<
+        Array<{
+          id: string;
+          question: string;
+          response: string;
+          rating: string;
+          reason?: string | null;
+          topic?: string | null;
+          timestamp: number;
+        }>
+      >("db_get_se_feedback", { limit: 10000 });
+      dbFeedbackCount = feedbackDtos.length;
+      const localLog = getFeedbackLog();
+      if (feedbackDtos.length > localLog.length) {
+        restoredFeedback = feedbackDtos.map(toFeedbackEntry);
+      }
+      dbStyleDto = await invoke<{
+        tone: string;
+        preferredLength: string;
+        favoritePatterns: string[];
+        avoidPatterns: string[];
+        customRules: string[];
+      } | null>("db_get_se_style");
+    } else {
+      const db = await getDatabase();
 
-    // Restore feedback log if SQLite holds more history than localStorage
-    // (localStorage was cleared or lost).
-    if (dbLog.length > localLog.length) {
-      const restored: FeedbackEntry[] = dbLog.map((r) => ({
-        id: r.id,
-        question: r.question,
-        response: r.response,
-        rating: r.rating as "like" | "dislike",
-        reason: r.reason ?? undefined,
-        topic: r.topic ?? undefined,
-        timestamp: r.timestamp,
-      }));
-      // Persist back into localStorage via the existing API.
-      const { saveFeedbackLog } = await import("@/lib/storage/user-facts");
-      saveFeedbackLog(restored);
+      const dbLog = await db.select<
+        Array<{
+          id: string;
+          question: string;
+          response: string;
+          rating: string;
+          reason: string | null;
+          topic: string | null;
+          timestamp: number;
+        }>
+      >("SELECT * FROM se_feedback_log ORDER BY timestamp DESC");
+      dbFeedbackCount = dbLog.length;
+      const localLog = getFeedbackLog();
+
+      // Restore feedback log if SQLite holds more history than localStorage
+      // (localStorage was cleared or lost).
+      if (dbLog.length > localLog.length) {
+        restoredFeedback = dbLog.map(toFeedbackEntry);
+      }
+
+      // Restore style profile if localStorage lost it but SQLite has learning.
+      const rows = await db.select<
+        Array<{
+          tone: string;
+          preferred_length: string;
+          favorite_patterns: string;
+          avoid_patterns: string;
+          custom_rules: string;
+        }>
+      >("SELECT tone, preferred_length, favorite_patterns, avoid_patterns, custom_rules FROM se_style WHERE id = 1");
+
+      const dbStyle = rows[0];
+      if (dbStyle) {
+        const favs = JSON.parse(dbStyle.favorite_patterns || "[]");
+        const avoids = JSON.parse(dbStyle.avoid_patterns || "[]");
+        const rules = JSON.parse(dbStyle.custom_rules || "[]");
+        dbStyleDto = {
+          tone: dbStyle.tone,
+          preferredLength: dbStyle.preferred_length,
+          favoritePatterns: Array.isArray(favs) ? favs : [],
+          avoidPatterns: Array.isArray(avoids) ? avoids : [],
+          customRules: Array.isArray(rules) ? rules : [],
+        };
+      }
     }
 
-    // Restore style profile if localStorage lost it but SQLite has learning.
-    const localStyle = getUserStylePreferences();
-    const rows = await db.select<
-      Array<{
-        tone: string;
-        preferred_length: string;
-        favorite_patterns: string;
-        avoid_patterns: string;
-        custom_rules: string;
-      }>
-    >("SELECT tone, preferred_length, favorite_patterns, avoid_patterns, custom_rules FROM se_style WHERE id = 1");
+    if (restoredFeedback) {
+      saveFeedbackLog(restoredFeedback);
+    }
 
-    const dbStyle = rows[0];
+    const localStyle = getUserStylePreferences();
     const localEmpty =
       localStyle.favoritePatterns.length === 0 &&
       localStyle.avoidPatterns.length === 0 &&
       localStyle.customRules.length === 0;
 
-    if (dbStyle && localEmpty) {
-      const favs = JSON.parse(dbStyle.favorite_patterns || "[]");
-      const avoids = JSON.parse(dbStyle.avoid_patterns || "[]");
-      const rules = JSON.parse(dbStyle.custom_rules || "[]");
-      if (favs.length > 0 || avoids.length > 0 || rules.length > 0 || dbLog.length > 0) {
+    if (dbStyleDto && localEmpty) {
+      const favs = dbStyleDto.favoritePatterns || [];
+      const avoids = dbStyleDto.avoidPatterns || [];
+      const rules = dbStyleDto.customRules || [];
+      if (favs.length > 0 || avoids.length > 0 || rules.length > 0 || dbFeedbackCount > 0) {
         saveUserStylePreferences({
           ...localStyle,
-          tone: dbStyle.tone,
-          preferredLength: (dbStyle.preferred_length as
+          tone: dbStyleDto.tone,
+          preferredLength: (dbStyleDto.preferredLength as
             | "concise"
             | "balanced"
             | "detailed") || "concise",
@@ -159,6 +253,10 @@ export async function restoreSelfEvolution(): Promise<void> {
  */
 export async function getStyleFromDb(): Promise<UserStylePreference | null> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      const style = await invoke<UserStylePreference | null>("db_get_se_style");
+      return style;
+    }
     const db = await getDatabase();
     const rows = await db.select<
       Array<{
@@ -171,7 +269,6 @@ export async function getStyleFromDb(): Promise<UserStylePreference | null> {
     >(
       "SELECT tone, preferred_length, favorite_patterns, avoid_patterns, custom_rules FROM se_style WHERE id = 1"
     );
-
     const row = rows[0];
     if (!row) return null;
 
@@ -214,6 +311,10 @@ export async function getStyleFromDbOrCache(): Promise<UserStylePreference> {
  */
 export async function resetSelfEvolutionDb(): Promise<void> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      await invoke("db_reset_se_data");
+      return;
+    }
     const db = await getDatabase();
     await db.execute("DELETE FROM se_feedback_log");
     await db.execute("DELETE FROM se_style");

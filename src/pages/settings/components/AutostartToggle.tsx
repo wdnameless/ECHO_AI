@@ -1,12 +1,13 @@
 import { Switch, Label, Header } from "@/components";
-import { useApp } from "@/contexts";
+import { useStealthStore } from "@/stores";
 
 interface AutostartToggleProps {
   className?: string;
 }
 
 export const AutostartToggle = ({ className }: AutostartToggleProps) => {
-  const { customizable, toggleAutostart } = useApp();
+  const customizable = useStealthStore((s) => s.customizable);
+  const toggleAutostart = useStealthStore((s) => s.toggleAutostart);
 
   const isEnabled = customizable?.autostart?.isEnabled ?? true;
 

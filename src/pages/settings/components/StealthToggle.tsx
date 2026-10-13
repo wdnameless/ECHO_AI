@@ -1,9 +1,9 @@
 import { Switch, Header } from "@/components";
-import { useApp } from "@/contexts";
+import { useStealthStore } from "@/stores";
 
 export const StealthToggle = () => {
-  const { customizable, toggleStealthMode } = useApp();
-
+  const customizable = useStealthStore((s) => s.customizable);
+  const toggleStealthMode = useStealthStore((s) => s.toggleStealthMode);
   return (
     <div className="flex flex-row items-center justify-between">
       <Header

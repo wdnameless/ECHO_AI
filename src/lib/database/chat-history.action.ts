@@ -1,8 +1,8 @@
+import { invoke } from "@tauri-apps/api/core";
 import { indexTranscript } from "../rag/memory-index";
 import { getDatabase } from "./config";
 import { ChatConversation } from "@/types";
 import { safeLocalStorage } from "@/lib";
-
 // Legacy localStorage key for migration purposes
 const LEGACY_CHAT_HISTORY_KEY = "chat_history";
 
@@ -97,8 +97,13 @@ export async function createConversation(
     throw new Error("Invalid conversation data");
   }
 
-  const db = await getDatabase();
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    return await invoke<ChatConversation>("db_create_conversation", {
+      conversation,
+    });
+  }
 
+  const db = await getDatabase();
   try {
     // No BEGIN/COMMIT here: the plugin's pool does not pin one connection to a
     // sequence of execute() calls (measured live — a CREATE TABLE and the next
@@ -167,8 +172,10 @@ export async function createConversation(
  * Get all conversations with messages in a single optimized query
  */
 export async function getAllConversations(): Promise<ChatConversation[]> {
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    return await invoke<ChatConversation[]>("db_get_all_conversations");
+  }
   const db = await getDatabase();
-
   try {
     // Get all conversations
     const conversations = await db.select<DbConversation[]>(
@@ -238,8 +245,13 @@ export async function getConversationById(
     return null;
   }
 
-  const db = await getDatabase();
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    return await invoke<ChatConversation | null>("db_get_conversation_by_id", {
+      id,
+    });
+  }
 
+  const db = await getDatabase();
   try {
     // Get conversation
     const conversations = await db.select<DbConversation[]>(
@@ -289,8 +301,13 @@ export async function updateConversation(
     throw new Error("Invalid conversation data");
   }
 
-  const db = await getDatabase();
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    return await invoke<ChatConversation>("db_update_conversation", {
+      conversation,
+    });
+  }
 
+  const db = await getDatabase();
   try {
     // See the note in createConversation: a manual transaction cannot span the
     // plugin's pool, so none is opened here.
@@ -449,8 +466,11 @@ export async function deleteConversation(id: string): Promise<boolean> {
     return false;
   }
 
-  const db = await getDatabase();
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    return await invoke<boolean>("db_delete_conversation", { id });
+  }
 
+  const db = await getDatabase();
   try {
     const result = await db.execute("DELETE FROM conversations WHERE id = ?", [
       id,
@@ -467,8 +487,11 @@ export async function deleteConversation(id: string): Promise<boolean> {
  * Delete all conversations and messages
  */
 export async function deleteAllConversations(): Promise<void> {
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    await invoke("db_delete_all_conversations");
+    return;
+  }
   const db = await getDatabase();
-
   try {
     // Delete in correct order (messages first due to foreign key)
     await db.execute("DELETE FROM messages");
@@ -533,8 +556,12 @@ export async function migrateLocalStorageToSQLite(): Promise<{
       return { success: true, migratedCount: 0 };
     }
 
-    // Get database instance
-    const db = await getDatabase();
+    const isTauri =
+      typeof window !== "undefined" &&
+      ("__TAURI_INTERNALS__" in window || "__TAURI__" in window);
+
+    // Get database instance only in non-Tauri environment
+    const db = isTauri ? null : await getDatabase();
 
     // Migrate each conversation
     let migratedCount = 0;
@@ -558,59 +585,79 @@ export async function migrateLocalStorageToSQLite(): Promise<{
           continue;
         }
 
-        // Insert conversation
-        await db.execute(
-          "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-          [
-            conversation.id,
-            conversation.title,
-            conversation.createdAt || Date.now(),
-            conversation.updatedAt || Date.now(),
-          ]
-        );
+        if (isTauri) {
+          const validMessages = Array.isArray(conversation.messages)
+            ? orderedByTime(conversation.messages).filter((m) =>
+                Boolean(
+                  m?.id &&
+                  typeof m.id === "string" &&
+                  m.id.trim().length > 0 &&
+                  m?.role &&
+                  ["user", "assistant", "system"].includes(m.role) &&
+                  typeof m?.content === "string" &&
+                  typeof m?.timestamp === "number" &&
+                  m.timestamp >= 0
+                )
+              )
+            : [];
 
-        // Insert messages OLDEST FIRST.
-        //
-        // The store keeps messages newest-first, and inserting them in that raw
-        // order made the trigger (`updated_at = NEW.timestamp`) end on the
-        // OLDEST message — so a just-migrated chat looked ancient. Retention
-        // then purged it on the next launch: the user's history was deleted
-        // immediately after being migrated. `orderedByTime` is what
-        // `saveConversation` already uses; this path was missing it.
-        if (
-          Array.isArray(conversation.messages) &&
-          conversation.messages.length > 0
-        ) {
-          for (const message of orderedByTime(conversation.messages)) {
-            // Validate message
-            if (
-              !message?.id ||
-              !message?.role ||
-              typeof message?.content !== "string"
-            ) {
-              console.warn(
-                `Skipping invalid message in conversation ${conversation.id}:`,
-                message
+          await invoke<ChatConversation>("db_create_conversation", {
+            conversation: {
+              id: conversation.id,
+              title: conversation.title,
+              createdAt: conversation.createdAt || Date.now(),
+              updatedAt: conversation.updatedAt || Date.now(),
+              messages: validMessages,
+            },
+          });
+        } else if (db) {
+          // Insert conversation
+          await db.execute(
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            [
+              conversation.id,
+              conversation.title,
+              conversation.createdAt || Date.now(),
+              conversation.updatedAt || Date.now(),
+            ]
+          );
+
+          // Insert messages OLDEST FIRST.
+          if (
+            Array.isArray(conversation.messages) &&
+            conversation.messages.length > 0
+          ) {
+            for (const message of orderedByTime(conversation.messages)) {
+              // Validate message
+              if (
+                !message?.id ||
+                !message?.role ||
+                typeof message?.content !== "string"
+              ) {
+                console.warn(
+                  `Skipping invalid message in conversation ${conversation.id}:`,
+                  message
+                );
+                continue;
+              }
+
+              const attachedFilesJson = message.attachedFiles
+                ? JSON.stringify(message.attachedFiles)
+                : null;
+
+              await db.execute(
+                "INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                  message.id,
+                  conversation.id,
+                  message.role,
+                  message.content,
+                  message.timestamp || Date.now(),
+                  attachedFilesJson,
+                  typeof message.source === "string" ? message.source : null,
+                ]
               );
-              continue;
             }
-
-            const attachedFilesJson = message.attachedFiles
-              ? JSON.stringify(message.attachedFiles)
-              : null;
-
-            await db.execute(
-              "INSERT INTO messages (id, conversation_id, role, content, timestamp, attached_files, source) VALUES (?, ?, ?, ?, ?, ?, ?)",
-              [
-                message.id,
-                conversation.id,
-                message.role,
-                message.content,
-                message.timestamp || Date.now(),
-                attachedFilesJson,
-                typeof message.source === "string" ? message.source : null,
-              ]
-            );
           }
         }
 
@@ -622,9 +669,15 @@ export async function migrateLocalStorageToSQLite(): Promise<{
         );
         errorCount++;
         // Clean up partially migrated conversation
-        await db
-          .execute("DELETE FROM conversations WHERE id = ?", [conversation?.id])
-          .catch(() => {});
+        if (isTauri) {
+          if (conversation?.id) {
+            await invoke("db_delete_conversation", { id: conversation.id }).catch(() => {});
+          }
+        } else if (db) {
+          await db
+            .execute("DELETE FROM conversations WHERE id = ?", [conversation?.id])
+            .catch(() => {});
+        }
       }
     }
 

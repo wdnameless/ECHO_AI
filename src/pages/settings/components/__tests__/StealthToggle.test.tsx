@@ -9,11 +9,19 @@ let mockCustomizable = {
   stealth: { isEnabled: false },
 };
 
-vi.mock("@/contexts", () => ({
-  useApp: () => ({
-    customizable: mockCustomizable,
-    toggleStealthMode: mockToggleStealthMode,
-  }),
+type MockStealthState = {
+  customizable: typeof mockCustomizable;
+  toggleStealthMode: typeof mockToggleStealthMode;
+};
+
+vi.mock("@/stores", () => ({
+  useStealthStore: <T,>(selector: (state: MockStealthState) => T) => {
+    const state: MockStealthState = {
+      customizable: mockCustomizable,
+      toggleStealthMode: mockToggleStealthMode,
+    };
+    return selector(state);
+  },
 }));
 
 describe("StealthToggle component (R09-R11)", () => {

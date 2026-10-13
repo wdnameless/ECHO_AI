@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getDatabase } from "@/lib/database/config";
 import { safeLocalStorage } from "@/lib/storage/helper";
 
@@ -24,22 +25,31 @@ export function calculateRetentionCutoff(
  * localStorage is maintained as a derived cache that cannot silently diverge.
  */
 export async function getRetentionDays(): Promise<number> {
-  try {
-    const db = await getDatabase();
-    const rows = await db.select<{ value: string }[]>(
-      `SELECT value FROM app_settings WHERE key = 'retention_days' LIMIT 1`
-    );
-    if (rows && rows.length > 0) {
-      const parsed = parseInt(rows[0].value, 10);
-      if (Number.isFinite(parsed) && parsed >= 0) {
-        safeLocalStorage.setItem(RETENTION_STORAGE_KEY, parsed.toString());
-        return parsed;
-      }
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    try {
+      const days = await invoke<number>("db_get_retention_days");
+      safeLocalStorage.setItem(RETENTION_STORAGE_KEY, days.toString());
+      return days;
+    } catch {
+      // Fall back to localStorage
     }
-  } catch {
-    // Fall back to derived cache when SQLite is unreachable (e.g. unit tests or early boot)
+  } else {
+    try {
+      const db = await getDatabase();
+      const rows = await db.select<{ value: string }[]>(
+        `SELECT value FROM app_settings WHERE key = 'retention_days' LIMIT 1`
+      );
+      if (rows && rows.length > 0) {
+        const parsed = parseInt(rows[0].value, 10);
+        if (Number.isFinite(parsed) && parsed >= 0) {
+          safeLocalStorage.setItem(RETENTION_STORAGE_KEY, parsed.toString());
+          return parsed;
+        }
+      }
+    } catch {
+      // Fall back to derived cache when SQLite is unreachable
+    }
   }
-
   const stored = safeLocalStorage.getItem(RETENTION_STORAGE_KEY);
   if (stored === null || stored === undefined) {
     return DEFAULT_RETENTION_DAYS;
@@ -62,18 +72,25 @@ export function isRetentionExpired(updatedAtMs: number, cutoffMs: number | null)
 export async function setRetentionDays(days: number): Promise<void> {
   const safeDays = Math.max(0, Math.floor(days));
 
-  try {
-    const db = await getDatabase();
-    await db.execute(
-      `INSERT INTO app_settings (key, value, updated_at)
-       VALUES ('retention_days', $1, unixepoch())
-       ON CONFLICT(key) DO UPDATE SET value = $1, updated_at = unixepoch()`,
-      [safeDays.toString()]
-    );
-  } catch (err) {
-    console.warn("[retention] Failed to sync retention setting to SQLite:", err);
+  if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+    try {
+      await invoke("db_set_retention_days", { days: safeDays });
+    } catch (err) {
+      console.warn("[retention] Failed to sync retention setting to SQLite:", err);
+    }
+  } else {
+    try {
+      const db = await getDatabase();
+      await db.execute(
+        `INSERT INTO app_settings (key, value, updated_at)
+         VALUES ('retention_days', $1, unixepoch())
+         ON CONFLICT(key) DO UPDATE SET value = $1, updated_at = unixepoch()`,
+        [safeDays.toString()]
+      );
+    } catch (err) {
+      console.warn("[retention] Failed to sync retention setting to SQLite:", err);
+    }
   }
-
   safeLocalStorage.setItem(RETENTION_STORAGE_KEY, safeDays.toString());
 }
 
@@ -96,6 +113,13 @@ export async function runRetentionCleanup(
   }
 
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      const count = await invoke<number>("db_prune_old_conversations", {
+        cutoffMs,
+      });
+      return { deletedConversations: count, cutoffMs };
+    }
+
     const db = await getDatabase();
 
     // Find conversations whose updated_at (or created_at) is older than cutoff
@@ -108,11 +132,6 @@ export async function runRetentionCleanup(
       return { deletedConversations: 0, cutoffMs };
     }
 
-    // Delete expired conversations atomically.
-    // SQLite's ON DELETE CASCADE (enforced by sqlx on every pooled connection)
-    // atomically removes child messages. Deleting messages in a separate prior phase
-    // created a race condition where a concurrent new message revived the parent conversation's
-    // updated_at between deletes, leaving the conversation alive but its previous history wiped.
     const res = await db.execute(
       `DELETE FROM conversations WHERE updated_at < $1`,
       [cutoffMs]

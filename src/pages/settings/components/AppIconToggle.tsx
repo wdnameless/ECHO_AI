@@ -1,12 +1,15 @@
 import { Switch, Label, Header } from "@/components";
-import { useApp } from "@/contexts";
+import { useStealthStore } from "@/stores";
 
 interface AppIconToggleProps {
   className?: string;
 }
 
 export const AppIconToggle = ({ className }: AppIconToggleProps) => {
-  const { customizable, toggleAppIconVisibility } = useApp();
+  const customizable = useStealthStore((s) => s.customizable);
+  const toggleAppIconVisibility = useStealthStore(
+    (s) => s.toggleAppIconVisibility
+  );
 
   const handleSwitchChange = async (checked: boolean) => {
     await toggleAppIconVisibility(checked);

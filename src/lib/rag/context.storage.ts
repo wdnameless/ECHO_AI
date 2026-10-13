@@ -1,5 +1,5 @@
+import { invoke } from "@tauri-apps/api/core";
 import { getDatabase } from "@/lib/database";
-
 export type RagContextType = "resume" | "job";
 
 export interface RagContext {
@@ -41,6 +41,13 @@ export async function getRagContext(
     return cached.value;
   }
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      const res = await invoke<RagContext | null>("db_get_rag_context", {
+        contextType: type,
+      });
+      cache.set(type, { value: res, at: Date.now() });
+      return res;
+    }
     const db = await getDatabase();
     const rows = await db.select<RagContextRow[]>(
       "SELECT id, type, content, source_name, updated_at FROM rag_contexts WHERE type = $1 LIMIT 1",
@@ -60,6 +67,15 @@ export async function setRagContext(
   sourceName?: string
 ): Promise<void> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      await invoke("db_save_rag_context", {
+        contextType: type,
+        content,
+        sourceName: sourceName ?? null,
+      });
+      cache.delete(type);
+      return;
+    }
     const db = await getDatabase();
     await db.execute(
       "INSERT OR REPLACE INTO rag_contexts (id, type, content, source_name, updated_at) VALUES ($1, $2, $3, $4, $5)",
@@ -71,6 +87,11 @@ export async function setRagContext(
 
 export async function deleteRagContext(type: RagContextType): Promise<void> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      await invoke("db_delete_rag_context", { contextType: type });
+      cache.delete(type);
+      return;
+    }
     const db = await getDatabase();
     await db.execute("DELETE FROM rag_contexts WHERE type = $1", [type]);
     cache.delete(type);
@@ -79,6 +100,9 @@ export async function deleteRagContext(type: RagContextType): Promise<void> {
 
 export async function getRagContexts(): Promise<RagContext[]> {
   try {
+    if (typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)) {
+      return await invoke<RagContext[]>("db_get_all_rag_contexts");
+    }
     const db = await getDatabase();
     const rows = await db.select<RagContextRow[]>(
       "SELECT id, type, content, source_name, updated_at FROM rag_contexts ORDER BY updated_at DESC"
