@@ -4,6 +4,7 @@ import {
   buildPreviewPrompt,
   THOUGHT_TRACE_PROMPT,
   CONVERSATIONAL_FILTER_RULE,
+  PROMPT_BLOCK_ORDER,
 } from "../prompt-builder";
 import { MARKDOWN_FORMATTING_INSTRUCTIONS } from "@/config/constants";
 import { SHORT_LENGTH_PROMPT, LONG_LENGTH_PROMPT } from "@/lib/answer-length";
@@ -113,5 +114,110 @@ describe("prompt-builder", () => {
     expect(preview).toContain(CONVERSATIONAL_FILTER_RULE);
     expect(preview).toContain(MARKDOWN_FORMATTING_INSTRUCTIONS);
     expect(preview).toContain(SHORT_LENGTH_PROMPT);
+  });
+
+  it("enforces locked block order with statics first and volatiles at tail", () => {
+    expect(PROMPT_BLOCK_ORDER).toEqual([
+      "base",
+      "thought",
+      "filter",
+      "visual",
+      "length",
+      "humanizer",
+      "opener",
+      "resume",
+      "job",
+      "memory",
+      "language",
+      "evolution",
+      "search",
+    ]);
+
+    const prompt = buildPrompt({
+      baseSystemPrompt: "BASE_BLOCK",
+      mode: "thought",
+      offerVisual: true,
+      humanizer: { enabled: true, interviewMode: true, customStyle: "PUNCHY" },
+      opener: "OPENER_PHRASE",
+      resumeContent: "RESUME_INFO",
+      jobContent: "JOB_INFO",
+      pastMeetingsContent: "MEETING_INFO",
+      languagePrompt: "LANGUAGE_PROMPT_BLOCK",
+      evolutionBlock: "EVOLUTION_BLOCK",
+      searchBlock: "SEARCH_BLOCK",
+    });
+
+    const baseIdx = prompt.indexOf("BASE_BLOCK");
+    const thoughtIdx = prompt.indexOf(THOUGHT_TRACE_PROMPT);
+    const filterIdx = prompt.indexOf(CONVERSATIONAL_FILTER_RULE);
+    const visualIdx = prompt.indexOf(VISUAL_PROMPT_HINT);
+    const lengthIdx = prompt.indexOf(LONG_LENGTH_PROMPT);
+    const resumeIdx = prompt.indexOf("[CONTEXT: MY RESUME]");
+    const jobIdx = prompt.indexOf("[CONTEXT: JOB DESCRIPTION]");
+    const memoryIdx = prompt.indexOf("[CONTEXT: RELEVANT PAST MEETINGS]");
+    const langIdx = prompt.indexOf("LANGUAGE_PROMPT_BLOCK");
+    const evoIdx = prompt.indexOf("EVOLUTION_BLOCK");
+    const searchIdx = prompt.indexOf("SEARCH_BLOCK");
+
+    expect(baseIdx).toBeLessThan(thoughtIdx);
+    expect(thoughtIdx).toBeLessThan(filterIdx);
+    expect(filterIdx).toBeLessThan(visualIdx);
+    expect(visualIdx).toBeLessThan(lengthIdx);
+    expect(lengthIdx).toBeLessThan(resumeIdx);
+    expect(resumeIdx).toBeLessThan(jobIdx);
+    expect(jobIdx).toBeLessThan(memoryIdx);
+    expect(memoryIdx).toBeLessThan(langIdx);
+    expect(langIdx).toBeLessThan(evoIdx);
+    expect(evoIdx).toBeLessThan(searchIdx);
+  });
+
+  it("guarantees byte-level prefix stability across volatile changes (R01)", () => {
+    const staticCtx = {
+      baseSystemPrompt: "You are a senior software architect.",
+      userMessage: "Explain the Raft consensus algorithm.",
+      offerVisual: true,
+      answerLength: "long" as const,
+      resumeContent: "10 years backend experience",
+      jobContent: "Lead Distributed Systems Engineer",
+      pastMeetingsContent: "Discussed consensus trade-offs",
+    };
+
+    const promptRu = buildPrompt({
+      ...staticCtx,
+      languagePrompt: "Answer strictly in Russian.",
+      evolutionBlock: "User prefers Russian technical terms.",
+      searchBlock: "Search result: Raft paper 2014",
+    });
+
+    const promptEn = buildPrompt({
+      ...staticCtx,
+      languagePrompt: "Answer strictly in English.",
+      evolutionBlock: "User prefers concise bullet points.",
+      searchBlock: "Search result: Paxos vs Raft comparison",
+    });
+
+    const volatileStartRu = promptRu.indexOf("Answer strictly in Russian.");
+    const volatileStartEn = promptEn.indexOf("Answer strictly in English.");
+    expect(volatileStartRu).toBe(volatileStartEn);
+    expect(volatileStartRu).toBeGreaterThan(0);
+
+    const prefixRu = promptRu.slice(0, volatileStartRu);
+    const prefixEn = promptEn.slice(0, volatileStartEn);
+    expect(prefixRu).toBe(prefixEn);
+
+    const promptEvo1 = buildPrompt({
+      ...staticCtx,
+      languagePrompt: "Answer strictly in Russian.",
+      evolutionBlock: "Evolution variant A",
+    });
+    const promptEvo2 = buildPrompt({
+      ...staticCtx,
+      languagePrompt: "Answer strictly in Russian.",
+      evolutionBlock: "Evolution variant B",
+    });
+    const evoStart1 = promptEvo1.indexOf("Evolution variant A");
+    const evoStart2 = promptEvo2.indexOf("Evolution variant B");
+    expect(evoStart1).toBe(evoStart2);
+    expect(promptEvo1.slice(0, evoStart1)).toBe(promptEvo2.slice(0, evoStart2));
   });
 });

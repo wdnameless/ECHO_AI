@@ -1,25 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { GetLicense } from "@/components";
 import { PluelyApiSetup, Usage } from "./components";
 import { PageLayout } from "@/layouts";
-import { useApp } from "@/contexts";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 const Dashboard = () => {
-  const { hasActiveLicense } = useApp();
   const [activity, setActivity] = useState<any>(null);
   const [loadingActivity, setLoadingActivity] = useState(false);
-  const analyticsAllowed = canUseFeature("analytics", {
-    isDevBuild: isDevBuild(),
-    hasLicense: hasActiveLicense,
-  });
 
   const fetchActivity = useCallback(async () => {
-    if (!analyticsAllowed) {
-      setActivity({ data: [], total_tokens_used: 0 });
-      return;
-    }
     setLoadingActivity(true);
     try {
       const response = await invoke("get_activity");
@@ -29,20 +17,16 @@ const Dashboard = () => {
       } else {
         setActivity({ data: [], total_tokens_used: 0 });
       }
-    } catch (error) {
+    } catch {
       setActivity({ data: [], total_tokens_used: 0 });
     } finally {
       setLoadingActivity(false);
     }
-  }, [analyticsAllowed]);
+  }, []);
 
   useEffect(() => {
-    if (analyticsAllowed) {
-      fetchActivity();
-    } else {
-      setActivity(null);
-    }
-  }, [fetchActivity, analyticsAllowed]);
+    fetchActivity();
+  }, [fetchActivity]);
 
   const activityData =
     activity && Array.isArray(activity.data) ? activity.data : [];
@@ -54,8 +38,7 @@ const Dashboard = () => {
   return (
     <PageLayout
       title="Dashboard"
-      description="Echo AI license to unlock faster responses, quicker support and premium features."
-      rightSlot={!hasActiveLicense ? <GetLicense /> : null}
+      description="Overview of your Echo AI activity and token usage."
     >
       {/* Echo AI API Setup */}
       <PluelyApiSetup />

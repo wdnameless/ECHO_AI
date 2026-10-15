@@ -85,7 +85,6 @@ let mockPromptProfiles = [
 
 vi.mock("@/contexts", () => ({
   useApp: () => ({
-    hasActiveLicense: true,
     supportsImages: true,
     promptProfiles: mockPromptProfiles,
     activeProfileId: mockActiveProfileId,
@@ -102,12 +101,6 @@ vi.mock("@/contexts", () => ({
 vi.mock("@/lib/version", () => ({
   useAppVersion: () => "1.0.0",
 }));
-
-vi.mock("@/lib/entitlements", () => ({
-  canUseFeature: () => true,
-  isDevBuild: () => false,
-}));
-
 vi.mock("../ResultsSection", () => ({
   ResultsSection: (props: { activeProviderId?: string }) => (
     <div data-testid="results-section" data-active-provider={props.activeProviderId}>

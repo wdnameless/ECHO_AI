@@ -1,17 +1,10 @@
 import { Header, Selection } from "@/components";
 import { LANGUAGES } from "@/lib";
-import { useApp } from "@/contexts";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import { updateLanguage } from "@/lib/storage/response-settings.storage";
 import { useState, useEffect, useMemo } from "react";
 import { getResponseSettings } from "@/lib";
 
 export const LanguageSelector = () => {
-  const { hasActiveLicense } = useApp();
-  const allowed = canUseFeature("language", {
-    isDevBuild: isDevBuild(),
-    hasLicense: hasActiveLicense,
-  });
   const [selectedLanguage, setSelectedLanguage] = useState<string>("english");
 
   useEffect(() => {
@@ -20,9 +13,6 @@ export const LanguageSelector = () => {
   }, []);
 
   const handleLanguageChange = (languageId: string) => {
-    if (!allowed) {
-      return;
-    }
     setSelectedLanguage(languageId);
     updateLanguage(languageId);
   };
@@ -48,7 +38,6 @@ export const LanguageSelector = () => {
           onChange={handleLanguageChange}
           options={languageOptions}
           placeholder="Select a language"
-          disabled={!allowed}
         />
       </div>
     </div>

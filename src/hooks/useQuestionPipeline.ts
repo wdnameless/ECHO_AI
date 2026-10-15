@@ -10,6 +10,7 @@
  * - Manages active Russian filler state ("Да, секундочку..." / перебивки).
  */
 import { useState, useRef, useCallback, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { warmProviderConnection } from "@/lib/host-trust-gate";
 import {
   QuestionAssembler,
@@ -217,6 +218,22 @@ export function useQuestionPipeline({
       void warmProviderConnection(warmUrl).catch(() => {});
     }
   }, []);
+  const lastWarmRef = useRef<number | null>(null);
+  const warmLlm = useCallback(() => {
+    const now = Date.now();
+    if (lastWarmRef.current !== null && now - lastWarmRef.current < 5000) {
+      return;
+    }
+    lastWarmRef.current = now;
+    if (!activeProviderUrlRef.current) {
+      activeProviderUrlRef.current = resolveActiveProviderUrl();
+    }
+    const warmUrl = activeProviderUrlRef.current;
+    if (warmUrl) {
+      invoke("warm_llm_connection", { url: warmUrl }).catch(() => {});
+    }
+  }, []);
+
 
 
   const clearFiller = useCallback(() => {
@@ -352,6 +369,8 @@ export function useQuestionPipeline({
         );
         return;
       }
+      // Pre-warm LLM connection at speech start (R02)
+      warmLlm();
 
       const result = assembler.push({
         source: "them",
@@ -426,6 +445,7 @@ export function useQuestionPipeline({
       const MAX_EXTENSIONS = 1;
 
       const arm = (delay: number) => {
+        warmLlm();
 
         cancelGapTimerRef.current = setUnthrottledTimeout(() => {
           cancelGapTimerRef.current = null;

@@ -15,7 +15,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) })
 vi.mock("@/contexts", () => ({ useApp: () => ({
   selectedAIProvider: { provider: "mock", variables: {} }, allAiProviders: [{ id: "mock" }],
   systemPrompt: "", screenshotConfiguration: {}, setScreenshotConfiguration: vi.fn(),
-  selectedSttProvider: { provider: "test" }, allSttProviders: [], selectedAudioDevices: {}, hasActiveLicense: true,
+  selectedSttProvider: { provider: "test" }, allSttProviders: [], selectedAudioDevices: {},
 }) }));
 vi.mock("@/hooks", () => ({ useGlobalShortcuts: () => boundaries.shortcuts }));
 vi.mock("../useWindow", () => ({ useWindowResize: () => ({ resizeWindow: boundaries.resizeWindow }) }));
@@ -28,7 +28,6 @@ vi.mock("@/lib", () => {
     getResponseSettings: () => ({ autoScroll: false }),
   };
 });
-vi.mock("@/lib/entitlements", () => ({ canUseFeature: () => true, isDevBuild: () => true }));
 vi.mock("../useCompletionCommon", async (importOriginal) => ({
   ...await importOriginal<typeof CompletionCommon>(),
   validateAIProvider: boundaries.validate, streamAIResponse: boundaries.stream,

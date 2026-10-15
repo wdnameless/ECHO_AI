@@ -30,7 +30,6 @@ import { detectTextLanguage } from "@/lib/transcript-stabilizer";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useApp } from "@/contexts";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import { getAnswerMode, setAnswerMode, type AnswerMode } from "@/lib/answer-mode";
 import { useEffectiveProvider } from "@/hooks/useEffectiveProvider";
 import { TURN_GATE_EVENT, TURN_GATE_STATUS_EVENT } from "@/hooks/useQuestionPipeline";
@@ -131,7 +130,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
   const [conversationMode, setConversationMode] = useState(false);
   const appVersion = useAppVersion();
   const {
-    hasActiveLicense,
     supportsImages,
     promptProfiles,
     activeProfileId,
@@ -178,10 +176,6 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
     return () => window.removeEventListener(TURN_GATE_STATUS_EVENT, onStatus);
   }, []);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const screenshotAllowed = canUseFeature("screenshot", {
-    isDevBuild: isDevBuild(),
-    hasLicense: hasActiveLicense,
-  });
 
   const hasInterviewerUtterance = Boolean(theirLastTranscription?.trim());
   const handleRemoveScreenshot = () => {
@@ -533,18 +527,13 @@ export const SystemAudio = (props: ReturnType<typeof useSystemAudio>) => {
                       onClick={handleCaptureScreenshot}
                       disabled={
                         isCapturingScreenshot ||
-                        isAIProcessing ||
-                        !screenshotAllowed
+                        isAIProcessing
                       }
                       className={cn(
                         "h-6 text-[10px] gap-1 px-2",
                         screenshotImage && "bg-primary text-primary-foreground"
                       )}
-                      title={
-                        screenshotAllowed
-                          ? "Capture screenshot"
-                          : "Screenshot входит в тариф Pro. Оплата пока недоступна."
-                      }
+                      title="Capture screenshot"
                     >
                       {isCapturingScreenshot ? (
                         <LoaderIcon className="w-3 h-3 animate-spin" />

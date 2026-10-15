@@ -19,7 +19,6 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 interface ActivationResponse {
   activated: boolean;
@@ -57,9 +56,6 @@ export const PluelyApiSetup = () => {
   const {
     pluelyApiEnabled,
     setPluelyApiEnabled,
-    hasActiveLicense,
-    setHasActiveLicense,
-    getActiveLicenseStatus,
     setSupportsImages,
   } = useApp();
 
@@ -75,12 +71,6 @@ export const PluelyApiSetup = () => {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [searchValue, setSearchValue] = useState("");
 
-  // Хостируемый API — Pro-возможность, поэтому доступность берётся из реестра,
-  // а не из состояния лицензии напрямую.
-  const hostedApiAllowed = canUseFeature("hostedApi", {
-    isDevBuild: isDevBuild(),
-    hasLicense: hasActiveLicense,
-  });
   const fetchInitiated = useRef(false);
   const commandListRef = useRef<HTMLDivElement>(null);
 
@@ -193,7 +183,6 @@ export const PluelyApiSetup = () => {
 
         await loadLicenseStatus(); // Reload status
         await fetchModels();
-        await getActiveLicenseStatus();
       } else {
         setError(response.error || "Failed to activate license");
       }
@@ -239,7 +228,6 @@ export const PluelyApiSetup = () => {
         ],
       });
 
-      setHasActiveLicense(false);
       // Disable Echo AI API when license is removed
       setPluelyApiEnabled(false);
 
@@ -253,7 +241,6 @@ export const PluelyApiSetup = () => {
 
       await fetchModels();
       await loadLicenseStatus(); // Reload status
-      await getActiveLicenseStatus();
     } catch (err) {
       console.error("Failed to remove license locally:", err);
       setError("Failed to remove license");
@@ -526,7 +513,7 @@ export const PluelyApiSetup = () => {
         <Switch
           checked={pluelyApiEnabled}
           onCheckedChange={setPluelyApiEnabled}
-          disabled={!storedLicenseKey || !hostedApiAllowed}
+          disabled={!storedLicenseKey}
         />
       </div>
     </div>

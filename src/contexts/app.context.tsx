@@ -3,7 +3,6 @@ import {
   STORAGE_KEYS,
 } from "@/config";
 import { safeLocalStorage, trackAppStart } from "@/lib";
-import { getShortcutsConfig } from "@/lib/storage";
 import {
   nonSecretAIProviderVariables,
   setAIProviderVariables,
@@ -138,7 +137,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       enabled: true,
     });
 
-  const [hasActiveLicense, setHasActiveLicense] = useState<boolean>(false);
   const [supportsImages, setSupportsImagesState] = useState<boolean>(() => {
     const stored = safeLocalStorage.getItem(STORAGE_KEYS.SUPPORTS_IMAGES);
     return stored === null ? true : stored === "true";
@@ -155,33 +153,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     safeLocalStorage.getItem(STORAGE_KEYS.PLUELY_API_ENABLED) === "true"
   );
 
-  const getActiveLicenseStatus = useCallback(async (): Promise<boolean> => {
-    try {
-      const status = await invoke<boolean>("check_license_status");
-      setHasActiveLicense(status);
-      return status;
-    } catch {
-      setHasActiveLicense(false);
-      return false;
-    }
-  }, []);
-
-  useEffect(() => {
-    const syncLicenseState = async () => {
-      try {
-        await invoke("set_license_status", {
-          hasLicense: hasActiveLicense,
-        });
-
-        const config = getShortcutsConfig();
-        await invoke("update_shortcuts", { config });
-      } catch (error) {
-        console.error("Failed to synchronize license state:", error);
-      }
-    };
-
-    syncLicenseState();
-  }, [hasActiveLicense]);
 
   // Function to load all data from storage
   const loadData = useCallback(() => {
@@ -272,7 +243,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         console.debug("Curl secret sweep skipped:", error);
       }
 
-      await getActiveLicenseStatus();
 
       try {
         const appVersion = await invoke<string>("get_app_version");
@@ -287,7 +257,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     loadData();
     initializeApp();
-  }, [loadData, getActiveLicenseStatus]);
+  }, [loadData]);
 
 
   useEffect(() => {
@@ -518,9 +488,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       loadData,
       pluelyApiEnabled,
       setPluelyApiEnabled,
-      hasActiveLicense,
-      setHasActiveLicense,
-      getActiveLicenseStatus,
       selectedAudioDevices,
       setSelectedAudioDevices,
       setCursorType,
@@ -565,9 +532,6 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       loadData,
       pluelyApiEnabled,
       setPluelyApiEnabled,
-      hasActiveLicense,
-      setHasActiveLicense,
-      getActiveLicenseStatus,
       selectedAudioDevices,
       setSelectedAudioDevices,
       setCursorType,

@@ -1,15 +1,8 @@
 import { Switch, Label, Header } from "@/components";
-import { useApp } from "@/contexts";
 import { useState, useEffect } from "react";
 import { getResponseSettings, updateAutoScroll } from "@/lib";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 export const AutoScrollToggle = () => {
-  const { hasActiveLicense } = useApp();
-  const allowed = canUseFeature("autoScroll", {
-    isDevBuild: isDevBuild(),
-    hasLicense: hasActiveLicense,
-  });
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
 
   useEffect(() => {
@@ -18,9 +11,6 @@ export const AutoScrollToggle = () => {
   }, []);
 
   const handleSwitchChange = (checked: boolean) => {
-    if (!allowed) {
-      return;
-    }
     setAutoScroll(checked);
     updateAutoScroll(checked);
   };
@@ -49,7 +39,6 @@ export const AutoScrollToggle = () => {
         <Switch
           checked={autoScroll}
           onCheckedChange={handleSwitchChange}
-          disabled={!allowed}
           title={`Toggle to ${!autoScroll ? "enable" : "disable"} auto-scroll`}
           aria-label={`Toggle to ${
             autoScroll ? "disable" : "enable"
