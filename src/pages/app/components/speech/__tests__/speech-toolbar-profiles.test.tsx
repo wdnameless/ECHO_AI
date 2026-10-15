@@ -85,7 +85,6 @@ let mockPromptProfiles = [
 
 vi.mock("@/contexts", () => ({
   useApp: () => ({
-    hasActiveLicense: true,
     supportsImages: true,
     promptProfiles: mockPromptProfiles,
     activeProfileId: mockActiveProfileId,

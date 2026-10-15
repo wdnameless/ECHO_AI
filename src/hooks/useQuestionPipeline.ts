@@ -218,7 +218,13 @@ export function useQuestionPipeline({
       void warmProviderConnection(warmUrl).catch(() => {});
     }
   }, []);
+  const lastWarmRef = useRef<number | null>(null);
   const warmLlm = useCallback(() => {
+    const now = Date.now();
+    if (lastWarmRef.current !== null && now - lastWarmRef.current < 5000) {
+      return;
+    }
+    lastWarmRef.current = now;
     if (!activeProviderUrlRef.current) {
       activeProviderUrlRef.current = resolveActiveProviderUrl();
     }

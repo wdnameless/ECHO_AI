@@ -889,5 +889,56 @@ describe("useQuestionPipeline", () => {
         url: "https://api.openai.com/v1/chat/completions",
       });
     });
+
+    it("R02: throttles warm_llm_connection IPC within a 5-second cooldown window", async () => {
+      const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+      const liveSegmentsRef = { current: [] as LiveSegment[] };
+
+      const { result } = renderHook(() =>
+        useQuestionPipeline({ onTriggerAI, liveSegmentsRef })
+      );
+
+      vi.mocked(invoke).mockClear();
+
+      // First fragment triggers warm IPC
+      await act(async () => {
+        await result.current.handleInterviewerTranscription("Расскажите о себе");
+      });
+
+      const warmCallsBefore = vi
+        .mocked(invoke)
+        .mock.calls.filter((call) => call[0] === "warm_llm_connection").length;
+      expect(warmCallsBefore).toBe(1);
+
+      // Advance by 2 seconds (< 5s window) and send another fragment
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+
+      await act(async () => {
+        await result.current.handleInterviewerTranscription("И о вашем опыте");
+      });
+
+      // Still only 1 IPC invocation due to 5s cooldown
+      const warmCallsDuringCooldown = vi
+        .mocked(invoke)
+        .mock.calls.filter((call) => call[0] === "warm_llm_connection").length;
+      expect(warmCallsDuringCooldown).toBe(1);
+
+      // Advance past 5s cooldown window
+      act(() => {
+        vi.advanceTimersByTime(3500);
+      });
+
+      await act(async () => {
+        await result.current.handleInterviewerTranscription("Следующий вопрос?");
+      });
+
+      // Now a second IPC call is permitted
+      const warmCallsAfter = vi
+        .mocked(invoke)
+        .mock.calls.filter((call) => call[0] === "warm_llm_connection").length;
+      expect(warmCallsAfter).toBe(2);
+    });
   });
 });

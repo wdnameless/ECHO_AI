@@ -1,8 +1,14 @@
 #!/usr/bin/env node
+/**
+ * Benchmark runner for local smoke-regression testing.
+ *
+ * PURPOSE: Smoke-regression and deterministic sanity verification.
+ * No production-key metrics or live provider latency claims are made:
+ * latency metrics are synthetic proxies for deterministic regression tracking.
+ */
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -79,7 +85,7 @@ export function detectLanguage(text) {
 
 /**
  * Evaluates a single benchmark case.
- * Runs keyless: computes local metrics for TTFT, WER, and language accuracy.
+ * Runs keyless: computes local metrics for synthetic-proxy latency, WER, and language accuracy.
  */
 export function evaluateCase(testCase, _options = {}) {
   const start = performance.now();
@@ -92,7 +98,7 @@ export function evaluateCase(testCase, _options = {}) {
   const hypothesis = testCase.expected?.mockResponse || testCase.transcript;
   const wer = computeWer(reference, hypothesis);
 
-  // Local simulated TTFT-proxy: word hashing + simulated prefix parsing latency (ms)
+  // Local synthetic-proxy latency: simulated word hashing + prefix parsing overhead (ms)
   const tokenCount = tokenizeWords(testCase.transcript).length;
   const processTime = performance.now() - start;
   const simulatedNetworkJitter = ((testCase.transcript.length * 13) % 17);
@@ -106,6 +112,7 @@ export function evaluateCase(testCase, _options = {}) {
     langMatch,
     wer: Math.round(wer * 1000) / 1000,
     ttftMs,
+    syntheticProxyMs: ttftMs,
   };
 }
 
@@ -122,7 +129,7 @@ export function runBenchmark(corpus, _options = {}) {
   const totalWer = results.reduce((acc, r) => acc + r.wer, 0);
   const avgWer = totalCases > 0 ? Math.round((totalWer / totalCases) * 1000) / 1000 : 0;
 
-  const totalTtft = results.reduce((acc, r) => acc + r.ttftMs, 0);
+  const totalTtft = results.reduce((acc, r) => acc + (r.syntheticProxyMs ?? r.ttftMs), 0);
   const avgTtftMs = totalCases > 0 ? Math.round((totalTtft / totalCases) * 10) / 10 : 0;
 
   return {
@@ -131,6 +138,7 @@ export function runBenchmark(corpus, _options = {}) {
     langAccuracy: Math.round(langAccuracy * 10) / 10,
     avgWer,
     avgTtftMs,
+    avgSyntheticProxyMs: avgTtftMs,
     pass: totalCases >= 20 && langAccuracy >= 95,
   };
 }
@@ -152,12 +160,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
   }
 
   console.log(`\n============================================================`);
-  console.log(`   ECHO AI BENCHMARK (Local Keyless Accuracy & Latency)     `);
+  console.log(`   ECHO AI BENCHMARK (Smoke-Regression & Synthetic Proxies) `);
   console.log(`============================================================\n`);
   console.log(`Loaded ${corpus.length} reference test cases.\n`);
 
-  console.log(`| Case ID | Category      | Lang | WER-proxy | TTFT (ms) | Status |`);
-  console.log(`|---------|---------------|------|-----------|-----------|--------|`);
+  console.log(`| Case ID | Category      | Lang | WER-proxy | Synth-Proxy (ms) | Status |`);
+  console.log(`|---------|---------------|------|-----------|------------------|--------|`);
 
   const report = runBenchmark(corpus);
 
@@ -166,8 +174,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
     const cat = r.category.padEnd(13, " ");
     const id = r.id.padEnd(7, " ");
     const werStr = r.wer.toFixed(3).padStart(9, " ");
-    const ttftStr = r.ttftMs.toFixed(1).padStart(9, " ");
-    console.log(`| ${id} | ${cat} | ${r.detectedLang}   | ${werStr} | ${ttftStr} | ${status}   |`);
+    const proxyStr = (r.syntheticProxyMs ?? r.ttftMs).toFixed(1).padStart(16, " ");
+    console.log(`| ${id} | ${cat} | ${r.detectedLang}   | ${werStr} | ${proxyStr} | ${status}   |`);
   }
 
   console.log(`\n------------------------------------------------------------`);
@@ -175,7 +183,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename
   console.log(`  Total Cases:      ${report.totalCases}`);
   console.log(`  Language Acc:     ${report.langAccuracy}%`);
   console.log(`  Average WER:      ${report.avgWer}`);
-  console.log(`  Average TTFT:     ${report.avgTtftMs} ms`);
+  console.log(`  Average Synth-Proxy: ${report.avgSyntheticProxyMs ?? report.avgTtftMs} ms`);
   console.log(`  Overall Status:   ${report.pass ? "SUCCESS" : "FAILED"}`);
   console.log(`------------------------------------------------------------\n`);
 

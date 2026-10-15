@@ -56,8 +56,6 @@ export const PluelyApiSetup = () => {
   const {
     pluelyApiEnabled,
     setPluelyApiEnabled,
-    setHasActiveLicense,
-    getActiveLicenseStatus,
     setSupportsImages,
   } = useApp();
 
@@ -185,7 +183,6 @@ export const PluelyApiSetup = () => {
 
         await loadLicenseStatus(); // Reload status
         await fetchModels();
-        await getActiveLicenseStatus();
       } else {
         setError(response.error || "Failed to activate license");
       }
@@ -231,7 +228,6 @@ export const PluelyApiSetup = () => {
         ],
       });
 
-      setHasActiveLicense(false);
       // Disable Echo AI API when license is removed
       setPluelyApiEnabled(false);
 
@@ -245,7 +241,6 @@ export const PluelyApiSetup = () => {
 
       await fetchModels();
       await loadLicenseStatus(); // Reload status
-      await getActiveLicenseStatus();
     } catch (err) {
       console.error("Failed to remove license locally:", err);
       setError("Failed to remove license");

@@ -3,30 +3,18 @@ use std::time::Instant;
 
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
-pub async fn warm_llm_connection_client(client: &reqwest::Client, url: &str) -> Result<u64, String> {
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
+#[tauri::command]
+pub async fn warm_llm_connection(url: String) -> Result<u64, String> {
+    let parsed = reqwest::Url::parse(&url).map_err(|e| format!("Invalid URL: {e}"))?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err("Only http and https protocols are supported".to_string());
     }
 
     let start = Instant::now();
-    // Warm the TCP + TLS connection. A HEAD request initiates connection and handshake
-    // without downloading response body. If HEAD fails or is rejected, fall back to GET.
-    let head_result = client
-        .head(url)
-        .timeout(std::time::Duration::from_millis(3000))
-        .send()
-        .await;
-
-    let res = match head_result {
+    let timeout = std::time::Duration::from_millis(3000);
+    let res = match HTTP_CLIENT.head(&url).timeout(timeout).send().await {
         Ok(resp) => Ok(resp),
-        Err(_) => {
-            client
-                .get(url)
-                .timeout(std::time::Duration::from_millis(3000))
-                .send()
-                .await
-        }
+        Err(_) => HTTP_CLIENT.get(&url).timeout(timeout).send().await,
     };
 
     match res {
@@ -37,11 +25,6 @@ pub async fn warm_llm_connection_client(client: &reqwest::Client, url: &str) -> 
         }
         Err(e) => Err(format!("Warmup connection failed: {e}")),
     }
-}
-
-#[tauri::command]
-pub async fn warm_llm_connection(url: String) -> Result<u64, String> {
-    warm_llm_connection_client(&HTTP_CLIENT, &url).await
 }
 
 #[cfg(test)]

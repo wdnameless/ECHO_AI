@@ -17,7 +17,6 @@ export const useSettings = () => {
     selectedSttProvider,
     onSetSelectedAIProvider,
     onSetSelectedSttProvider,
-    hasActiveLicense,
   } = useApp();
   const [variables, setVariables] = useState<{ key: string; value: string }[]>(
     []
@@ -108,7 +107,6 @@ export const useSettings = () => {
     setShowDeleteConfirmDialog,
     variables,
     sttVariables,
-    hasActiveLicense,
     selectionModeAllowed: true,
   };
 };

@@ -18,7 +18,6 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 vi.mock("@/contexts", () => ({
   useApp: () => ({
-    hasActiveLicense: true,
     supportsImages: false,
     promptProfiles: [{ id: "default", name: "Default" }],
     activeProfileId: "default",

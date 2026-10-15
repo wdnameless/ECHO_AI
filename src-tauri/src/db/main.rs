@@ -294,12 +294,6 @@ mod tests {
         std::fs::remove_dir_all(temp_dir).unwrap();
     }
 
-
-    #[test]
-    fn test_apply_pragmas() {
-        test_wal_pragmas_applied();
-    }
-
     #[test]
     fn test_wal_pragmas_applied() {
         let temp_dir = std::env::temp_dir().join(format!("pluely_pragma_test_{}", uuid::Uuid::new_v4()));
