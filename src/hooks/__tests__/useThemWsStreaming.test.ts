@@ -8,6 +8,10 @@ vi.mock("@/lib/asr-discovery", () => ({
 vi.mock("@/lib/asr-language", () => ({ getAsrLanguage: vi.fn(() => "en") }));
 vi.mock("@/lib/asr-capabilities", () => ({ noteStreamingUnsupported: vi.fn() }));
 
+vi.mock("@/lib/fast-translator", () => ({
+  fastTranslate: vi.fn(async (text: string) => `trans:${text}`),
+}));
+import { fastTranslate } from "@/lib/fast-translator";
 import { useThemWsStreaming } from "../useThemWsStreaming";
 import * as asrGate from "@/lib/asr-gate";
 import { getAsrBaseUrl } from "@/lib/asr-discovery";
@@ -359,5 +363,128 @@ describe("useThemWsStreaming session usage", () => {
     expect(second.readyState).toBe(MockWebSocket.OPEN);
     act(() => { vi.advanceTimersByTime(150); });
     expect(second.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it("R03 debounces partial translation by 400ms and updates partialTranslation state and callback", async () => {
+    const onPartialTranscript = vi.fn();
+    const onPartialTranslation = vi.fn();
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useThemWsStreaming({
+        capturingRef,
+        onPartialTranscript,
+        onPartialTranslation,
+      })
+    );
+
+    await act(async () => { result.current.start(); });
+    const ws = MockWebSocket.instances[0];
+    act(() => ws.triggerOpen());
+
+    // t=0: First partial arrives
+    act(() => {
+      ws.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "text", text: "Привет" }),
+        })
+      );
+    });
+    expect(onPartialTranscript).toHaveBeenCalledWith("Привет");
+    expect(fastTranslate).not.toHaveBeenCalled();
+
+    // t=200ms: Second partial arrives before 400ms debounce
+    act(() => { vi.advanceTimersByTime(200); });
+    act(() => {
+      ws.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "text", text: "Привет мир" }),
+        })
+      );
+    });
+    expect(onPartialTranscript).toHaveBeenCalledWith("Привет мир");
+    expect(fastTranslate).not.toHaveBeenCalled();
+
+    // Advance another 200ms (t=400ms from start, but only 200ms since last partial): still not called
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(fastTranslate).not.toHaveBeenCalled();
+
+    // Advance remaining 200ms (t=400ms from last partial): debounce expires, fastTranslate called
+    await act(async () => { vi.advanceTimersByTime(200); });
+    expect(fastTranslate).toHaveBeenCalledTimes(1);
+    expect(fastTranslate).toHaveBeenCalledWith("Привет мир", undefined);
+    expect(result.current.partialTranslation).toBe("trans:Привет мир");
+    expect(onPartialTranslation).toHaveBeenCalledWith("trans:Привет мир");
+  });
+
+  it("R03 cancels pending partial translation debounce on final transcript", async () => {
+    const onPartialTranscript = vi.fn();
+    const onFinalTranscript = vi.fn();
+    const onPartialTranslation = vi.fn();
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useThemWsStreaming({
+        capturingRef,
+        onPartialTranscript,
+        onFinalTranscript,
+        onPartialTranslation,
+      })
+    );
+
+    await act(async () => { result.current.start(); });
+    const ws = MockWebSocket.instances[0];
+    act(() => ws.triggerOpen());
+
+    act(() => {
+      ws.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "text", text: "Привет" }),
+        })
+      );
+    });
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(fastTranslate).not.toHaveBeenCalled();
+
+    // Final transcript lands before 400ms debounce fires
+    act(() => {
+      ws.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "final", text: "Привет мир готово" }),
+        })
+      );
+    });
+    expect(onFinalTranscript).toHaveBeenCalledWith("Привет мир готово");
+
+    // Advance past debounce: fastTranslate should never have been called
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(fastTranslate).not.toHaveBeenCalled();
+    expect(result.current.partialTranslation).toBe("");
+  });
+
+  it("R03 cancels pending partial translation debounce on beginUtterance, finalizeUtterance, and close", async () => {
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useThemWsStreaming({
+        capturingRef,
+        onPartialTranscript: vi.fn(),
+      })
+    );
+
+    await act(async () => { result.current.start(); });
+    const ws = MockWebSocket.instances[0];
+    act(() => ws.triggerOpen());
+
+    act(() => {
+      ws.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "text", text: "Часть" }),
+        })
+      );
+    });
+    act(() => { vi.advanceTimersByTime(200); });
+
+    // beginUtterance clears debounce
+    act(() => result.current.beginUtterance());
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(fastTranslate).not.toHaveBeenCalled();
   });
 });

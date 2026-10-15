@@ -28,7 +28,6 @@ vi.mock("@/lib", () => {
     getResponseSettings: () => ({ autoScroll: false }),
   };
 });
-vi.mock("@/lib/entitlements", () => ({ canUseFeature: () => true, isDevBuild: () => true }));
 vi.mock("../useCompletionCommon", async (importOriginal) => ({
   ...await importOriginal<typeof CompletionCommon>(),
   validateAIProvider: boundaries.validate, streamAIResponse: boundaries.stream,

@@ -31,12 +31,6 @@ vi.mock("@/contexts", () => ({
 vi.mock("@/lib/version", () => ({
   useAppVersion: () => "1.0.0",
 }));
-
-vi.mock("@/lib/entitlements", () => ({
-  canUseFeature: () => true,
-  isDevBuild: () => true,
-}));
-
 vi.mock("../ResultsSection", () => ({
   ResultsSection: () => <div data-testid="results-section">Results</div>,
 }));

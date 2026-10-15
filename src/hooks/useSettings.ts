@@ -6,7 +6,6 @@ import {
   deleteAllConversations,
 } from "@/lib";
 import { STORAGE_KEYS } from "@/config";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 export const useSettings = () => {
   const {
@@ -51,15 +50,6 @@ export const useSettings = () => {
   };
 
   const handleScreenshotEnabledChange = (enabled: boolean) => {
-    if (
-      !enabled &&
-      !canUseFeature("screenshot", {
-        isDevBuild: isDevBuild(),
-        hasLicense: hasActiveLicense,
-      })
-    ) {
-      return;
-    }
     const newConfig = { ...screenshotConfiguration, enabled };
     setScreenshotConfiguration(newConfig);
     safeLocalStorage.setItem(
@@ -119,11 +109,6 @@ export const useSettings = () => {
     variables,
     sttVariables,
     hasActiveLicense,
-    // Доступность режима выделения определяется реестром возможностей, а не
-    // состоянием лицензии напрямую — иначе правило тарифа размазывается по UI.
-    selectionModeAllowed: canUseFeature("selectionMode", {
-      isDevBuild: isDevBuild(),
-      hasLicense: hasActiveLicense,
-    }),
+    selectionModeAllowed: true,
   };
 };

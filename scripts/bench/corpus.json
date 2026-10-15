@@ -1,0 +1,277 @@
+[
+  {
+    "id": "case-01",
+    "category": "technical",
+    "transcript": "How do you implement a binary search algorithm in TypeScript?",
+    "expected": {
+      "language": "en",
+      "keywords": ["binary search", "array", "sorted", "mid", "pointer"],
+      "reference": "Binary search finds an element in a sorted array by repeatedly dividing the search interval in half with left, right, and mid pointers.",
+      "mockResponse": "Binary search locates a target value within a sorted array by repeatedly dividing the search space in half using two pointers."
+    }
+  },
+  {
+    "id": "case-02",
+    "category": "technical",
+    "transcript": "Как работает механизм garbage collection в JavaScript?",
+    "expected": {
+      "language": "ru",
+      "keywords": ["garbage collection", "память", "v8", "mark-and-sweep", "достижимость"],
+      "reference": "Сборщик мусора в JavaScript освобождает память недостижимых объектов, используя алгоритм mark-and-sweep и поколения объектов в движке V8.",
+      "mockResponse": "Сборка мусора в JavaScript находит и очищает недостижимые объекты с помощью алгоритма mark-and-sweep в движке V8."
+    }
+  },
+  {
+    "id": "case-03",
+    "category": "system-design",
+    "transcript": "What are the trade-offs between SQL and NoSQL databases?",
+    "expected": {
+      "language": "en",
+      "keywords": ["SQL", "NoSQL", "ACID", "schema", "scaling"],
+      "reference": "SQL offers ACID transactions and strong consistency with structured schemas, while NoSQL provides horizontal scaling and flexible schema designs.",
+      "mockResponse": "SQL provides strong ACID consistency with fixed schemas, whereas NoSQL favors horizontal scalability and flexible unstructured data models."
+    }
+  },
+  {
+    "id": "case-04",
+    "category": "system-design",
+    "transcript": "Как спроектировать отказоустойчивую очередь сообщений?",
+    "expected": {
+      "language": "ru",
+      "keywords": ["очередь", "репликация", "dead letter", "ack", "партиционирование"],
+      "reference": "Для отказоустойчивости очереди нужны репликация брокеров, подтверждения доставки ack, сохранение на диск и dead letter queue для сбойных сообщений.",
+      "mockResponse": "Отказоустойчивая очередь строится на репликации партиций, подтверждениях ack и dead letter queue для изоляции ошибок."
+    }
+  },
+  {
+    "id": "case-05",
+    "category": "behavioral",
+    "transcript": "Tell me about a time you handled a tight deadline.",
+    "expected": {
+      "language": "en",
+      "keywords": ["deadline", "priority", "communication", "scope", "delivery"],
+      "reference": "I prioritized core MVP deliverables, communicated risks with stakeholders proactively, and coordinated tasks across the team to ship on time.",
+      "mockResponse": "I managed a tight deadline by deselecting non-essential scope, keeping stakeholders updated, and focusing strictly on critical delivery paths."
+    }
+  },
+  {
+    "id": "case-06",
+    "category": "behavioral",
+    "transcript": "Расскажите о конфликте в команде и как вы его решили.",
+    "expected": {
+      "language": "ru",
+      "keywords": ["конфликт", "компромисс", "диалог", "архитектура", "решение"],
+      "reference": "При разногласиях по архитектуре мы организовали технический синк, сравнили варианты по метрикам и пришли к компромиссу на фактах.",
+      "mockResponse": "Мы провели архитектурный разбор, составили матрицу плюсов и минусов каждого подхода и утвердили общее решение без эмоций."
+    }
+  },
+  {
+    "id": "case-07",
+    "category": "technical",
+    "transcript": "Explain the difference between process and thread in operating systems.",
+    "expected": {
+      "language": "en",
+      "keywords": ["process", "thread", "memory", "context switch", "isolation"],
+      "reference": "A process has its own virtual address space and isolated memory, while threads share memory space within the same process but have independent stacks.",
+      "mockResponse": "Processes have independent memory address spaces, whereas threads exist within a process and share memory and resources."
+    }
+  },
+  {
+    "id": "case-08",
+    "category": "technical",
+    "transcript": "В чём разница между синхронным и асинхронным вводом-выводом?",
+    "expected": {
+      "language": "ru",
+      "keywords": ["асинхронный", "синхронный", "блокировка", "event loop", "non-blocking"],
+      "reference": "Синхронный ввод-вывод блокирует поток выполнения до завершения операции, а асинхронный возвращает управление сразу и уведомляет через колбэк или промис.",
+      "mockResponse": "Синхронный ввод-вывод блокирует вызывающий поток, тогда как асинхронный выполняется без блокировки через event loop и уведомления."
+    }
+  },
+  {
+    "id": "case-09",
+    "category": "daily-meeting",
+    "transcript": "Yesterday I finished the migration script, today I am reviewing PRs.",
+    "expected": {
+      "language": "en",
+      "keywords": ["migration", "script", "review", "PRs", "status"],
+      "reference": "Status update: Completed database migration yesterday, focusing on pull request reviews and unblocking colleagues today.",
+      "mockResponse": "Daily standup update: migration completed yesterday; reviewing pending PRs and assisting teammates today."
+    }
+  },
+  {
+    "id": "case-10",
+    "category": "daily-meeting",
+    "transcript": "Вчера настроил CI пайплайн, сегодня пишу интеграционные тесты.",
+    "expected": {
+      "language": "ru",
+      "keywords": ["CI", "пайплайн", "тесты", "интеграция", "статус"],
+      "reference": "Статус на стендапе: пайплайн непрерывной интеграции готов, в фокусе дня написание интеграционных тестов.",
+      "mockResponse": "Отчёт по стендапу: CI пайплайн развёрнут, сегодня реализуются и проверяются интеграционные тесты."
+    }
+  },
+  {
+    "id": "case-11",
+    "category": "technical",
+    "transcript": "What is event-driven architecture and when should you use it?",
+    "expected": {
+      "language": "en",
+      "keywords": ["event-driven", "decoupling", "producer", "consumer", "broker"],
+      "reference": "Event-driven architecture decouples producers and consumers using asynchronous events, ideal for distributed microservices requiring loose coupling.",
+      "mockResponse": "Event-driven systems use asynchronous events via message brokers to decouple services, suited for high scalability and real-time processing."
+    }
+  },
+  {
+    "id": "case-12",
+    "category": "technical",
+    "transcript": "Что такое нормализация баз данных и какие формы бывают?",
+    "expected": {
+      "language": "ru",
+      "keywords": ["нормализация", "1NF", "2NF", "3NF", "избыточность"],
+      "reference": "Нормализация устраняет избыточность данных через разделение таблиц: 1NF убирает повторяющиеся группы, 2NF зависимости от части ключа, 3NF транзитивные зависимости.",
+      "mockResponse": "Нормализация структурирует реляционные данные для минимизации дублирования, выделяя 1NF, 2NF, 3NF и BCNF формы."
+    }
+  },
+  {
+    "id": "case-13",
+    "category": "dictation",
+    "transcript": "Note to self: schedule performance review meeting with Alex on Thursday afternoon.",
+    "expected": {
+      "language": "en",
+      "keywords": ["schedule", "review", "Alex", "Thursday"],
+      "reference": "Reminder: Schedule 1-on-1 performance review with Alex for Thursday afternoon.",
+      "mockResponse": "Calendar reminder: set up performance review meeting with Alex for Thursday afternoon."
+    }
+  },
+  {
+    "id": "case-14",
+    "category": "dictation",
+    "transcript": "Заметка: обновить зависимости проекта и проверить совместимость с Node 22.",
+    "expected": {
+      "language": "ru",
+      "keywords": ["заметка", "зависимости", "совместимость", "Node 22"],
+      "reference": "Памятка: выполнить аудит и обновление npm зависимостей, проверить прогон сьюта на Node 22.",
+      "mockResponse": "Заметка: актуализировать зависимости проекта и протестировать работу под Node 22."
+    }
+  },
+  {
+    "id": "case-15",
+    "category": "technical",
+    "transcript": "How does React fiber reconciler achieve smooth rendering?",
+    "expected": {
+      "language": "en",
+      "keywords": ["fiber", "reconciliation", "concurrency", "prioritization", "scheduler"],
+      "reference": "React Fiber breaks rendering work into incremental units, allowing the scheduler to pause, prioritize high-priority user interactions, and avoid UI jank.",
+      "mockResponse": "Fiber reconciles the component tree incrementally, prioritizing urgent browser events and yielding back to the main thread."
+    }
+  },
+  {
+    "id": "case-16",
+    "category": "technical",
+    "transcript": "Объясните разницу между optimistic locking и pessimistic locking.",
+    "expected": {
+      "language": "ru",
+      "keywords": ["блокировка", "optimistic", "pessimistic", "транзакции", "версионирование"],
+      "reference": "Оптимистичная блокировка проверяет версию записи при коммите без удержания локов, а пессимистичная захватывает эксклюзивный lock на время всей транзакции.",
+      "mockResponse": "Оптимистичные блокировки полагаются на контроль версий перед записью, а пессимистичные блокируют ресурс сразу до завершения транзакции."
+    }
+  },
+  {
+    "id": "case-17",
+    "category": "system-design",
+    "transcript": "How would you design a rate limiter for an API gateway?",
+    "expected": {
+      "language": "en",
+      "keywords": ["rate limiter", "token bucket", "leaky bucket", "redis", "sliding window"],
+      "reference": "A distributed rate limiter can use a Redis sliding window log or token bucket algorithm keyed by user ID or IP address to throttle excess requests.",
+      "mockResponse": "A robust API rate limiter implements token bucket or sliding window counters in Redis to enforce per-client quotas."
+    }
+  },
+  {
+    "id": "case-18",
+    "category": "system-design",
+    "transcript": "Как организовать кэширование с инвалидацией в распределённой системе?",
+    "expected": {
+      "language": "ru",
+      "keywords": ["кэш", "инвалидация", "TTL", "cache-aside", "write-through"],
+      "reference": "Кэширование на базе Redis с паттерном cache-aside сочетает TTL для защиты от утечек и событийную инвалидацию через message bus при обновлениях.",
+      "mockResponse": "Инвалидация распределённого кэша реализуется комбинацией жестких TTL и публикации событий изменения сущностей в pub/sub шину."
+    }
+  },
+  {
+    "id": "case-19",
+    "category": "behavioral",
+    "transcript": "How do you approach onboarding onto a complex unfamiliar codebase?",
+    "expected": {
+      "language": "en",
+      "keywords": ["onboarding", "codebase", "entry points", "tests", "documentation"],
+      "reference": "I start by running the test suite, identifying architectural entry points, building a mental model of data flow, and pairing with teammates on starter tasks.",
+      "mockResponse": "I explore architectural entry points, read existing end-to-end tests, inspect the data model, and ship small PRs to validate assumptions."
+    }
+  },
+  {
+    "id": "case-20",
+    "category": "behavioral",
+    "transcript": "Как вы приоритизируете технический долг против продуктовых фич?",
+    "expected": {
+      "language": "ru",
+      "keywords": ["техдолг", "приоритет", "метрики", "стабильность", "продукт"],
+      "reference": "Мы связываем техдолг с бизнес-метриками: рисками сбоев, задержками разработки и сложностью онбординга, закладывая 15-20% спринта на стабилизацию.",
+      "mockResponse": "Технический долг приоритизируется через оценку влияния на надежность и скорость команды, с выделением фиксированной доли спринта под рефакторинг."
+    }
+  },
+  {
+    "id": "case-21",
+    "category": "technical",
+    "transcript": "Explain what memory leaks are in Rust and how they can happen despite ownership.",
+    "expected": {
+      "language": "en",
+      "keywords": ["memory leak", "Rc", "Arc", "reference cycle", "forget"],
+      "reference": "Memory leaks in Rust can occur through reference cycles using Rc or Arc with RefCell, or by explicitly calling mem::forget, bypassing drop handlers.",
+      "mockResponse": "Rust prevents data races and use-after-free, but reference cycles using Rc/Arc with interior mutability can still leak heap memory."
+    }
+  },
+  {
+    "id": "case-22",
+    "category": "technical",
+    "transcript": "Что такое CORS и почему он не защищает от атак сервер-сервер?",
+    "expected": {
+      "language": "ru",
+      "keywords": ["CORS", "браузер", "same-origin", "заголовки", "security"],
+      "reference": "CORS — это браузерный механизм безопасности, ограничивающий междоменные запросы из веб-страниц; серверные клиенты игнорируют правила браузера.",
+      "mockResponse": "CORS обеспечивается исключительно движком браузера для защиты пользователя и не действует на прямые HTTP-запросы сервер-сервер."
+    }
+  },
+  {
+    "id": "case-23",
+    "category": "dictation",
+    "transcript": "Action item: email the release checklist to the security team before Friday 5 PM.",
+    "expected": {
+      "language": "en",
+      "keywords": ["action item", "email", "checklist", "security", "Friday"],
+      "reference": "Task: Dispatch release verification checklist to security team before Friday deadline.",
+      "mockResponse": "Todo: send final release sign-off checklist to infosec team by Friday 5 PM."
+    }
+  },
+  {
+    "id": "case-24",
+    "category": "dictation",
+    "transcript": "Договорённость: перенести релиз мобильной сборки на вторник следующей недели.",
+    "expected": {
+      "language": "ru",
+      "keywords": ["договорённость", "релиз", "вторник", "сборка"],
+      "reference": "Решение встречи: дата публикации мобильного релиза сдвинута на вторник следующей недели.",
+      "mockResponse": "Итог: релиз мобильной версии перенесён на вторник после согласования с командой."
+    }
+  },
+  {
+    "id": "case-25",
+    "category": "technical",
+    "transcript": "What is the purpose of SQLite WAL mode in desktop applications?",
+    "expected": {
+      "language": "en",
+      "keywords": ["SQLite", "WAL", "write-ahead log", "concurrency", "performance"],
+      "reference": "Write-Ahead Logging allows concurrent readers and writers without blocking each other, significantly improving transaction throughput in desktop apps.",
+      "mockResponse": "SQLite WAL mode enables simultaneous reads while writes proceed, boosting concurrency and write speed."
+    }
+  }
+]

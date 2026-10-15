@@ -20,6 +20,7 @@ use tauri::Manager;
 use tauri_plugin_posthog::{init as posthog_init, PostHogConfig, PostHogOptions};
 use tokio::task::JoinHandle;
 mod speaker;
+mod net_warm;
 use capture::CaptureState;
 use speaker::VadConfig;
 
@@ -259,6 +260,7 @@ pub fn run() {
             asr_stream::asr_native_try_acquire,
             asr_stream::asr_native_release,
             asr_stream::asr_native_reset,
+            net_warm::warm_llm_connection,
             db::commands::db_create_system_prompt,
             db::commands::db_get_all_system_prompts,
             db::commands::db_get_system_prompt_by_id,

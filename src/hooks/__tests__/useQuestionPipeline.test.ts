@@ -3,6 +3,11 @@ import { renderHook, act } from "@testing-library/react";
 import { useQuestionPipeline, TURN_GATE_STATUS_EVENT } from "../useQuestionPipeline";
 import type { LiveSegment } from "../useConversationStore";
 import { selectFillerForText } from "@/lib/transcript-stabilizer";
+import { invoke } from "@tauri-apps/api/core";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock("@/lib/transcript-stabilizer", () => ({
   selectFillerForText: vi.fn(() => "Да, секундочку..."),
@@ -862,6 +867,26 @@ describe("useQuestionPipeline", () => {
           "Первая часть длинного ответа. Вторая часть длинного ответа. Третья часть длинного ответа. Четвертая часть длинного ответа.",
           "them"
         );
+      });
+    });
+
+    it("R02: pre-warms LLM connection when gap timer arms during interviewer speech", async () => {
+      const onTriggerAI = vi.fn().mockResolvedValue(undefined);
+      const liveSegmentsRef = { current: [] as LiveSegment[] };
+
+      const { result } = renderHook(() =>
+        useQuestionPipeline({ onTriggerAI, liveSegmentsRef })
+      );
+
+      vi.mocked(invoke).mockClear();
+
+      // Fragment without question mark arms the gap timer
+      await act(async () => {
+        await result.current.handleInterviewerTranscription("Расскажите о себе");
+      });
+
+      expect(invoke).toHaveBeenCalledWith("warm_llm_connection", {
+        url: "https://api.openai.com/v1/chat/completions",
       });
     });
   });

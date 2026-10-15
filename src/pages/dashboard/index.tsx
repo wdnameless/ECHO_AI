@@ -4,22 +4,13 @@ import { GetLicense } from "@/components";
 import { PluelyApiSetup, Usage } from "./components";
 import { PageLayout } from "@/layouts";
 import { useApp } from "@/contexts";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 const Dashboard = () => {
   const { hasActiveLicense } = useApp();
   const [activity, setActivity] = useState<any>(null);
   const [loadingActivity, setLoadingActivity] = useState(false);
-  const analyticsAllowed = canUseFeature("analytics", {
-    isDevBuild: isDevBuild(),
-    hasLicense: hasActiveLicense,
-  });
 
   const fetchActivity = useCallback(async () => {
-    if (!analyticsAllowed) {
-      setActivity({ data: [], total_tokens_used: 0 });
-      return;
-    }
     setLoadingActivity(true);
     try {
       const response = await invoke("get_activity");
@@ -34,15 +25,11 @@ const Dashboard = () => {
     } finally {
       setLoadingActivity(false);
     }
-  }, [analyticsAllowed]);
+  }, []);
 
   useEffect(() => {
-    if (analyticsAllowed) {
-      fetchActivity();
-    } else {
-      setActivity(null);
-    }
-  }, [fetchActivity, analyticsAllowed]);
+    fetchActivity();
+  }, [fetchActivity]);
 
   const activityData =
     activity && Array.isArray(activity.data) ? activity.data : [];

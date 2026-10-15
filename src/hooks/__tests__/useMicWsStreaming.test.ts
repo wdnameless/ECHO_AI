@@ -25,6 +25,10 @@ vi.mock("@/lib/asr-capabilities", () => ({
 vi.mock("@/lib/asr-language", () => ({
   getAsrLanguage: vi.fn(() => "ru"),
 }));
+vi.mock("@/lib/fast-translator", () => ({
+  fastTranslate: vi.fn(async (text: string) => `trans:${text}`),
+}));
+import { fastTranslate } from "@/lib/fast-translator";
 
 class MockWebSocket {
   static CONNECTING = 0;
@@ -900,5 +904,113 @@ describe("useMicWsStreaming", () => {
 
     expect(MockWebSocket.instances).toHaveLength(0);
     expect(asrGate.tryAcquireStream("them")).toBe(true);
+  });
+
+  it("R03 debounces mic partial translation by 400ms and updates partialTranslation state and callback", async () => {
+    micStateStore.setMode("DICTATION");
+    const onPartialTranscript = vi.fn();
+    const onPartialTranslation = vi.fn();
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useMicWsStreaming({
+        capturingRef,
+        onPartialTranscript,
+        onPartialTranslation,
+      })
+    );
+
+    act(() => {
+      result.current.micBeginUtterance();
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const ws = MockWebSocket.instances[0];
+    act(() => ws.triggerOpen());
+
+    // t=0: First partial arrives
+    act(() => {
+      ws.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "text", text: "Привет" }),
+        })
+      );
+    });
+    expect(onPartialTranscript).toHaveBeenCalledWith("Привет");
+    expect(fastTranslate).not.toHaveBeenCalled();
+
+    // t=200ms: Second partial arrives before 400ms debounce
+    act(() => { vi.advanceTimersByTime(200); });
+    act(() => {
+      ws.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "text", text: "Привет мир" }),
+        })
+      );
+    });
+    expect(onPartialTranscript).toHaveBeenCalledWith("Привет мир");
+    expect(fastTranslate).not.toHaveBeenCalled();
+
+    // Advance another 200ms (t=400ms from start, but only 200ms since last partial)
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(fastTranslate).not.toHaveBeenCalled();
+
+    // Advance remaining 200ms (t=400ms from last partial): debounce fires
+    await act(async () => { vi.advanceTimersByTime(200); });
+    expect(fastTranslate).toHaveBeenCalledWith("Привет мир", undefined);
+    expect(result.current.partialTranslation).toBe("trans:Привет мир");
+    expect(onPartialTranslation).toHaveBeenCalledWith("trans:Привет мир");
+  });
+
+  it("R03 cancels pending mic partial translation on final transcript", async () => {
+    micStateStore.setMode("DICTATION");
+    const onPartialTranscript = vi.fn();
+    const onFinalTranscript = vi.fn();
+    const onPartialTranslation = vi.fn();
+    const capturingRef = { current: true };
+    const { result } = renderHook(() =>
+      useMicWsStreaming({
+        capturingRef,
+        onPartialTranscript,
+        onFinalTranscript,
+        onPartialTranslation,
+      })
+    );
+
+    act(() => {
+      result.current.micBeginUtterance();
+      result.current.micWsConnect();
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const ws = MockWebSocket.instances[0];
+    act(() => ws.triggerOpen());
+
+    act(() => {
+      ws.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "text", text: "Привет" }),
+        })
+      );
+    });
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(fastTranslate).not.toHaveBeenCalled();
+
+    act(() => {
+      ws.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({ type: "final", text: "Привет готово" }),
+        })
+      );
+    });
+    expect(onFinalTranscript).toHaveBeenCalledWith("Привет готово");
+
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(fastTranslate).not.toHaveBeenCalled();
+    expect(result.current.partialTranslation).toBe("");
   });
 });

@@ -30,7 +30,8 @@ function toPcm16(buf: ArrayBuffer): Int16Array {
   }
   return new Int16Array(buf);
 }
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { fastTranslate } from "@/lib/fast-translator";
 import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
 import { getAsrLanguage } from "@/lib/asr-language";
 import { noteStreamingUnsupported } from "@/lib/asr-capabilities";
@@ -54,22 +55,151 @@ import {
 
 const WS_BACKOFF: ReconnectBackoff = { baseMs: 400, maxMs: 3000 };
 const FINALIZE_CLOSE_FALLBACK_MS = 150;
-export interface UseThemWsStreamingProps {
+export interface StreamingPartialTranslationProps {
   capturingRef: React.MutableRefObject<boolean>;
   onPartialTranscript: (text: string) => void;
   onFinalTranscript?: (text: string) => void;
+  onPartialTranslation?: (text: string) => void;
+  translatePartials?: boolean;
+  targetLang?: "ru" | "en";
+  tag?: string;
+}
+
+export interface StreamingPartialTranslationResult {
+  partialTranslation: string;
+  clearPartialTranslation: () => void;
+  handlePartialTranscript: (text: string) => void;
+  handleFinalTranscript: (text: string) => void;
+}
+
+export function useStreamingPartialTranslation({
+  capturingRef,
+  onPartialTranscript,
+  onFinalTranscript,
+  onPartialTranslation,
+  translatePartials = true,
+  targetLang,
+  tag = "ws",
+}: StreamingPartialTranslationProps): StreamingPartialTranslationResult {
+  const [partialTranslation, setPartialTranslation] = useState("");
+  const translateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const translateEpochRef = useRef(0);
+  const onPartialTranslationRef = useRef(onPartialTranslation);
+  onPartialTranslationRef.current = onPartialTranslation;
+  const targetLangRef = useRef(targetLang);
+  targetLangRef.current = targetLang;
+  const translatePartialsRef = useRef(translatePartials);
+  translatePartialsRef.current = translatePartials;
+
+  const clearPartialTranslation = useCallback(() => {
+    if (translateTimerRef.current !== null) {
+      clearTimeout(translateTimerRef.current);
+      translateTimerRef.current = null;
+    }
+    translateEpochRef.current += 1;
+    setPartialTranslation("");
+    onPartialTranslationRef.current?.("");
+  }, []);
+
+  const handlePartialTranscript = useCallback(
+    (text: string) => {
+      onPartialTranscript(text);
+
+      if (translatePartialsRef.current === false) return;
+      const trimmed = text.trim();
+      if (!trimmed) {
+        clearPartialTranslation();
+        return;
+      }
+
+      if (translateTimerRef.current !== null) {
+        clearTimeout(translateTimerRef.current);
+        translateTimerRef.current = null;
+      }
+      const epoch = ++translateEpochRef.current;
+      translateTimerRef.current = setTimeout(async () => {
+        translateTimerRef.current = null;
+        if (!capturingRef.current || epoch !== translateEpochRef.current) return;
+        try {
+          const translated = await fastTranslate(trimmed, targetLangRef.current);
+          if (!capturingRef.current || epoch !== translateEpochRef.current) return;
+          setPartialTranslation(translated);
+          onPartialTranslationRef.current?.(translated);
+        } catch (err) {
+          console.debug(`[${tag}] partial translation failed:`, err);
+        }
+      }, 400);
+    },
+    [capturingRef, clearPartialTranslation, onPartialTranscript, tag]
+  );
+
+  const handleFinalTranscript = useCallback(
+    (text: string) => {
+      clearPartialTranslation();
+      onFinalTranscript?.(text);
+    },
+    [clearPartialTranslation, onFinalTranscript]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (translateTimerRef.current !== null) {
+        clearTimeout(translateTimerRef.current);
+        translateTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  return {
+    partialTranslation,
+    clearPartialTranslation,
+    handlePartialTranscript,
+    handleFinalTranscript,
+  };
+}
+
+export interface UseThemWsStreamingProps extends StreamingPartialTranslationProps {
   selectedSttProvider?: {
     provider: string;
     variables?: Record<string, string>;
   };
 }
 
+export interface UseThemWsStreamingResult {
+  start: () => void;
+  feedFrame: (pcm: ArrayBuffer) => void;
+  finalizeUtterance: () => void;
+  finalizeAndClose: () => void;
+  close: () => void;
+  isStreaming: () => boolean;
+  hasProducedText: () => boolean;
+  beginUtterance: () => void;
+  partialTranslation: string;
+}
+
 export function useThemWsStreaming({
   capturingRef,
   onPartialTranscript,
   onFinalTranscript,
+  onPartialTranslation,
+  translatePartials = true,
+  targetLang,
   selectedSttProvider,
-}: UseThemWsStreamingProps) {
+}: UseThemWsStreamingProps): UseThemWsStreamingResult {
+  const {
+    partialTranslation,
+    clearPartialTranslation,
+    handlePartialTranscript,
+    handleFinalTranscript,
+  } = useStreamingPartialTranslation({
+    capturingRef,
+    onPartialTranscript,
+    onFinalTranscript,
+    onPartialTranslation,
+    translatePartials,
+    targetLang,
+    tag: "them-ws",
+  });
   const cloudSessionRef = useRef<StreamingSTTSession | null>(null);
   const wsRef = useRef<WebSocket | AsrSocketLike | null>(null);
   const frameBufferRef = useRef<ArrayBuffer[]>([]);
@@ -110,6 +240,7 @@ export function useThemWsStreaming({
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const close = useCallback(() => {
+    clearPartialTranslation();
     cancelConnect();
     wantRef.current = false;
     finalReceivedRef.current = false;
@@ -181,9 +312,9 @@ export function useThemWsStreaming({
         language: getAsrLanguage(),
         onTranscript: (text, isFinal) => {
           if (isFinal) {
-            onFinalTranscript?.(text);
+            handleFinalTranscript(text);
           } else {
-            onPartialTranscript(text);
+            handlePartialTranscript(text);
           }
         },
       });
@@ -300,7 +431,10 @@ export function useThemWsStreaming({
         cachedBaseUrlRef.current = "";
         noteStreamingUnsupported();
       }
-      handleAsrStreamFrame(ev.data, { onPartialTranscript, onFinalTranscript });
+      handleAsrStreamFrame(ev.data, {
+        onPartialTranscript: handlePartialTranscript,
+        onFinalTranscript: handleFinalTranscript,
+      });
       if (typeof ev.data === "string" && /"type"\s*:\s*"final"/.test(ev.data)) {
         if (!state.stoppedByUs && wantRef.current) {
           finalReceivedRef.current = true;
@@ -449,6 +583,7 @@ export function useThemWsStreaming({
    * utterance opens a fresh socket from `start()`.
    */
   const finalizeUtterance = useCallback(() => {
+    clearPartialTranslation();
     finalReceivedRef.current = false;
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || socketStateRef.current?.stoppedByUs) return;
@@ -472,6 +607,7 @@ export function useThemWsStreaming({
   }, [cancelConnect, releaseOwner]);
 
   const finalizeAndClose = useCallback(() => {
+    clearPartialTranslation();
     cancelConnect();
     wantRef.current = false;
     finalReceivedRef.current = false;
@@ -521,6 +657,7 @@ export function useThemWsStreaming({
 
   /** Called at the start of an utterance. */
   const beginUtterance = useCallback(() => {
+    clearPartialTranslation();
     producedTextRef.current = false;
     finalReceivedRef.current = false;
     if (socketStateRef.current && !socketStateRef.current.stoppedByUs) {
@@ -537,5 +674,6 @@ export function useThemWsStreaming({
     isStreaming,
     hasProducedText,
     beginUtterance,
+    partialTranslation,
   };
 }

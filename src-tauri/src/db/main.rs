@@ -297,6 +297,11 @@ mod tests {
 
     #[test]
     fn test_apply_pragmas() {
+        test_wal_pragmas_applied();
+    }
+
+    #[test]
+    fn test_wal_pragmas_applied() {
         let temp_dir = std::env::temp_dir().join(format!("pluely_pragma_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("test_pragma.db");

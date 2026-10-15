@@ -1,5 +1,4 @@
-import { useApp, useTheme } from "@/contexts";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
+import { useTheme } from "@/contexts";
 import { Header, Label, Slider, Button } from "@/components";
 import { MonitorIcon, MoonIcon, SunIcon } from "lucide-react";
 import {
@@ -11,28 +10,17 @@ import {
 
 export const Theme = () => {
   const { theme, transparency, setTheme, onSetTransparency } = useTheme();
-  const { hasActiveLicense } = useApp();
-  const allowed = canUseFeature("themes", {
-    isDevBuild: isDevBuild(),
-    hasLicense: hasActiveLicense,
-  });
 
   return (
     <div id="theme" className="relative space-y-3">
       <Header
-        title={`Theme Customization ${
-          allowed ? "" : " (входит в тариф Pro)"
-        }`}
+        title="Theme Customization"
         description="Personalize your experience with custom theme and transparency settings"
         isMainTitle
       />
 
       {/* Theme Toggle */}
-      <div
-        className={`space-y-2 ${
-          allowed ? "" : "opacity-60 pointer-events-none"
-        }`}
-      >
+      <div className="space-y-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <div>
@@ -90,11 +78,7 @@ export const Theme = () => {
       </div>
 
       {/* Transparency Slider */}
-      <div
-        className={`space-y-2 ${
-          allowed ? "" : "opacity-60 pointer-events-none"
-        }`}
-      >
+      <div className="space-y-2">
         <Header
           title="Window Transparency"
           description="Adjust the transparency level of the application window"

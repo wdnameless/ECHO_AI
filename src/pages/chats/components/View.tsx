@@ -7,7 +7,6 @@ import {
   Textarea,
 } from "@/components";
 import { getConversationById } from "@/lib";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import { ChatConversation } from "@/types";
 import {
   Download,
@@ -36,14 +35,8 @@ import {
 
 const View = () => {
   const { conversationId } = useParams();
-  const { hasActiveLicense, supportsImages } = useApp();
+  const { supportsImages } = useApp();
   const navigate = useNavigate();
-  // Чат относится к Free-ядру (R15): ввод, аудио и история доступны без
-  // лицензии. Скриншот остаётся Pro-возможностью.
-  const screenshotAllowed = canUseFeature("screenshot", {
-    isDevBuild: isDevBuild(),
-    hasLicense: hasActiveLicense,
-  });
   const [messages, setMessages] = useState<ChatConversation | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const messageCount = messages?.messages?.length ?? 0;
@@ -298,7 +291,7 @@ const View = () => {
                     isLoading={completion.isLoading}
                     captureScreenshot={completion.captureScreenshot}
                     isScreenshotLoading={completion.isScreenshotLoading}
-                    disabled={!screenshotAllowed || !supportsImages}
+                    disabled={!supportsImages}
                   />
                 </div>
 

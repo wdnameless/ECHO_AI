@@ -12,7 +12,6 @@ import {
   MESSAGE_ID_OFFSET,
   getResponseSettings,
 } from "@/lib";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 import {
   useCompletionBase,
   useScreenshotCapture,
@@ -345,18 +344,6 @@ export const useChatCompletion = (
     attachedFilesCount: state.attachedFiles.length,
     setAttachedFiles,
     onAutoPrompt: onAutoScreenshotPrompt,
-    checkSelectionFeature: () => {
-      const allowed = canUseFeature("selectionMode", {
-        isDevBuild: isDevBuild(),
-        hasLicense: hasActiveLicense,
-      });
-      return {
-        allowed,
-        errorMessage: allowed
-          ? undefined
-          : "Режим выделения области входит в тариф Pro. Оплата пока недоступна.",
-      };
-    },
     logTag: "[chat-completion]",
     onError: setError,
   });

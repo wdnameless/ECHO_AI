@@ -9,6 +9,10 @@
  */
 
 import { useCallback, useRef } from "react";
+import {
+  useStreamingPartialTranslation,
+  type StreamingPartialTranslationProps,
+} from "./useThemWsStreaming";
 import { getAsrBaseUrl, resetAsrBaseUrlCache } from "@/lib/asr-discovery";
 import {
   getAsrCapabilities,
@@ -40,17 +44,44 @@ const MIC_FINALIZE_CLOSE_FALLBACK_MS = 150;
  */
 export const MAX_MIC_BUFFERED_FRAMES = 24;
 
-export interface UseMicWsStreamingProps {
-  capturingRef: React.MutableRefObject<boolean>;
-  onPartialTranscript: (text: string) => void;
-  onFinalTranscript?: (text: string) => void;
+export type UseMicWsStreamingProps = StreamingPartialTranslationProps;
+
+export interface UseMicWsStreamingResult {
+  micWsRef: React.MutableRefObject<WebSocket | AsrSocketLike | null>;
+  micWsWantRef: React.MutableRefObject<boolean>;
+  micWsConnect: () => void;
+  micWsClose: () => void;
+  micWsCloseSocketOnly: () => void;
+  micWsFinalizeAndClose: () => void;
+  micFeedFrame: (pcm: ArrayBuffer) => void;
+  micBeginUtterance: () => void;
+  micHasProducedText: () => boolean;
+  cleanupMicWs: () => void;
+  partialTranslation: string;
 }
 
 export function useMicWsStreaming({
   capturingRef,
   onPartialTranscript,
   onFinalTranscript,
-}: UseMicWsStreamingProps) {
+  onPartialTranslation,
+  translatePartials = true,
+  targetLang,
+}: UseMicWsStreamingProps): UseMicWsStreamingResult {
+  const {
+    partialTranslation,
+    clearPartialTranslation,
+    handlePartialTranscript,
+    handleFinalTranscript,
+  } = useStreamingPartialTranslation({
+    capturingRef,
+    onPartialTranscript,
+    onFinalTranscript,
+    onPartialTranslation,
+    translatePartials,
+    targetLang,
+    tag: "mic-ws",
+  });
   const micWsRef = useRef<WebSocket | AsrSocketLike | null>(null);
   const micWsWantRef = useRef(false);
   const micFrameBufferRef = useRef<ArrayBuffer[]>([]);
@@ -80,6 +111,7 @@ export function useMicWsStreaming({
   }, []);
 
   const stopMicUtterance = useCallback(() => {
+    clearPartialTranslation();
     micConnectEpochRef.current += 1;
     micUtteranceActiveRef.current = false;
     micWsWantRef.current = false;
@@ -101,6 +133,7 @@ export function useMicWsStreaming({
    * belongs to a deliberate stop, not to a reconnect.
    */
   const micWsCloseSocketOnly = useCallback(() => {
+    clearPartialTranslation();
     if (micWsFinalizeTimerRef.current !== null) {
       clearTimeout(micWsFinalizeTimerRef.current);
       micWsFinalizeTimerRef.current = null;
@@ -319,7 +352,10 @@ export function useMicWsStreaming({
             micProducedTextRef.current = true;
             state.producedText = true;
           }
-          handleAsrStreamFrame(ev.data, { onPartialTranscript, onFinalTranscript });
+          handleAsrStreamFrame(ev.data, {
+            onPartialTranscript: handlePartialTranscript,
+            onFinalTranscript: handleFinalTranscript,
+          });
           if (typeof ev.data === "string" && /"type"\s*:\s*"final"/.test(ev.data)) {
             state.stoppedByUs = true;
             stopMicUtterance();
@@ -418,6 +454,7 @@ export function useMicWsStreaming({
 
   /** Called at the start of an utterance by the caller's VAD. */
   const micBeginUtterance = useCallback(() => {
+    clearPartialTranslation();
     if (micStateStore.isIdle()) {
       micWsClose();
       return;
@@ -448,10 +485,12 @@ export function useMicWsStreaming({
     micWsWantRef,
     micWsConnect,
     micWsClose,
+    micWsCloseSocketOnly,
     micWsFinalizeAndClose,
     micFeedFrame,
     micBeginUtterance,
     micHasProducedText,
     cleanupMicWs: micWsClose,
+    partialTranslation,
   };
 }

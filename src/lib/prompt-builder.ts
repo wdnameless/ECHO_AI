@@ -34,6 +34,22 @@ export const THOUGHT_TRACE_PROMPT =
 export const CONVERSATIONAL_FILTER_RULE =
   "CONVERSATIONAL FILTER RULE: If the user input is merely a conversational acknowledgment, reaction, or filler sound (e.g. 'угу', 'мгм', 'ага', 'да', 'ну', 'хм', 'ок', 'yeah', 'uh-huh', 'mhm', 'got it') without a substantive question or topic, DO NOT replicate the filler or generate a lengthy answer. Only answer when an actual question, technical query, or request is made.";
 
+export const PROMPT_BLOCK_ORDER = [
+  "base",
+  "thought",
+  "filter",
+  "visual",
+  "length",
+  "humanizer",
+  "opener",
+  "resume",
+  "job",
+  "memory",
+  "language",
+  "evolution",
+  "search",
+] as const;
+
 export interface PromptContext {
   baseSystemPrompt?: string;
   mode?: AnswerMode;
@@ -54,6 +70,8 @@ export interface PromptContext {
   languagePrompt?: string;
   strictLanguageRule?: string;
   evolutionBlock?: string | null;
+  searchBlock?: string | null;
+  searchPrompt?: string | null;
   profile?: PromptProfile;
   separator?: string;
 }
@@ -197,11 +215,16 @@ export function buildPrompt(ctx: PromptContext): string {
   if (languageRule) {
     prompts.push(languageRule);
   }
-  // Self-Evolution Memory & Personal Facts injection
+  // Self-Evolution Memory & Personal Facts injection (volatile)
   if (ctx.evolutionBlock?.trim()) {
     prompts.push(ctx.evolutionBlock.trim());
   }
 
+  // Live web search results injection (tail volatile block)
+  const searchBlock = ctx.searchBlock ?? ctx.searchPrompt;
+  if (searchBlock?.trim()) {
+    prompts.push(searchBlock.trim());
+  }
   return prompts.join(ctx.separator ?? " ");
 }
 

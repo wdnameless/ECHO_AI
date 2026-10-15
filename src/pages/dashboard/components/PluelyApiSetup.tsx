@@ -19,7 +19,6 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { canUseFeature, isDevBuild } from "@/lib/entitlements";
 
 interface ActivationResponse {
   activated: boolean;
@@ -57,7 +56,6 @@ export const PluelyApiSetup = () => {
   const {
     pluelyApiEnabled,
     setPluelyApiEnabled,
-    hasActiveLicense,
     setHasActiveLicense,
     getActiveLicenseStatus,
     setSupportsImages,
@@ -75,12 +73,6 @@ export const PluelyApiSetup = () => {
   const [isPopoverOpen, setIsPopoverOpen] = useState(false);
   const [searchValue, setSearchValue] = useState("");
 
-  // Хостируемый API — Pro-возможность, поэтому доступность берётся из реестра,
-  // а не из состояния лицензии напрямую.
-  const hostedApiAllowed = canUseFeature("hostedApi", {
-    isDevBuild: isDevBuild(),
-    hasLicense: hasActiveLicense,
-  });
   const fetchInitiated = useRef(false);
   const commandListRef = useRef<HTMLDivElement>(null);
 
@@ -526,7 +518,7 @@ export const PluelyApiSetup = () => {
         <Switch
           checked={pluelyApiEnabled}
           onCheckedChange={setPluelyApiEnabled}
-          disabled={!storedLicenseKey || !hostedApiAllowed}
+          disabled={!storedLicenseKey}
         />
       </div>
     </div>
